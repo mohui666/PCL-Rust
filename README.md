@@ -13,15 +13,15 @@
 | [迁移矩阵](docs/migration-matrix.md) | 43 个上游页面/复用控件文件逐项对照、设置范围与剩余功能 |
 | [验证记录](docs/validation.md) | 最新测试、两端构建哈希、Mac 实测与尚未验证的范围 |
 | [登录说明](docs/login.md) | 微软设备码流程、凭据存储、恢复语义和当前 HTTP 403 状态 |
-| [开发说明](docs/development.md) | 本地工作区结构、构建与验证命令、中文字体处理 |
+| [开发说明](docs/development.md) | 源码结构、构建与验证命令、中文字体处理 |
 | [参考来源](docs/upstream.md) | Windows 外观基准、固定源码提交、署名与发布范围 |
 
 ## 当前进展
 
-更新日期：**2026-10-05（Asia/Shanghai）**。以下是本地开发结果，公开仓库目前提供整理后的项目文档。
+本次源码发布日期：**2026-10-05（Asia/Shanghai）**。仓库包含 Rust 源码、Cargo 配置与锁文件、构建脚本、必要资产、来源记录、文档和 CI 验证工作流。本次源码检出检查与此前开发批次的产物、实机证据分别记录。
 
-- 最新工作区测试 **304 项通过、0 失败、1 忽略**；全部目标严格 Clippy 通过。忽略项为需要实际安装的联网 Fabric 集成测试。
-- macOS 签名 release 包和 Windows x86-64 交叉构建完成。Mac 已进行限定界面检查；Windows/Wine 尚未执行。
+- 本次源码检出在 **macOS arm64 / Rust 1.99** 通过格式检查、**304 项测试（0 失败、1 忽略）**、全部目标严格 Clippy 和工作区 release 构建；使用已有依赖及编译缓存。未重新打包或做实机/登录验证，也不代表远端 CI 已通过。详情见[验证记录](docs/validation.md)。
+- 上一批开发版已完成 macOS 签名 release 包和 Windows x86-64 交叉构建，并做过限定 Mac 界面检查；这些产物和实机证据保持原批次归属。Windows/Wine 尚未执行。
 - 最近补入登录分类提示、三色提示队列、消息框颜色/焦点/动画、会话失效后的限次恢复、原账号操作绑定，以及披风选择后的确定/取消和 29 个中文名称。
 - Mac 消息框和提示使用生产渲染器、模拟登录数据完成原生检查；另已重新打开实际启动器核对中文与设置保留。这些检查不代表真实登录或披风修改成功。
 - Minecraft AppID 审核申请已提交并收到回执。上次真实登录在 Minecraft `login_with_xbox` 返回 HTTP 403，尚未确认审核通过，也未完成正版登录端到端验证。
@@ -30,11 +30,29 @@
 
 仍有第三方认证、部分加载器与整合包格式、多源资源服务、完整任务调度、若干设置及全状态 UI 等缺口。完整像素对照、Windows 实机和多项实际游戏流程仍待验收，不提供没有统一验收依据的完成百分比。
 
+## 从源码运行
+
+需要 Rust 工具链和对应平台的编译/链接环境。项目声明 Rust 1.88 起，上一批实际验证使用 Rust 1.99，最低版本尚未单独验收。
+
+```sh
+git clone https://github.com/mohui666/PCL-Rust.git
+cd PCL-Rust
+```
+
+macOS 还需要 Python 3、Xcode Command Line Tools（`xcrun swift`）和系统苹方；首次运行及新增中文文案后，先在本机生成字库：
+
+```sh
+python3 scripts/build-local-pingfang-sfnt.py --style all
+cargo run --locked -p pcl-desktop
+```
+
+Windows 在对应 Rust 构建环境中执行 `cargo run --locked -p pcl-desktop`。本地打包分别使用 `bash scripts/package-macos.sh` 或 PowerShell 中的 `./scripts/package-windows.ps1`；完整要求与检查命令见[开发说明](docs/development.md)。
+
 ## 仓库与发布范围
 
-当前远端只发布项目文档，**没有启动器源码或可下载的应用发行包**。开发说明中的命令用于已有完整本地工作区，直接克隆此文档仓库不能构建启动器。
+本次提供可供本地构建的源码与脚本，**尚未上传可下载的应用发行包**。CI 进行格式、Clippy、测试和 release 构建检查，不打包或上传 `dist/`；工作流存在不等于远端运行已经通过。
 
-源码、二进制与资源的公开分发条件仍待核对。原始测试日志、审核表内容、个人账号资料、本地游戏文件和系统字体派生文件不包含在文档仓库中。当前文档保留上游作者和第三方身份说明；更多内容见[参考来源](docs/upstream.md)。
+上游自定义许可、作者署名和资产来源记录随源码保留，不改称 MIT/Apache。第三方材料的分发条件尚未全部核验，源码公开不代表其获得无限制的再分发授权。原始测试日志、审核表内容、个人账号资料、本地游戏文件及系统字体派生文件不随仓库发布；macOS 字体由使用者在本机生成。更多内容见[参考来源](docs/upstream.md)。
 
 ## Project information for Minecraft AppID review
 
@@ -44,4 +62,4 @@ The registered application display name is **PCL Rust**. Its public Application 
 
 The Microsoft sign-in implementation uses device authorization for personal Microsoft accounts, followed by Xbox Live, XSTS, and Minecraft Services authentication, entitlement and player profile checks. It does not collect Microsoft account passwords. Refresh credentials use the operating system credential store; Minecraft access sessions stay in memory. A separate offline-profile mode does not obtain Microsoft or Minecraft Services tokens.
 
-The AppID review request has been submitted and its receipt confirmed. Approval and end-to-end authenticated login have not been verified. The previous real attempt returned HTTP 403 from Minecraft Services. This repository currently contains documentation only; source code and application releases have not been published.
+The AppID review request has been submitted and its receipt confirmed. Approval and end-to-end authenticated login have not been verified. The previous real attempt returned HTTP 403 from Minecraft Services. The source release dated 2026-10-05 includes Rust code, build scripts, required assets and validation CI. Downloadable application releases and locally derived system fonts are not published. The source checkout was separately checked on macOS arm64: 304 tests passed, with one ignored, alongside formatting, strict Clippy and a release build. This does not establish remote CI, Windows execution, a newly packaged application or authenticated login acceptance.

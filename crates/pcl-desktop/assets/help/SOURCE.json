@@ -1,0 +1,348 @@
+{
+  "source": "https://github.com/Meloong-Git/PCL",
+  "reference_version": "2.13.1.1",
+  "upstream_commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+  "license": "../../../../UPSTREAM-LICENCE",
+  "help_archive_sha256": "03c797f133f9802b852ce83df8594620d11f06083ec7096e9be2e7bf37c0f2e1",
+  "entries": 40,
+  "archive_files": 70,
+  "help_files": [
+    {
+      "path": "Minecraft/全面教程.json",
+      "sha256": "a07ac05dc4f4980f9b4d9471d45ba19c604adf5e0986a038f7915b99041b7bcc"
+    },
+    {
+      "path": "Minecraft/加入服务器.json",
+      "sha256": "5d260037b8f01fad68e85367ddfa9f888b139220d87a08517c5ec2fbc915b1f2"
+    },
+    {
+      "path": "Minecraft/加入服务器.xaml",
+      "sha256": "2eb93913e80d6c8f241683169c7a54faa2e649be1997f360ad7aa9b59d95323e"
+    },
+    {
+      "path": "Minecraft/存档损坏.json",
+      "sha256": "0f48f3e45ae5c2bdb860f06a4ea565d74f7435354764f5a137f0c18f6944c5d1"
+    },
+    {
+      "path": "Minecraft/存档损坏.xaml",
+      "sha256": "b89fd51242a2db09a50efce2cb81b7a09cb60e74f847543e7d0d42c3ac9ed8c7"
+    },
+    {
+      "path": "Minecraft/安装 Mod.json",
+      "sha256": "adacdab05309458829d9f3c85e07b9d8cebb7448144b3d4ae18423fafa030adc"
+    },
+    {
+      "path": "Minecraft/安装 Mod.xaml",
+      "sha256": "147bddfb0fe3d20c1ad9927af539bad05fcd4e56b4a9e5ab36e4c7081fddb1df"
+    },
+    {
+      "path": "Minecraft/安装世界.json",
+      "sha256": "48ddb53831a48af9e05825a94b967869c4a0e99b66c10205d409186fe725bf11"
+    },
+    {
+      "path": "Minecraft/安装世界.xaml",
+      "sha256": "5164afd7fe5466787158fb2c2b3c772308f0604972f03f1725989a93c3cf5a08"
+    },
+    {
+      "path": "Minecraft/安装光影.json",
+      "sha256": "0909007ca787bc95729fb5d5261de88e44da2dda832a80cfbcd569f5672003eb"
+    },
+    {
+      "path": "Minecraft/安装光影.xaml",
+      "sha256": "a8d4dfedc1879c56ac399d816eba864c5b554ded6f507ae38e77dbf8e39ff239"
+    },
+    {
+      "path": "Minecraft/导出整合包.json",
+      "sha256": "c0297f5cbbdb6945358a605f142b245510f2bc92384eb982bdef36bba5d70a50"
+    },
+    {
+      "path": "Minecraft/导出整合包.xaml",
+      "sha256": "15d671ff86d3a5aa03ac4f5e2f1c96a1d9031f761ca0cfd37a40afa40a055a61"
+    },
+    {
+      "path": "Minecraft/微软账号登录失败.json",
+      "sha256": "3b9cd616257899d36d3cdbea2248553070a9e699842a4b7713b94f34c9394039"
+    },
+    {
+      "path": "Minecraft/微软账号登录失败.xaml",
+      "sha256": "04f426ac458932854824884c76ffd874753a4fe6139d54c4ee332b187bd4fe04"
+    },
+    {
+      "path": "Minecraft/数据包安装.json",
+      "sha256": "0467e65e8f78236af74d9afd47293e94684bde51aef9405311da6116f1c81917"
+    },
+    {
+      "path": "Minecraft/数据包安装.xaml",
+      "sha256": "670e3d1afc11608b1cec91b483ab8d43a44d980bcc434ced0342089e09cecae7"
+    },
+    {
+      "path": "Minecraft/整合包安装.json",
+      "sha256": "45564eab24727eef452fe384abf0f13637402b1cf08499b76e4d6a784b9c260f"
+    },
+    {
+      "path": "Minecraft/整合包安装.xaml",
+      "sha256": "de01cce089a955bb01530a02ecf257393c0654b809093ec94ff54edb6c91a64b"
+    },
+    {
+      "path": "Minecraft/更新 Mod.json",
+      "sha256": "ad92e7f8ccf4c7495aa2ef6b02442ebd2568c1de4f60b4c90f9298deb7c1c532"
+    },
+    {
+      "path": "Minecraft/更新 Mod.xaml",
+      "sha256": "0652d99fd1abf45d4587379b806f98fece8e0e2590a833a940c50ace4c9e9670"
+    },
+    {
+      "path": "Minecraft/联机.json",
+      "sha256": "c38f11da6bc54fc6b23d73331e86c09f28abceea726509be68318f8627ed0096"
+    },
+    {
+      "path": "Minecraft/联机.xaml",
+      "sha256": "f61461b0b0393c77a4324afa88feb865174a0d22c65055f4e834e30b136ce671"
+    },
+    {
+      "path": "Minecraft/购买正版.json",
+      "sha256": "db125c01704bfbcf2fab70e3473b6392852ec1550cd2039c63196d4c0fecd5eb"
+    },
+    {
+      "path": "Minecraft/资源包安装.json",
+      "sha256": "4b746f9f88211ebf005ed5eeb76de4ddfebbfbbf43d405c63a67958221d41503"
+    },
+    {
+      "path": "Minecraft/资源包安装.xaml",
+      "sha256": "9d28059996395bda4306734bf75dcdddd2fcd0bd6af7e18d739d134e7fddb891"
+    },
+    {
+      "path": "个性化/XAML 格式.json",
+      "sha256": "42e8e4a87959e5ce7fbf4fef117ce60197c461712fc84bcdc8c7262c023a00e9"
+    },
+    {
+      "path": "个性化/XAML 格式.xaml",
+      "sha256": "f22b4eccdf61c168246086396a92ff2a5537ce2a5eba6749b75963210c1dd3a7"
+    },
+    {
+      "path": "个性化/替换标记.json",
+      "sha256": "6f8f5627a096457380498127a27a8dfe491f03aac78652504243f12b49eea0a3"
+    },
+    {
+      "path": "个性化/替换标记.xaml",
+      "sha256": "d28e2d3f42bb2872faa3bbde797d1e5f0a9764110a88c25eb227b7c58c9f9301"
+    },
+    {
+      "path": "个性化/自定义事件.json",
+      "sha256": "b7553de036d4cc55e77b1172b6df97260f52e38a58050f8082edc73b3bf39ceb"
+    },
+    {
+      "path": "启动器/LittleSkin 外置登录使用教程.json",
+      "sha256": "9529ed259b76929bd031e74295154afdf92b4efcd2f5b7aba9b5d0b7e2905088"
+    },
+    {
+      "path": "启动器/LittleSkin 外置登录使用教程.xaml",
+      "sha256": "b532932ab298fa7280c1a820a82a58f30a9aac425fa9b9a729488668aeac6753"
+    },
+    {
+      "path": "启动器/Microsoft Defender 添加排除项.json",
+      "sha256": "62701f9e1ee621ea3127efe140788516b195f668bd82919d06824be80633948c"
+    },
+    {
+      "path": "启动器/Microsoft Defender 添加排除项.xaml",
+      "sha256": "7f3415beff40bb91b1de4fef15992a6ee639bb951d16bb9798b193331073389c"
+    },
+    {
+      "path": "启动器/备份设置.json",
+      "sha256": "14721bc39d2c878f82d997eec1508bbb3f87e7a4aa4ee4437f7fc553b872e149"
+    },
+    {
+      "path": "启动器/备份设置.xaml",
+      "sha256": "3df1fd73db3b49f8aab91720bd675ae512665d5f9026cee80af0a031f65d8b0b"
+    },
+    {
+      "path": "启动器/密码登录正版.json",
+      "sha256": "76b283962807c1083b6a1eecd7ba48f87296abae516956af8bb4ac98514579db"
+    },
+    {
+      "path": "启动器/密码登录正版.xaml",
+      "sha256": "9322f9b706fe35d3544c9073d41f07aa39a35fe257334b0dc076f7f286c2e9d3"
+    },
+    {
+      "path": "启动器/手动选择 Java 路径.json",
+      "sha256": "e8bc971567e5c2cf42cfdacd49c3f605c315b849db01337384d7380d8d0e611b"
+    },
+    {
+      "path": "启动器/指定登录方式.json",
+      "sha256": "a55841f5d094febce626793b8f73e966aa47f18634dc3887986447d88e272ccc"
+    },
+    {
+      "path": "启动器/指定登录方式.xaml",
+      "sha256": "4e852908bffe38cd112d47294f565e9b4c4d132195aadff457870847c5e1050b"
+    },
+    {
+      "path": "启动器/角色皮肤导出.json",
+      "sha256": "68fd0a493aa8fe145f1c13c769a3bc9b0e4103efc5a2c3172c819331f73670ae"
+    },
+    {
+      "path": "启动器/角色皮肤导出.xaml",
+      "sha256": "ca5fd4d647287bbe4e5abd733fbd72dd51da7669b82623a2b419285d6fd0ee6f"
+    },
+    {
+      "path": "启动器/解锁主题 - Public.json",
+      "sha256": "f6f37a6e0a112424732020cdd259b88cc18edc8403bf07c825b2882c4e49a5da"
+    },
+    {
+      "path": "启动器/解锁主题 - Snapshot.json",
+      "sha256": "1dbe2a580dda7c180ad3b44ddf4ea160f4966f3e26a9e01e8780f5d88084a949"
+    },
+    {
+      "path": "帮助/提交帮助 - GitHub Desktop.json",
+      "sha256": "e806bba16f6c28d63c7ed81d85f26a90797eb1453be07390dbc12633a2d2d8af"
+    },
+    {
+      "path": "帮助/提交帮助 - GitHub Desktop.xaml",
+      "sha256": "32d9d36faeae714a7207a57a018a3bce99f66836b052323eea9479cff9b0db6f"
+    },
+    {
+      "path": "帮助/提交帮助 - Intellij Idea.json",
+      "sha256": "493e233a59dba944cc1ab644b6442e575e754b975d809df71f111a613dcda012"
+    },
+    {
+      "path": "帮助/提交帮助 - Intellij Idea.xaml",
+      "sha256": "40dc0f5eaeb4343a461865a18165d948e1784af1017154c3794306181016097e"
+    },
+    {
+      "path": "帮助/提交帮助 - VSCode.json",
+      "sha256": "6e6467ef02cfb2174cc2bfb8180e054dd3a3e9404bd78269ae5ce9da19833ccd"
+    },
+    {
+      "path": "帮助/提交帮助 - VSCode.xaml",
+      "sha256": "e2f75b5da8f0d94562962de2af9a5a8178f16d8a55a3b7a9ed4cb96e05a7f6ab"
+    },
+    {
+      "path": "帮助/提交帮助 - 编写规范.json",
+      "sha256": "e8478b0d6d0b931cb4bc1589c038d0e318c82a719f8e10eefa667860132f78cc"
+    },
+    {
+      "path": "帮助/提交帮助 - 编写规范.xaml",
+      "sha256": "2fadfc8facffb1a19225d1e6b2645d95b1f6f4e8093b42723a6bd7357ab1b5ed"
+    },
+    {
+      "path": "帮助/提交帮助.json",
+      "sha256": "ada429390f9c4efd7a50348d09ece9b8f738219a9a7f8f85424138d3644eabf8"
+    },
+    {
+      "path": "帮助/提交帮助.xaml",
+      "sha256": "1b11f16942567c8702d239a32b7d43361434b0a109f3e01c3cc6eb6c6f614a7a"
+    },
+    {
+      "path": "帮助/自定义帮助 - JSON 格式.json",
+      "sha256": "8ebe019d585091cf44e38b56581745610064502cafce628914501b1454123c96"
+    },
+    {
+      "path": "帮助/自定义帮助 - JSON 格式.xaml",
+      "sha256": "456013610543034e6afc875c23409dab298556c552f07372bf78f52469faef0b"
+    },
+    {
+      "path": "帮助/自定义帮助.json",
+      "sha256": "da32b16713f7a4fdf3c313a18783a8326642e3ede5dfcb8f4663b8e5ec57372b"
+    },
+    {
+      "path": "帮助/自定义帮助.xaml",
+      "sha256": "1050bedfbbeaa2effe8febc5415137161d337f6f0cf4cab39eaa4cd6a93fdbcf"
+    },
+    {
+      "path": "指南/整合包制作 - Public.json",
+      "sha256": "0445aa79078eededd2b72c05226f87d2f1d3145407f1b4963b5f4588fc6d1503"
+    },
+    {
+      "path": "指南/整合包制作 - Public.xaml",
+      "sha256": "eb8337ba50fdb7526dd57b9999fa527bd5cd377671fd0e4929c0ea893aa117f6"
+    },
+    {
+      "path": "指南/整合包制作 - Snapshot.json",
+      "sha256": "e4da307274b9ae2cf9badbc3da1ad3661bcc4262ae9bb0d441b7ee1593865ba6"
+    },
+    {
+      "path": "指南/整合包制作 - Snapshot.xaml",
+      "sha256": "f214cdb12219009e13de34b2b575e6ff59fa797cb59935316ee5f38b51b6c322"
+    },
+    {
+      "path": "指南/资源安装指南.json",
+      "sha256": "7558ad025815e5995d403bb53abca5cda66dd6c09c71fa99b598300ab075d4c1"
+    },
+    {
+      "path": "指南/资源安装指南.xaml",
+      "sha256": "2accd326b76b796227ddbf8cdd9161caac566b79bbba50b2fa6178994d950f71"
+    },
+    {
+      "path": "指南/赞助与内测指南.json",
+      "sha256": "19a03304e87e6f4ac5174a91d18b2e6fb7083b49053145f1d9c6cfb01c5bf65b"
+    },
+    {
+      "path": "百科/MCMOD.json",
+      "sha256": "d0a6ea6055e0af44044c52c802a681c628fe5752ce026b7ee6d85106c6fa3194"
+    },
+    {
+      "path": "百科/Minecraft Wiki.json",
+      "sha256": "fb042e51ffadbd962c40ce5e1e14f88de104486a72c7a625f76fa3b2a030d8a4"
+    },
+    {
+      "path": "百科/Mineplugin Wiki.json",
+      "sha256": "2e37f98b0be2f58aed90b0b8596a86004806cd68695214605563ed06de898c7f"
+    }
+  ],
+  "heads": [
+    {
+      "path": "Images/Heads/00ll00.png",
+      "sha256": "523a724a9b0fc17c1cf3daebd6813fbd9210c2f3c37d0e9d3da82175e62af72b"
+    },
+    {
+      "path": "Images/Heads/ChongQing.png",
+      "sha256": "37dea00570a251e8d39f8892cadb526145f32b9ee1137e81cfe6f451f6b3fbb1"
+    },
+    {
+      "path": "Images/Heads/EasyTier.png",
+      "sha256": "1aa3e5764bc81a0e17372b08ce0e0a6156a235311f25e35bb6dc798097d33d72"
+    },
+    {
+      "path": "Images/Heads/Hao_Tian.jpg",
+      "sha256": "4ad2eb8a58e512ded185aea311292ba827531eacd27ee48a5fc243eeb8a0b891"
+    },
+    {
+      "path": "Images/Heads/HerobrineXia.png",
+      "sha256": "89c2ddec26b5df48b790d42309f7b0f55bfd89dd831bb1aa2668eb49da472740"
+    },
+    {
+      "path": "Images/Heads/LTCat.jpg",
+      "sha256": "9261f19a47590a3de272f886a3ad6f71233f99ce9eb77618dcd35574dac8c8fd"
+    },
+    {
+      "path": "Images/Heads/Logo.png",
+      "sha256": "65ce362bf205b034ccf20d3ad22abf7271abb55abb09fda6cc3b21d5c8697cd5"
+    },
+    {
+      "path": "Images/Heads/MCBBS.png",
+      "sha256": "f7ba4380712ad2e6c8f8d386a304ca2ad493ec3fd228bd1493369808d83fedf8"
+    },
+    {
+      "path": "Images/Heads/PCL2.png",
+      "sha256": "424acd68f72ee5bcda2e634ce07d7ab20c3ed326e4df3cb81af238d180892a60"
+    },
+    {
+      "path": "Images/Heads/Patrick.png",
+      "sha256": "a5c026d5dcdd4012a56a98f310cfbcb174746360aaf942d73fb7c8ec330937c9"
+    },
+    {
+      "path": "Images/Heads/bangbang93.png",
+      "sha256": "b7163deeb19ebc2cc1bff075d9cbe42e934139a98b7184043f63543e88f6a7ff"
+    },
+    {
+      "path": "Images/Heads/wiki.png",
+      "sha256": "9480f162a434136f8698981c33f625b33d9bf884783516b67ca6f5900a42401a"
+    },
+    {
+      "path": "Images/Heads/z0z0r4.png",
+      "sha256": "b94d63e0ec144c91b63534794907cc3e910db5d1ba3495dc050681e5db9da914"
+    }
+  ],
+  "about_sha256": "d8f856dd055d222c3a49fca1e1a10ed724bac1abd74de0d13d91cafbabdb7855",
+  "sidebar_sha256": "1e7132015df02f8a638ca637d9a9b46f9a1d6f46c4a5d2c9e80cc4893c798bd6",
+  "catalog_sha256": "fc5ebeaafd5f1b71f388b91fd30e3ae3fdc1486947294df73f722204393814c0"
+}

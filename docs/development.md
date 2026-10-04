@@ -1,33 +1,43 @@
-# 本地开发说明
+# 源码开发与本地构建
 
 [返回项目首页](../README.md) · [验证记录](validation.md)
 
-本文对应 2026-10-05 的完整本地开发工作区。**当前公开仓库只含文档，下列源码、脚本和产物路径尚未随仓库发布。** 因此不能直接在此文档仓库执行 Cargo 或打包命令。
+本文对应 **2026-10-05 发布的构建源码**。仓库提供 `crates/`、Cargo 工作区与锁文件、`scripts/`、必要桌面资产及 CI；可克隆后按下面步骤在本机构建。应用发行包、游戏数据、原始验证记录和本机派生字体不随源码提供。
 
 ## 工作区结构
 
-| 本地相对路径 | 职责 |
+| 仓库或本地生成路径 | 职责 |
 | --- | --- |
 | `crates/pcl-core/` | 配置、版本与启动计划、下载与校验、Java、账号、加载器、资源与整合包处理 |
 | `crates/pcl-desktop/` | egui 原生窗口、页面、消息框、提示、任务进度与交互 |
 | `scripts/` | 本机字体处理、macOS 与 Windows 打包入口 |
-| `docs/` | 本地完整迁移记录与参考资料；本仓库提供面向公开读者的整理版本 |
-| `test-output/` | 本地测试日志、证据、临时实例及验证产物 |
-| `dist/` | 本地生成的应用包 |
+| `docs/` | 公开迁移矩阵、验证摘要、登录与来源说明 |
+| `crates/pcl-desktop/assets/` | 构建所需资产及来源记录 |
+| `.github/workflows/build.yml` | 格式、Clippy、测试及 release 构建验证；不打包或上传发行产物 |
+| `test-output/` | 本地生成目录，含字体和验证产物；不提交 |
+| `dist/` | 手动打包生成的应用目录；不随源码提交或由 CI 上传 |
 
-工作区使用 Rust 2021 edition，声明最低 Rust 版本为 1.88。最新验证使用 Rust 1.99；这不代表已经在最低版本上完成测试。依赖由 `Cargo.lock` 锁定。
+工作区使用 Rust 2021 edition，声明最低 Rust 版本为 1.88。上一批开发验证使用 Rust 1.99；这不代表已经在最低版本上完成测试。依赖由 `Cargo.lock` 锁定。
 
 ## 构建与检查
 
-以下命令均在**完整源码工作区根目录**执行。首次获取依赖需要网络；依赖缓存齐全时可加 `--offline`。
+先克隆仓库，所有命令在仓库根目录执行。需要 Rust 工具链及平台编译/链接环境：macOS 需要 Xcode Command Line Tools；Windows 需要与所选 Rust target 匹配的工具链（使用 MSVC target 时包含 C++ 构建工具和 Windows SDK）。首次获取依赖需要网络；依赖缓存齐全时可加 `--offline`。
+
+```sh
+git clone https://github.com/mohui666/PCL-Rust.git
+cd PCL-Rust
+```
+
+macOS 首次启动前先完成下方的本机字体生成。随后可运行和检查：
 
 ```sh
 cargo run --locked -p pcl-desktop
+cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-自动化测试默认不执行显式忽略的联网安装测试。修改功能后运行对应测试与必要构建，真实账号、远端资源安装及游戏运行应单独记录，不能用单元测试替代。
+自动化测试默认不执行显式忽略的联网安装测试。CI 在 macOS/Windows runner 执行格式、严格 Clippy、测试及 `cargo build --workspace --release --locked`，不调用本地打包脚本，也不上传 `dist/`。CI 配置不代表某次运行已经成功；本次检出的检查结果见[验证记录](validation.md)。真实账号、远端安装及游戏运行应单独记录。
 
 ### macOS
 
@@ -47,13 +57,13 @@ python3 scripts/build-local-pingfang-sfnt.py --style all
 
 ### Windows
 
-在具备完整源码及构建环境的 Windows PowerShell 中：
+在仓库根目录的 Windows PowerShell 中：
 
 ```powershell
 ./scripts/package-windows.ps1
 ```
 
-当前产物验证来自 macOS 上对 `x86_64-pc-windows-gnu` 的交叉构建和 PE 静态检查。Windows 原生打包、启动、系统凭据管理与游戏运行仍需实机验证，不能据交叉构建成功推定通过。
+上一批开发产物验证来自 macOS 上对 `x86_64-pc-windows-gnu` 的交叉构建和 PE 静态检查。Windows 原生打包、启动、系统凭据管理与游戏运行仍需实机验证，不能据交叉构建成功推定通过。
 
 ## 配置与数据
 
@@ -72,4 +82,4 @@ python3 scripts/build-local-pingfang-sfnt.py --style all
 
 ## 发布与验证
 
-文档、代码构建、GUI 交互、真实服务、游戏运行和 Windows/macOS 兼容分别记录。最新版产物指纹与尚未完成的检查见[验证记录](validation.md)。源码和应用公开发布需在确认分发条件后另行进行。
+文档、源码检查、GUI 交互、真实服务、游戏运行及平台兼容分别记录。上一批本地开发产物指纹和本次公开源码检出的检查不能混为一项；详情见[验证记录](validation.md)。本次发布源码和构建脚本，不提供应用发行包。保留上游自定义许可与资产来源声明；本地构建成功不代表所有第三方材料可以无限制再分发。

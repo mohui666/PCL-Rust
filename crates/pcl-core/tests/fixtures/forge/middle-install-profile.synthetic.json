@@ -1,0 +1,9 @@
+{
+  "spec": 0,
+  "profile": "forge",
+  "version": "1.12.2-forge-14.23.5.2860",
+  "minecraft": "1.12.2",
+  "json": "/version.json",
+  "path": "net.minecraftforge:forge:1.12.2-14.23.5.2860",
+  "processors": [{ "sides": ["server"], "jar": "fixture:never-executed:1" }]
+}

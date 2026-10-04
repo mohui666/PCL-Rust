@@ -1,0 +1,9 @@
+$ErrorActionPreference = 'Stop'
+Set-Location (Join-Path $PSScriptRoot '..')
+cargo build --release --locked -p pcl-desktop
+if ($LASTEXITCODE -ne 0) { throw 'Rust build failed' }
+$OutputFolder = Join-Path (Get-Location) 'dist\PCL-Rust-Windows'
+New-Item -ItemType Directory -Force -Path $OutputFolder | Out-Null
+Copy-Item -LiteralPath 'target\release\pcl-desktop.exe' -Destination (Join-Path $OutputFolder 'PCL-Rust.exe')
+Copy-Item -LiteralPath 'UPSTREAM-LICENCE','README.md' -Destination $OutputFolder
+Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $OutputFolder 'PCL-Rust.exe')

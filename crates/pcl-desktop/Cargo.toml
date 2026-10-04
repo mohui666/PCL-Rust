@@ -1,0 +1,23 @@
+[package]
+name = "pcl-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pcl-core = { path = "../pcl-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland", "accesskit"] }
+rfd = "0.15.4"
+webbrowser = "1.2"
+clap = { version = "4", features = ["derive"] }
+
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+resvg = { version = "0.45", default-features = false }
+ttf-parser = "0.25"
+
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

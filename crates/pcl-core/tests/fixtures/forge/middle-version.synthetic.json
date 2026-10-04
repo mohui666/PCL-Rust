@@ -1,0 +1,13 @@
+{
+  "id": "1.12.2-forge-14.23.5.2860",
+  "inheritsFrom": "1.12.2",
+  "type": "release",
+  "mainClass": "net.minecraft.launchwrapper.Launch",
+  "minecraftArguments": "--username ${auth_player_name} --version ${version_name} --gameDir ${game_directory} --assetsDir ${assets_root} --assetIndex ${assets_index_name} --uuid ${auth_uuid} --accessToken ${auth_access_token} --userProperties ${user_properties} --userType ${user_type} --tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker",
+  "libraries": [
+    { "name": "net.minecraftforge:forge:1.12.2-14.23.5.2860" },
+    { "name": "org.ow2.asm:asm-all:5.2" },
+    { "name": "net.minecraft:launchwrapper:1.12" },
+    { "name": "fixture:server-only:1", "clientreq": false }
+  ]
+}

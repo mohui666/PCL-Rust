@@ -2,11 +2,11 @@
 
 更新日期：2026-10-05。本文是本地开发记录的公开整理版，用来说明**已经实现什么、验证到哪一步，以及仍缺什么**。项目仍在开发，不是官方 PCL，也尚未达到完整功能或视觉等价。
 
-本仓库公开项目说明与整理后的文档；这里提到的 Rust 模块属于本地开发实现，不表示源码、安装包或对应原始日志已经公开。构建、实机和历史证据的归属统一见 [验证记录](validation.md)。
+本仓库自 **2026-10-05** 的源码发布起提供 Rust 实现、Cargo 配置、构建脚本、必要资产与 CI；表中的模块可在 `crates/pcl-core/src/` 和 `crates/pcl-desktop/src/` 对照。尚未上传应用发行包，原始日志和本机派生字体不随源码发布。构建、实机和历史证据的归属统一见 [验证记录](validation.md)。
 
 ## 当前结论与范围
 
-- 最新登录反馈批记录为 **304 项测试通过、0 失败、1 忽略**（核心 211、桌面 93），严格 Clippy、macOS 签名构建及 Windows 交叉构建通过。测试数量不是功能完成率。
+- 上一批本地登录反馈开发记录为 **304 项测试通过、0 失败、1 忽略**（核心 211、桌面 93），严格 Clippy、macOS 签名构建及 Windows 交叉构建通过。测试数量不是功能完成率，也不代替本次公开源码检出或远端 CI 的检查结果。
 - macOS 已有部分真实下载、进程管理、主题持久化及导出操作证据；最新登录消息框使用生产渲染器和模拟数据检查。**模拟状态、局部 GUI 操作、游戏引擎日志是不同层次的证据**，不能合并成全流程通过。
 - 自有公共客户端已获得真实设备码；后续 Minecraft `login_with_xbox` 返回 HTTP 403。此前 Microsoft/Xbox/XSTS 完成是依据顺序代码作出的推断；所有权、玩家资料、真实凭据保存后恢复仍未验收。AppID 审核已提交并收到回执，尚未确认通过，403 的唯一原因未确定。
 - Windows 目前只有交叉构建与静态检查，**没有 Windows/Wine 运行验收**。没有全部页面同状态、同尺寸、同色彩空间的成对像素验收，也没有游戏世界创建、保存和重新进入验收。
@@ -47,7 +47,7 @@
 
 ## 页面逐项对照
 
-下列 43 个上游 XAML 文件各列一次。文件路径以原版 `Plain Craft Launcher 2/Pages/` 为根；Rust 对应使用模块名说明，不作为当前公开源码链接。
+下列 43 个上游 XAML 文件各列一次。文件路径以原版 `Plain Craft Launcher 2/Pages/` 为根；Rust 对应使用仓库中的模块名说明。
 
 ### 启动与账号：10 个文件
 
@@ -85,7 +85,7 @@
 | 上游文件（`Pages/` 下） | 原版行为 | Rust 对应与当前状态 | 未覆盖/验收边界 |
 | --- | --- | --- | --- |
 | `PageDownload/PageDownloadLeft.xaml` | 原版、Mod、整合包、数据包、资源包、光影包分类与刷新 | 原版/Mod/在线整合包/数据包/资源包/光影分类与本地 mrpack；局部实现 | 新增分类已接官方 API，但四类安装仍缺 GUI 验收；全状态像素未验 |
-| `PageDownload/PageDownloadInstall.xaml` | 原版版本选择及 Forge/NeoForge/Fabric/API/OptiFine/OptiFabric/LiteLoader 组合安装 | 原版及独立实例名、Fabric/Quilt、现代Forge/NeoForge处理器；另有受限旧install/versionInfo及无client processor的json/maven分支 | 历史两分支仅7+6个新合成合成测试，无真实安装/游戏；universal/client、额外旧native/map_to_resources等仍缺。LiteLoader/OptiFine/API/OptiFabric组合与推荐、组件互斥/失败恢复及全部状态需验 |
+| `PageDownload/PageDownloadInstall.xaml` | 原版版本选择及 Forge/NeoForge/Fabric/API/OptiFine/OptiFabric/LiteLoader 组合安装 | 原版及独立实例名、Fabric/Quilt、现代Forge/NeoForge处理器；另有受限旧install/versionInfo及无client processor的json/maven分支 | 历史两分支仅7+6个合成测试，无真实安装/游戏；universal/client、额外旧native/map_to_resources等仍缺。LiteLoader/OptiFine/API/OptiFabric组合与推荐、组件互斥/失败恢复及全部状态需验 |
 | `PageDownload/Resource/PageResource.xaml` | 共用搜索、源/版本/加载器/类型过滤、翻页、安装已有包与失败反馈 | Modrinth五类搜索/过滤/分页、请求代次隔离、详情返回；镐子加载/错误/原请求重试已接，历史 macOS实测列表及加载卡片到结果；局部实现 | 真实网络错误重试/全部动画未实测；CurseForge双源、中文/MC百科、完整排序和全部GUI状态仍缺 |
 | `PageDownload/Resource/PageDownloadMod.xaml` | Mod 类型层级与搜索筛选 | Modrinth Mod 筛选、安全下载、递归必需依赖计划/精确版本冲突/复用/事务回滚；局部实现 | 核心已实装 Mod Menu+2 依赖并零写入复用；未测该组合游戏/GUI，更新、多源和原版全部标签仍缺 |
 | `PageDownload/Resource/PageDownloadPack.xaml` | 整合包类型、搜索、详情、安装 | 在线mrpack查询/下载/依赖安装，本地导入与 mrpack 导出已接；局部实现 | Quilt17Mod隔离安装/计划通过但未运行；Forge/NeoForge导入依赖及CF/HMCL/MMC/MCBBS/嵌套包/带启动器导出仍缺，完整GUI和失败恢复待验 |
@@ -140,7 +140,7 @@
 | `Base/MyBitmap.vb` | `ui_style` 纹理/原版资产，`auth/account_ui` 在线皮肤受限下载与分层裁切；局部实现 | 完整图像缓存、缩放模式、主题处理和真实账号头像未验 |
 | `Base/PclLogger.vb` | 内存日志、启动命令与游戏输出脱敏；局部实现 | 持久文件、级别、导出、崩溃上下文和完整诊断工作流 |
 | `Minecraft/ModCrash.vb` | 未迁移 | 崩溃分析、原因规则、日志收集/导出与用户建议 |
-| `Minecraft/ModDownload.vb` | 原版/Fabric/Quilt/现代Forge与NeoForge/官方Java；受限旧Forge install/versionInfo和无client processor的json/maven分支 | 旧格式其余路线与实际历史安装、组合推荐、其他加载器、镜像和完整补全缺；不得由合成合成测试声称旧Forge游戏通过 |
+| `Minecraft/ModDownload.vb` | 原版/Fabric/Quilt/现代Forge与NeoForge/官方Java；受限旧Forge install/versionInfo和无client processor的json/maven分支 | 旧格式其余路线与实际历史安装、组合推荐、其他加载器、镜像和完整补全缺；不得由合成测试声称旧Forge游戏通过 |
 | `Minecraft/ModJava.vb` | java/java_selection/java_download：完整版本与范围、四种模式、原版约束、有界发现、优先/排除、官方平台下载；局部实现 | 21.0.7/21.0.12.1实际只读探测/选择通过；全部历史版本/发行版/原版缓存与Windows运行仍未验，手选/范围不是无条件exact-major |
 | `Minecraft/ModLaunch.vb` | `auth/accounts/launch/process` 有效会话、全局/实例配置优先级、GC/窗口/进服；局部实现 | 预命令、窗口标题/最大化/跟随、第三方认证、启动器可见性/优先级、补丁/特殊版本与完整启动事件缺 |
 | `Minecraft/ModMinecraft.vb` | 多目录/识别、收藏隐藏分类、隔离、重命名/回收站；局部实现 | 每目录完整管理/状态、全部版本识别与GUI仍缺；较早版本别名往返仅证明记录语义，不能泛化任意用户数据。旧PCL配置迁移不在当前用户要求范围 |
@@ -222,7 +222,7 @@ Rust 已按部分原版尺寸、矢量和配色绘制导航、卡片、按钮、
 | EasyTier 联机 | 需要实际进程/节点配置、两端连通、退出清理与失败恢复；公共组件存在不等于原版服务配置已取得 |
 | 主题/赞助/识别码 | 公开源码缺私有预设参数和解锁实现；本地主题不调用官方解锁，也不伪造赞助等级、识别码或官方身份 |
 | 自定义主页/帮助 | 还需动态内容、替换标记、联网更新与事件兼容，并限制不可信内容扩大执行或写入权限 |
-| 源码、安装包与资产分发 | 上游采用自定义许可，**不是 MIT**。原作者署名、第三方资产、字体和二进制分发条件仍须核对；公开项目文档不代表这些审查已完成 |
+| 源码、安装包与资产分发 | 上游采用自定义许可，**不是 MIT**。原作者署名、第三方资产、字体和二进制分发条件仍须核对；本次发布源码、脚本和必要资产，不含应用发行包或本机派生字体；源码公开不代表全部第三方分发条件已核验或获得无限制授权 |
 
 这些障碍不会把未迁移功能变成已完成；能独立实现的部分仍在目标内。本文不公开账号资料、游戏文件、原始日志、本机路径或系统派生字体。
 

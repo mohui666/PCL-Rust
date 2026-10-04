@@ -1,0 +1,23 @@
+name: Rust desktop validation
+on:
+  workflow_dispatch:
+  push:
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'scripts/**', '.github/workflows/build.yml']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --release --locked

@@ -1,0 +1,446 @@
+{
+  "repository": "https://github.com/Meloong-Git/PCL",
+  "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+  "files": [
+    {
+      "path": "Application.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Application.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/8649890f82d4c8023ccb0896c1ce9d2d9de218dc",
+      "size": 38370,
+      "sha256": "fa4041d6c899dd1ff4d4ad6d8e605f99d3276608441c9937ebe1e772783212dc",
+      "git_blob_sha1": "8649890f82d4c8023ccb0896c1ce9d2d9de218dc"
+    },
+    {
+      "path": "FormMain.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/FormMain.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/2a840f596e12c360a62fb1eb5fc7807506bde4ea",
+      "size": 21354,
+      "sha256": "a0a39fc73017a028ea1a520361142fa0149c832364d5f8f395bd12f147d425b1",
+      "git_blob_sha1": "2a840f596e12c360a62fb1eb5fc7807506bde4ea"
+    },
+    {
+      "path": "Controls/MyButton.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Controls/MyButton.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/0bc7f079ee271e9df520e7d82cc77e3a359bc13f",
+      "size": 1156,
+      "sha256": "c4c042b263be82b155841eb3072b13b60bc4f235b0970a6dedbfeeb7b511cbe4",
+      "git_blob_sha1": "0bc7f079ee271e9df520e7d82cc77e3a359bc13f"
+    },
+    {
+      "path": "Controls/MyButton.xaml.vb",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Controls/MyButton.xaml.vb",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/7d31147493ffc2793ee54b3b70026594c7a91858",
+      "size": 8312,
+      "sha256": "602207be24cbab6bbefb1f8b56ae3a546b45ef1cb9453c1e8549cde89a4499f4",
+      "git_blob_sha1": "7d31147493ffc2793ee54b3b70026594c7a91858"
+    },
+    {
+      "path": "Controls/MyRadioButton.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Controls/MyRadioButton.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/81e0c8d158d458056d4ee4b4c74015bd3c7574cf",
+      "size": 835,
+      "sha256": "811cd99c34ae10ed2ff3ed92b7b0ce1ae2b7c676c82b562bda8859ac722764ce",
+      "git_blob_sha1": "81e0c8d158d458056d4ee4b4c74015bd3c7574cf"
+    },
+    {
+      "path": "Controls/MyRadioButton.xaml.vb",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Controls/MyRadioButton.xaml.vb",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/5af9757955e10b36c1a2fe6610cec20199f3bd7e",
+      "size": 12272,
+      "sha256": "93f444fd729ef4bb0e6b1ef4c26d7a2a291dc4582eaaa6f2cf42f17f6ed33b1d",
+      "git_blob_sha1": "5af9757955e10b36c1a2fe6610cec20199f3bd7e"
+    },
+    {
+      "path": "Pages/PageLaunch/MySkin.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageLaunch/MySkin.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/ad19dbbe2eeb134e676ddc62a5cb814adc501f0f",
+      "size": 3700,
+      "sha256": "12e6cf916827f15a380c083eaa06f4e71066045f21a17b369ff88ed8d1545f54",
+      "git_blob_sha1": "ad19dbbe2eeb134e676ddc62a5cb814adc501f0f"
+    },
+    {
+      "path": "Pages/PageLaunch/MySkin.xaml.vb",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageLaunch/MySkin.xaml.vb",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/5bdc2fc5aa000d4ab7c571d34b08326eba5937cb",
+      "size": 16422,
+      "sha256": "4b7e5671aeeeb5b696f743ce97bdbf7539774c08d25708802cd8383492c10af6",
+      "git_blob_sha1": "5bdc2fc5aa000d4ab7c571d34b08326eba5937cb"
+    },
+    {
+      "path": "Pages/PageLaunch/PageLoginLegacy.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageLaunch/PageLoginLegacy.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/8de5102973d20864d9c133af7bd94b934dfce60b",
+      "size": 946,
+      "sha256": "920903f14b1a5289ce9eb66f1d158d993748cfc04f984ae32536341a1f5e4280",
+      "git_blob_sha1": "8de5102973d20864d9c133af7bd94b934dfce60b"
+    },
+    {
+      "path": "Pages/PageLaunch/PageLoginLegacy.xaml.vb",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageLaunch/PageLoginLegacy.xaml.vb",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/64b467b78b61f0b037376c4227e157bcbff421bb",
+      "size": 3954,
+      "sha256": "ad135a31ee6eb68a38dfa3aaab411a9d71281f763cc27ffda4e10f378eb4e1a2",
+      "git_blob_sha1": "64b467b78b61f0b037376c4227e157bcbff421bb"
+    },
+    {
+      "path": "Pages/PageLaunch/PageLaunchLeft.xaml",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageLaunch/PageLaunchLeft.xaml",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/18676165a9f4477f9db9ce053593aa24e6a8846d",
+      "size": 14548,
+      "sha256": "a827bdee32f826afc8928642edd3fbca13b31801a20317fb7da80749e6cc82a2",
+      "git_blob_sha1": "18676165a9f4477f9db9ce053593aa24e6a8846d"
+    },
+    {
+      "path": "Resources/Font.ttf",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Resources/Font.ttf",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/8ee62cb771aa2d44a247d9c0e610eb7b70248cdc",
+      "size": 20188,
+      "sha256": "d17f4e9771f22de52eee61931292b767071ef494932884ec36d644a1a5156f9b",
+      "git_blob_sha1": "8ee62cb771aa2d44a247d9c0e610eb7b70248cdc"
+    },
+    {
+      "path": "Images/Skins/Steve.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Skins/Steve.png",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/c5426101d179bc9b912bf7058a4417727991560c",
+      "size": 958,
+      "sha256": "026b457125b520ab384990254bbbf9cb3415f06c5335ee9de7074c7c5dc96f6b",
+      "git_blob_sha1": "c5426101d179bc9b912bf7058a4417727991560c"
+    },
+    {
+      "path": "Images/Heads/Logo.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Heads/Logo.png",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/51badd7c457f846bbb9c0b487621a65271ada23b",
+      "size": 2758,
+      "sha256": "65ce362bf205b034ccf20d3ad22abf7271abb55abb09fda6cc3b21d5c8697cd5",
+      "git_blob_sha1": "51badd7c457f846bbb9c0b487621a65271ada23b"
+    },
+    {
+      "path": "Images/Heads/PCL2.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Heads/PCL2.png",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/87e1afb4db0ca7285b58da0faba1bbf9c5f0f5ef",
+      "size": 2723,
+      "sha256": "424acd68f72ee5bcda2e634ce07d7ab20c3ed326e4df3cb81af238d180892a60",
+      "git_blob_sha1": "87e1afb4db0ca7285b58da0faba1bbf9c5f0f5ef"
+    },
+    {
+      "path": "Images/icon.ico",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/icon.ico",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/d66526897b2cdc37dda0abdaa11c6748828f47ab",
+      "size": 199464,
+      "sha256": "e40a7c7f42e680c3d551747afd87e7d1f3894fd9c4e9d0fb6f15b3917d698fed",
+      "git_blob_sha1": "d66526897b2cdc37dda0abdaa11c6748828f47ab"
+    },
+    {
+      "path": "Modules/ModMain.vb",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Modules/ModMain.vb",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/ff4b31aad32d98879d8c0fe45e2089fb2794d20b",
+      "size": 53413,
+      "sha256": "c7c264d29ff3f451d4f67dd2c7b4bd555ce5a42b44b54cb1fbb15648c5a8e180",
+      "git_blob_sha1": "ff4b31aad32d98879d8c0fe45e2089fb2794d20b"
+    },
+    {
+      "path": "Images/Blocks/Anvil.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/Anvil.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/Anvil.png"
+      },
+      "size": 880,
+      "sha256": "a06354cdd9dd58233a9e8ba24666572ffdf8df0bf84a7256152616dd925ad975",
+      "git_blob_sha1": "4a0df3e7bdd1c49664856f1950b820a12d48238e"
+    },
+    {
+      "path": "Images/Blocks/NeoForge.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/NeoForge.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/NeoForge.png"
+      },
+      "size": 1412,
+      "sha256": "62517cda8453e91bc1f0aba1d65e0753b63cd5e8c7e533553c7508bb75d76a6e",
+      "git_blob_sha1": "7d46d392e44d7b7007041bb213ddc4540925b33f"
+    },
+    {
+      "path": "Images/Blocks/Fabric.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/Fabric.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/Fabric.png"
+      },
+      "size": 275,
+      "sha256": "87ef88be536f49b2a7cc61e04cc2e1ae034498d3d450291950e21e8e552e39e9",
+      "git_blob_sha1": "064d3e6cf1c6e9016989c2ba8dff8e71ff50ec39"
+    },
+    {
+      "path": "Images/Blocks/Grass.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/Grass.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/Grass.png"
+      },
+      "size": 1467,
+      "sha256": "f2a69811c4d596349b15643e7ae75870cfbc82cf5dc6d542c62de1f9792825ab",
+      "git_blob_sha1": "dce7c1482b198c4af7499792b13e3e6f6e4fae2b"
+    },
+    {
+      "path": "Images/Blocks/CommandBlock.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/CommandBlock.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/CommandBlock.png"
+      },
+      "size": 2785,
+      "sha256": "3065e07b0777806c3f9b9460e9eb2b0539834122665fa6018d80cfc136db8e30",
+      "git_blob_sha1": "ace887c1e22bbf69de0a01fd8a184828cbe72947"
+    },
+    {
+      "path": "Images/Blocks/CobbleStone.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/CobbleStone.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/CobbleStone.png"
+      },
+      "size": 991,
+      "sha256": "718c6cca154325d7d53f45770a298f8c555114db40baffcb02ba3f1bdd080398",
+      "git_blob_sha1": "f1cac1809bea0e4ab1e9f6291e87b6d7329dbc09"
+    },
+    {
+      "path": "Images/Blocks/GoldBlock.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/GoldBlock.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Blocks/GoldBlock.png"
+      },
+      "size": 1079,
+      "sha256": "4fc6dadce45d6a8564235c7651ae41ac5fd2d3edf24af880935358687356c5e8",
+      "git_blob_sha1": "417a3c0688010cd8e5964060077470cd0c650e97"
+    },
+    {
+      "path": "Images/Blocks/Egg.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/Egg.png",
+      "size": 231,
+      "sha256": "ff7a4a47c643055087c903a20e293c472cdce9e4fa45cf6293c7412a8dff3554",
+      "git_blob_sha1": "886d6b5db9bafa0ecd4decda323e42b6f7b61d95"
+    },
+    {
+      "path": "Images/Blocks/GrassPath.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/GrassPath.png",
+      "size": 1370,
+      "sha256": "aebf8ce46cb065e01cbc881ac719e7f5b7df2fe6b7cbce6bbbd7e6fb27957fed",
+      "git_blob_sha1": "9ced72ed00ab0d7a2c79ea52b0e4a50ec8d0cd0a"
+    },
+    {
+      "path": "Images/Blocks/RedstoneBlock.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/RedstoneBlock.png",
+      "size": 791,
+      "sha256": "fa7c97a193837818e4eef7c94a57f84e894ec8f077af6b6d105db938377cba46",
+      "git_blob_sha1": "088e56b2b55db1427583140e2c75a1a19ad4743e"
+    },
+    {
+      "path": "Images/Blocks/RedstoneLampOn.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/RedstoneLampOn.png",
+      "size": 815,
+      "sha256": "5e06b19740eb95681815c125b611e5d750697b94d179a83d9cad0d93aca2c2da",
+      "git_blob_sha1": "5f9e052b828b9ffa39a58ad2ecf5c5c02cb0b2ee"
+    },
+    {
+      "path": "Images/Blocks/RedstoneLampOff.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Blocks/RedstoneLampOff.png",
+      "size": 2025,
+      "sha256": "3c42ddd69afcc3476769b6a026918577370015c29922cf7e307774a4c07884d3",
+      "git_blob_sha1": "82ac5574a716549418fb897982062e5fcd272a1b"
+    },
+    {
+      "path": "Images/ReleaseTypes/Release.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/ReleaseTypes/Release.png",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/00cae1b39d5e124be8dbd81b2815b7fcb2ce1344",
+      "size": 951,
+      "sha256": "f915b878e00bd8dd4ed7019ecdcb7ddb8bcbf0c8cf27054de91d41079e4ed1ea",
+      "git_blob_sha1": "00cae1b39d5e124be8dbd81b2815b7fcb2ce1344"
+    },
+    {
+      "path": "Images/ReleaseTypes/Beta.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/ReleaseTypes/Beta.png",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/d483f2fb0d6ccfc09d998554af88b152476efbcd",
+      "size": 2200,
+      "sha256": "29481182a8fc6f3700c081cf0443b74990596198fd2653c40b41207c96e59d0f",
+      "git_blob_sha1": "d483f2fb0d6ccfc09d998554af88b152476efbcd"
+    },
+    {
+      "path": "Images/ReleaseTypes/Alpha.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/ReleaseTypes/Alpha.png",
+      "download_api": "https://api.github.com/repos/Meloong-Git/PCL/git/blobs/58b23d461892c4e963ae278806cbfeb8c0bffb92",
+      "size": 963,
+      "sha256": "afce6a2cd3d931cc162b7f843d29a8d07bbcd5446074e86ff89626d7ce3b5394",
+      "git_blob_sha1": "58b23d461892c4e963ae278806cbfeb8c0bffb92"
+    }
+  ],
+  "derived_files": [
+    {
+      "path": "../icons/appearance.svg",
+      "size": 1026,
+      "sha256": "5773e0c17e9a69963ce365dcf1fffc98640e64b488a6ac178ea9d88f1c5c6022",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageSetup/PageSetupLeft.xaml",
+      "source_path": "Plain Craft Launcher 2/Pages/PageSetup/PageSetupLeft.xaml",
+      "source_git_blob_sha1": "bc34a2b8e31fd8ab3c5960a0b4a084edfe70545c",
+      "source_sha256": "a0541a4d59dd61759aeacaa6756d87a1808954b6a599867e920daea771c472f7",
+      "source_element": "ItemUI",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "65fcdba6ba676252cb1ffdc2bbfc6c4f526693f9472eb7f7ade01b59702aacbf",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/overview.svg",
+      "size": 473,
+      "sha256": "1dfad1e94896046d21ad0c4e7eaf3c13d5cdf8a1be562fb042e87eda2c0ed530",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageInstance/PageInstanceLeft.xaml",
+      "source_path": "Plain Craft Launcher 2/Pages/PageInstance/PageInstanceLeft.xaml",
+      "source_git_blob_sha1": "b8922173aafaf13384c8112bae02acca6d7d8025",
+      "source_sha256": "ea1c243492374e49de85a937a428c9d5d803c84aa27d60c8206e2bf3f4da8fe5",
+      "source_element": "ItemOverall",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "eed01954b94edf0ea2578e171fb251c35a46fa6f2994291d7fad8d9d09c467f3",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/wrench.svg",
+      "size": 828,
+      "sha256": "227f44d46d93c6180649c1f8c29d070aa87a45ec00179c7a5c90e85e078deda4",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageInstance/PageInstanceLeft.xaml",
+      "source_path": "Plain Craft Launcher 2/Pages/PageInstance/PageInstanceLeft.xaml",
+      "source_git_blob_sha1": "b8922173aafaf13384c8112bae02acca6d7d8025",
+      "source_sha256": "ea1c243492374e49de85a937a428c9d5d803c84aa27d60c8206e2bf3f4da8fe5",
+      "source_element": "ItemSetup",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "dcad86fd1c18d6a292c21dc153508aac622e7afe4f0b272e0155da93ed804a1c",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/datapack.svg",
+      "size": 599,
+      "sha256": "51c0599214cc8f6a9f84ff9c7f8bcbcbd3190356076a7bb3ead280a17204c089",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageDownload/PageDownloadLeft.xaml",
+      "source_path": "Plain Craft Launcher 2/Pages/PageDownload/PageDownloadLeft.xaml",
+      "source_git_blob_sha1": "013b0c87b261c2a5526b69ea1c2f28bcb898d1b7",
+      "source_sha256": "c0b8c73f2a983f2942df5a3c9e2a4caf227fe16de7b762884578c06f3ca76f68",
+      "source_element": "ItemDataPack",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "127c0a77cc0f9ed0dffab579420392054a1c745cf910c9939d6458b263c92dbb",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/resourcepack.svg",
+      "size": 777,
+      "sha256": "dd1672f5697c5998fc18097022d35b868d0e118f902a08ec34e18875f8776014",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageDownload/PageDownloadLeft.xaml",
+      "source_path": "Plain Craft Launcher 2/Pages/PageDownload/PageDownloadLeft.xaml",
+      "source_git_blob_sha1": "013b0c87b261c2a5526b69ea1c2f28bcb898d1b7",
+      "source_sha256": "c0b8c73f2a983f2942df5a3c9e2a4caf227fe16de7b762884578c06f3ca76f68",
+      "source_element": "ItemResourcePack",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "0657503de2a1d9c4ac08f371b7d68625f48fda3e90e6f521451c419fd79fdc40",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/shader.svg",
+      "size": 946,
+      "sha256": "45c7160667e07aa8fea690ae477f732484003afb2f9fb426e13987a17032432a",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Pages/PageDownload/PageDownloadLeft.xaml",
+      "source_path": "Plain Craft Launcher 2/Pages/PageDownload/PageDownloadLeft.xaml",
+      "source_git_blob_sha1": "013b0c87b261c2a5526b69ea1c2f28bcb898d1b7",
+      "source_sha256": "c0b8c73f2a983f2942df5a3c9e2a4caf227fe16de7b762884578c06f3ca76f68",
+      "source_element": "ItemShader",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "aa7e601768a06b3908e5cabd84192febf6a08f10e09eb90ee11a46fea103250a",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/tasks.svg",
+      "size": 946,
+      "sha256": "e847ed1e1d1088a2fb6652fc0c2b73bd74c171c3bec7930fe6e95d57dd8d672a",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/FormMain.xaml",
+      "source_path": "Plain Craft Launcher 2/FormMain.xaml",
+      "source_git_blob_sha1": "2a840f596e12c360a62fb1eb5fc7807506bde4ea",
+      "source_sha256": "a0a39fc73017a028ea1a520361142fa0149c832364d5f8f395bd12f147d425b1",
+      "source_element": "BtnExtraDownload",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "b2dad29ac15a07f63358b32eec5fd678bf49a19d48c01a7509b07ee7a7244a65",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG, width=height=1200 and viewBox=0 0 1200 1200. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    },
+    {
+      "path": "../icons/shutdown.svg",
+      "size": 1902,
+      "sha256": "3f6d3ff235c040b0b5e278b24065f4d5292355de3c57dcbe8de9e4913fec5342",
+      "source": "https://github.com/Meloong-Git/PCL/blob/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/FormMain.xaml",
+      "source_path": "Plain Craft Launcher 2/FormMain.xaml",
+      "source_git_blob_sha1": "2a840f596e12c360a62fb1eb5fc7807506bde4ea",
+      "source_sha256": "a0a39fc73017a028ea1a520361142fa0149c832364d5f8f395bd12f147d425b1",
+      "source_element": "BtnExtraShutdown",
+      "source_attribute": "Logo",
+      "source_logo_sha256": "d931bfaf1108dd43954fba528255c913f141802fa4ce753d6f576ded8b80c29c",
+      "acquisition": {
+        "method": "local-fixed-checkout-xaml-attribute-extraction",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18"
+      },
+      "transformation": "XML-decode Logo attribute and wrap unchanged path in white-fill SVG with viewBox=0 0 1024 1024. No path redraw.",
+      "verification": "SVG path d equals the original XAML Logo attribute exactly"
+    }
+  ]
+}

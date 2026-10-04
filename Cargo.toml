@@ -1,0 +1,22 @@
+[workspace]
+members = ["crates/pcl-core", "crates/pcl-desktop"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "system-proxy"] }
+sha1 = "0.10"
+tempfile = "3"
+regex = "1"
+
+[profile.release]
+strip = true
+lto = "thin"

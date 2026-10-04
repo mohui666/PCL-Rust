@@ -1,0 +1,25 @@
+/target/
+/dist/
+/test-output/
+*.log
+.DS_Store
+
+# Local environment and credential files (never application source or fixtures).
+.env
+.env.*
+!.env.example
+!.env.template
+/settings.json
+/accounts.json
+/credentials.json
+/secrets.json
+/.credentials/
+/.secrets/
+*.keychain
+*.keychain-db
+*.p12
+*.pfx
+
+# Local game data.
+/game/
+/.minecraft/
