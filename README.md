@@ -30,7 +30,7 @@ As of 2026-10-04:
 
 - The application registration supports personal Microsoft accounts and has public client flows enabled.
 - A real device-code request succeeded. A subsequent login attempt reached Minecraft Services and returned HTTP 403 during `login_with_xbox`.
-- Minecraft API access approval has not yet been received. Full authenticated login, ownership validation, and saved-account restoration have not been verified end to end.
+- The Minecraft AppID review request has been submitted and its receipt confirmed; approval has not yet been received. Full authenticated login, ownership validation, and saved-account restoration have not been verified end to end.
 - The local development build has passed 277 automated tests, with one ignored test. Selected macOS launcher interactions have been checked; this is not full migration, visual parity, Windows runtime, or game compatibility acceptance.
 
 ## Repository contents
@@ -43,4 +43,4 @@ No Microsoft login credentials, user account data, local game files, logs, or lo
 
 这是 mohui666 独立开发的 Rust 跨平台第三方重构项目，面向 macOS 与 Windows，仍在进行功能迁移及界面对照。原版 PCL 的作者是龙腾猫跃。本项目不是原版 PCL 或 Minecraft 官方产品。
 
-当前仓库先提供项目介绍，供 Minecraft API 访问审核使用。正版登录已实际请求到 Minecraft 服务，但新应用收到 HTTP 403，审核尚未完成；不能将微软网页登录成功视为 Minecraft 正版登录已经完成。
+当前仓库先提供项目介绍，供 Minecraft API 访问审核使用。正版登录已实际请求到 Minecraft 服务，但新应用收到 HTTP 403。访问审核申请已提交并确认回执，尚未获批；不能将微软网页登录成功视为 Minecraft 正版登录已经完成。
