@@ -1533,11 +1533,18 @@ fn cape_modal(
                             Vec2::new(ui.available_width(), 24.0),
                             egui::Sense::hover(),
                         );
-                        ui_style::place_left(
-                            ui,
-                            rect,
-                            egui::RadioButton::new(selected, RichText::new(text).size(13.0)),
-                        )
+                        let mut row = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        row.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        row.set_clip_rect(rect.intersect(ui.clip_rect()));
+                        row.add(egui::RadioButton::new(
+                            selected,
+                            RichText::new(text).size(13.0),
+                        ))
+                        .on_hover_text(text)
                     };
                     let response = row(ui, draft.selected.is_none(), "无披风");
                     #[cfg(test)]
@@ -1806,6 +1813,39 @@ mod tests {
         assert!(app.status.contains("已取消后续外观操作"));
         assert!(app.accounts.error.is_none());
     }
+    #[test]
+    fn long_cape_name_stays_within_its_radio_row() {
+        let capes = vec![auth::MinecraftCape {
+            id: "long-fixture".into(),
+            state: "ACTIVE".into(),
+            alias: "a very long cape alias ".repeat(50),
+            url: String::new(),
+        }];
+        let ctx = egui::Context::default();
+        let mut draft = CapeDraft::from_capes(&capes);
+        for time in [0.0, 0.5] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(500.0, 450.0),
+                    )),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    assert!(cape_modal(ctx, &capes, &mut draft).is_none());
+                },
+            );
+        }
+        assert_eq!(draft.rows.len(), 2);
+        for row in &draft.rows {
+            assert!(row.width() <= 450.0 - 66.0, "{row:?}");
+            assert!(row.height() <= 24.0, "{row:?}");
+        }
+        assert_eq!(draft.selected.as_deref(), Some("long-fixture"));
+    }
+
     #[test]
     fn cape_radio_click_only_changes_draft_and_cancel_never_submits() {
         let capes = vec![auth::MinecraftCape {

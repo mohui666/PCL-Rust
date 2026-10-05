@@ -116,7 +116,12 @@ pub(super) fn account_input_modal_with_options(
         .clamp(400.0, 600.0)
         .max(508.0);
     let text = modal_text(ctx, caption, width - 66.0);
-    let text_height = text.size().y;
+    // MyMsgInput.PanText is a ScrollViewer. Reserve room for the input and
+    // action row instead of allowing a long caption to push them off-screen.
+    let text_height = text
+        .size()
+        .y
+        .min((ctx.content_rect().height() - 257.0).max(68.0));
     let height = text_height + 7.0 + 28.0 - 5.0;
     let input_id = egui::Id::new(("pcl-modal-input", id));
     modal_frame_inner(
@@ -130,8 +135,13 @@ pub(super) fn account_input_modal_with_options(
         Some(input_id),
         |ui| {
             let top = ui.max_rect().min;
-            ui.painter()
-                .galley(top, text, theme::palette(ui.ctx()).text);
+            egui::ScrollArea::vertical()
+                .id_salt(("account-input-caption", id))
+                .max_height(text_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(text));
+                });
             let rect = Rect::from_min_size(
                 top + Vec2::new(0.0, text_height + 7.0),
                 Vec2::new(width - 58.0, 28.0),
@@ -842,6 +852,61 @@ mod tests {
             options,
         )
     }
+    #[test]
+    fn long_input_caption_keeps_editor_and_actions_inside_small_window() {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(810.0, 470.0));
+        let caption = "A very long folder and explanation that must remain readable.\n".repeat(40);
+        let mut value = String::from("Name");
+        let mut draw = |time, events| {
+            let mut action = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    action = account_input_modal(
+                        ctx,
+                        "long-caption",
+                        "Name",
+                        &caption,
+                        &mut value,
+                        &["Save", "Cancel"],
+                    );
+                    finish_frame(ctx);
+                },
+            );
+            action
+        };
+        draw(0.0, vec![]);
+        draw(0.4, vec![]);
+        let state = load(&ctx);
+        let panel = state.active.unwrap().picture.unwrap().panel;
+        assert!(screen.shrink(25.0).contains_rect(panel), "{panel:?}");
+        let editor = ctx
+            .read_response(egui::Id::new(("pcl-modal-input", "long-caption")))
+            .unwrap();
+        assert!(panel.contains_rect(editor.rect));
+        let key = egui::Id::new(("pcl-modal", "long-caption"));
+        let cancel = ctx.read_response(button_id(key, 1)).unwrap();
+        assert!(panel.contains_rect(cancel.rect));
+        assert!(editor.rect.bottom() < cancel.rect.top());
+        draw(0.5, vec![egui::Event::Text(" edited".into())]);
+        let point = cancel.rect.center();
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        draw(0.6, vec![egui::Event::PointerMoved(point), pointer(true)]);
+        assert_eq!(draw(0.7, vec![pointer(false)]), Some(1));
+        assert_eq!(value, "Name edited");
+    }
+
     #[test]
     fn debug_animation_off_settles_picture_but_preserves_real_input_guard() {
         let ctx = egui::Context::default();

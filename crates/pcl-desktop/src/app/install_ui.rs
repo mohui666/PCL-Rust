@@ -229,7 +229,7 @@ impl Launcher {
                     rect.min + Vec2::new(132.0, 11.0),
                     Vec2::new((rect.width() - 210.0).max(40.0), 18.0),
                 ),
-                egui::Label::new(text),
+                egui::Label::new(text).truncate(),
             );
             let clear = state.selected.is_some()
                 && ui
@@ -402,7 +402,7 @@ impl Launcher {
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,self.busy.is_none(),"OptiFine"));
             ui_style::place_left(ui,Rect::from_min_size(rect.min+Vec2::new(15.0,12.0),Vec2::new(110.0,18.0)),egui::Label::new(ui_style::card_title("OptiFine")));
             let text=self.optifine.selected.as_ref().map(|v|v.version.as_str()).unwrap_or("可以添加");
-            ui_style::place_left(ui,Rect::from_min_size(rect.min+Vec2::new(132.0,11.0),Vec2::new((rect.width()-210.0).max(40.0),18.0)),egui::Label::new(text));
+            ui_style::place_left(ui,Rect::from_min_size(rect.min+Vec2::new(132.0,11.0),Vec2::new((rect.width()-210.0).max(40.0),18.0)),egui::Label::new(text).truncate());
             let clear_clicked = if self.optifine.selected.is_some() {
                 ui.place(Rect::from_min_size(rect.right_top()+Vec2::new(-61.0,5.0),Vec2::splat(30.0)),egui::Button::new("×").frame(false)).on_hover_text("取消选择 OptiFine").clicked()
             } else { false };
@@ -1140,7 +1140,8 @@ impl Launcher {
                 } else {
                     MUTED
                 }))
-                .halign(egui::Align::Min),
+                .halign(egui::Align::Min)
+                .truncate(),
             );
             let center = rect.right_center() + Vec2::new(-20.0, 0.0);
             let points = if expanded {
@@ -1418,6 +1419,63 @@ mod optifine_ui_tests {
             )),
             _ => None,
         })
+    }
+
+    #[test]
+    fn selected_component_headers_truncate_before_the_clear_button() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        let long = "selected-build-with-a-long-name-".repeat(20);
+        app.loader_kind = Some(InstallKind::Fabric);
+        app.loader_version = Some(long.clone());
+        app.optifine.minecraft = Some("1.20.1".into());
+        app.optifine.selected = Some(OptiFineVersion {
+            minecraft: "1.20.1".into(),
+            version: long.clone(),
+            filename: "fixture.jar".into(),
+            forge: None,
+            preview: false,
+        });
+        app.optifine.api.target = Some(("1.20.1".into(), "fabric".into()));
+        app.optifine.api.selected=Some(serde_json::from_value(serde_json::json!({"id":"api","project_id":"fixture","name":"API","version_number":long,"version_type":"release","date_published":"","game_versions":["1.20.1"],"loaders":["fabric"],"files":[]})).unwrap());
+        let ctx = component_context();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(500.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                theme::apply(ctx, &app.settings);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.set_max_width(460.0);
+                    let mut open = None;
+                    app.install_component_card(ui, InstallKind::Fabric, "1.20.1", &mut open);
+                    app.optifine_card(ui, "1.20.1");
+                    app.companion_card(ui, "1.20.1", false);
+                });
+            },
+        );
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == long => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels.len(), 3);
+        for rect in labels {
+            assert!(rect.height() < 22.0, "selected header wrapped: {rect:?}");
+            assert!(
+                rect.right() < 430.0,
+                "selected header crosses clear-button column: {rect:?}"
+            );
+        }
     }
 
     #[test]

@@ -208,19 +208,42 @@ impl Launcher {
         if summaries.len() > 1 {
             super::card(ui, "任务列表", |ui| {
                 for (id, label, running, retryable) in summaries {
+                    let can_retry = retryable && self.jobs.retry(id).is_some();
                     ui.horizontal(|ui| {
+                        let height = ui.spacing().interact_size.y;
+                        let action_width = 44.0;
+                        let title_width = (ui.available_width()
+                            - if running || can_retry {
+                                action_width + ui.spacing().item_spacing.x
+                            } else {
+                                0.0
+                            })
+                        .max(0.0);
                         if ui
-                            .selectable_label(self.task_hub.selected == Some(id), label)
+                            .add_sized(
+                                [title_width, height],
+                                egui::Button::selectable(
+                                    self.task_hub.selected == Some(id),
+                                    &label,
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&label)
                             .clicked()
                         {
                             select = Some(id);
                         }
-                        if running && ui.small_button("取消").clicked() {
+                        if running
+                            && ui
+                                .add_sized([action_width, height], egui::Button::new("取消"))
+                                .clicked()
+                        {
                             cancel = Some(id);
                         }
-                        if retryable
-                            && self.jobs.retry(id).is_some()
-                            && ui.small_button("重试").clicked()
+                        if can_retry
+                            && ui
+                                .add_sized([action_width, height], egui::Button::new("重试"))
+                                .clicked()
                         {
                             retry = Some(id);
                         }
@@ -283,7 +306,22 @@ impl Launcher {
         super::card(ui, "任务历史", |ui| {
             for record in self.task_hub.records.iter() {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&record.title).strong());
+                    let status_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            record.status.clone(),
+                            egui::TextStyle::Body.resolve(ui.style()),
+                            ui.visuals().text_color(),
+                        )
+                        .size()
+                        .x;
+                    let title_width =
+                        (ui.available_width() - status_width - ui.spacing().item_spacing.x)
+                            .max(0.0);
+                    ui.add_sized(
+                        [title_width, ui.spacing().interact_size.y],
+                        egui::Label::new(RichText::new(&record.title).strong()).truncate(),
+                    );
                     ui.label(&record.status);
                 });
                 ui.label(
@@ -321,5 +359,112 @@ fn history_age(when: u64) -> String {
         format!("{} 小时前", age / 3600)
     } else {
         format!("{} 天前", age / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_history_title_does_not_hide_its_terminal_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        app.task_hub.records.push(TaskRecord {
+            key: "fixture".into(),
+            title: "very long instance name ".repeat(60),
+            status: "已失败".into(),
+            when: 0,
+            root: dir.path().to_owned(),
+            target: None,
+            steps: vec![],
+            error: None,
+        });
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
+        ctx.set_fonts(fonts);
+        let mut bounds = None;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(420.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    bounds = Some(ui.max_rect());
+                    app.task_history_ui(ui);
+                });
+            },
+        );
+        let status = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "已失败" => {
+                    Some(text.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .expect("terminal status was painted");
+        assert!(bounds.unwrap().contains_rect(status), "{status:?}");
+    }
+
+    #[test]
+    fn long_task_names_leave_cancel_buttons_inside_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        app.task_hub.selected = Some(JobId(1));
+        app.task = Some(TaskState::new("long instance title ".repeat(50)));
+        app.task_hub
+            .others
+            .insert(JobId(2), TaskState::new("another task"));
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
+        ctx.set_fonts(fonts);
+        let mut bounds = None;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(420.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    bounds = Some(ui.max_rect());
+                    app.task_list(ui);
+                    assert!(ui.min_rect().right() <= ui.max_rect().right());
+                });
+            },
+        );
+        let buttons = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "取消" => {
+                    Some(text.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 2);
+        assert!(
+            buttons
+                .iter()
+                .all(|rect| bounds.unwrap().contains_rect(*rect)),
+            "{buttons:?}"
+        );
     }
 }

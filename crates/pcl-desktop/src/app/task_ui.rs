@@ -960,7 +960,7 @@ impl Launcher {
                             ui,
                             Rect::from_min_size(
                                 row + Vec2::new(50.0, 0.0),
-                                Vec2::new(rect.width() - 79.0, 24.0),
+                                Vec2::new((rect.right() - 15.0 - row.x - 50.0).max(0.0), 24.0),
                             ),
                             &step.name,
                         )
@@ -1238,6 +1238,61 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn indented_step_text_keeps_the_same_card_right_margin() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let mut task = TaskState::new("nested fixture");
+        task.component_plan(vec!["Minecraft".into()]);
+        task.component_start(0);
+        task.update(&Progress {
+            plan: Some(vec![ProgressStage::CoreLibraries]),
+            ..Default::default()
+        });
+        app.task = Some(task);
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
+        ctx.set_fonts(fonts);
+        for width in [220.0, 420.0] {
+            let mut card_right = 0.0;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 300.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        card_right = ui.max_rect().right();
+                        app.render_current_task(ui);
+                    });
+                },
+            );
+            let step_clip = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.job.text == stage_name(ProgressStage::CoreLibraries) =>
+                    {
+                        Some(shape.clip_rect)
+                    }
+                    _ => None,
+                })
+                .expect("production nested step was painted");
+            assert!(
+                (step_clip.right() - (card_right - 15.0)).abs() < 0.01,
+                "{step_clip:?}, card right {card_right}"
+            );
+        }
+    }
+
     #[test]
     fn row_title_starts_on_status_baseline_without_advancing_parent_cursor() {
         let ctx = egui::Context::default();

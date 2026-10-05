@@ -127,7 +127,8 @@ impl Launcher {
                     ui.add_space(9.0);
                     argument_row(ui,"窗口大小",|ui| {
                         let custom = settings.window_mode == WindowMode::Custom;
-                        let width = if custom { (ui.available_width()-177.0).max(110.0) } else {ui.available_width()};
+                        let separator_width = ui.painter().layout_no_wrap(" × ".into(),egui::FontId::proportional(18.0),theme::palette(ui.ctx()).text).size().x;
+                        let width = if custom { (ui.available_width()-150.0-separator_width).max(110.0) } else {ui.available_width()};
                         ui_style::PclComboBox::from_id_salt("global-window").width(width).selected_text(window_label(settings.window_mode)).show_ui(ui,|ui| {
                             for mode in [WindowMode::Fullscreen,WindowMode::Default,WindowMode::LauncherSize,WindowMode::Custom,WindowMode::Maximized] {
                                 let available = mode!=WindowMode::Maximized || cfg!(any(windows,target_os="macos"));
@@ -154,6 +155,7 @@ impl Launcher {
                     ui.add_space(4.0);
                 });
                 setup_card(ui,"内存分配",15,None,|ui| {
+                    ui.spacing_mut().interact_size.y=22.0;
                     if radio_row(ui,settings.memory_auto,"自动配置").clicked(){settings.memory_auto=true;}
                     ui.add_space(9.0);
                     ui.horizontal(|ui| {
@@ -185,7 +187,8 @@ impl Launcher {
                     if settings.offline_skin_mode==OfflineSkinMode::Custom {
                         ui.horizontal(|ui|{
                             if ui.button("选择皮肤 PNG…").clicked(){pick_skin=true;}
-                            ui.label(settings.offline_skin_path.as_ref().map(|p|p.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_else(||"尚未选择".into()));
+                            let name=settings.offline_skin_path.as_ref().map(|p|p.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_else(||"尚未选择".into());
+                            ui.add(egui::Label::new(&name).truncate()).on_hover_text(name);
                         });
                         ui.checkbox(&mut settings.offline_skin_slim,"使用 Alex（纤细）模型");
                         hint(ui,"支持 64×32 或 64×64 PNG。启动时生成独立皮肤资源包；原图和其他资源包不会被覆盖。",false);
@@ -231,7 +234,8 @@ impl Launcher {
                                     });
                                 }
                             }).response.on_hover_text("启动时选择列表中第一个兼容当前 Minecraft 的 Java。点击右侧箭头调整优先顺序。移除只排除自动候选，不删除文件；实例指定 Java 需在版本设置中修改。");
-                            if ui.button("↻").on_hover_text("重新搜索 Java；保留已排序项目及移除名单").clicked(){java_action=Some(JavaAction::Refresh);}
+                            ui.add_space(5.0);
+                            if ui.add_sized([24.0,24.0],egui::Button::new("↻").small().frame(false)).on_hover_text("重新搜索 Java；保留已排序项目及移除名单").clicked(){java_action=Some(JavaAction::Refresh);}
                         });
                     });
                     ui.add_space(9.0);
@@ -564,7 +568,7 @@ fn disabled_checkbox(ui: &mut egui::Ui, text: &str, checked: bool, reason: &str,
         .place(rect, egui::Checkbox::new(&mut value, text))
         .on_hover_text(reason);
 }
-fn radio_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
+pub(super) fn radio_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(110.0, 22.0), egui::Sense::hover());
     ui_style::place_left(ui, rect, egui::RadioButton::new(selected, label))
 }
@@ -659,6 +663,99 @@ pub(super) const GPU_HELP:&str="Windows：仅临时设置当前用户下本次 J
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launch_settings_keep_custom_fields_and_skin_filename_inside_the_narrow_page() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temporary.path());
+        app.settings.window_mode = WindowMode::Custom;
+        app.settings.offline_skin_mode = OfflineSkinMode::Custom;
+        app.settings.offline_skin_path = Some(
+            temporary
+                .path()
+                .join(format!("{}.png", "long-skin-name-".repeat(15))),
+        );
+        app.setup_launch.skin_open = true;
+        app.setup_launch.advanced_open = true;
+        app.setup_launch.extras_open = true;
+        app.setup_launch.memory_updated = Some(Instant::now());
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx.style_mut(|style| {
+            style.spacing.item_spacing = Vec2::new(10.0, 8.0);
+            style.spacing.interact_size.y = 28.0;
+            style.spacing.button_padding = Vec2::new(12.0, 6.0);
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+        });
+        for size in [Vec2::new(989.0, 517.0), Vec2::new(810.0, 470.0)] {
+            let mut draw = |offset| {
+                let mut content = Rect::NOTHING;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::TopBottomPanel::top("source-title")
+                            .exact_height(48.0)
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |_| {});
+                        egui::SidePanel::left("source-sidebar")
+                            .exact_width(121.0)
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |_| {});
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt(size.x.to_bits())
+                                    .auto_shrink([false, false])
+                                    .vertical_scroll_offset(offset)
+                                    .show(ui, |ui| {
+                                        egui::Frame::NONE.inner_margin(25).show(ui, |ui| {
+                                            app.launch_settings_page(ui);
+                                            content = ui.min_rect();
+                                        });
+                                    });
+                            });
+                    },
+                );
+                assert!(
+                    content.right() <= size.x - 25.0 + 0.1,
+                    "page content escaped at {size:?}: {content:?}"
+                );
+                output
+            };
+            let first = draw(0.0);
+            let text_rect = |output: &egui::FullOutput, title| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == title => {
+                            Some(Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {title} at {size:?}"))
+            };
+            let width = text_rect(&first, "854");
+            let height = text_rect(&first, "480");
+            assert!(width.right() < height.left() && height.right() < size.x - 50.0);
+            let memory = draw(300.0);
+            let automatic = text_rect(&memory, "自动配置");
+            let custom = text_rect(&memory, "自定义");
+            assert_eq!(automatic.left(), custom.left());
+            assert_eq!(custom.center().y - automatic.center().y, 31.0);
+        }
+    }
+
     #[test]
     fn memory_radio_rows_align_in_vertical_and_horizontal_layouts() {
         let ctx = egui::Context::default();

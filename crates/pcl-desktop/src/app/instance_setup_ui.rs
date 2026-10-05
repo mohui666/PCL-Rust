@@ -116,6 +116,9 @@ impl Launcher {
         let Some(id) = self.settings.selected_version.clone() else {
             return;
         };
+        // PageInstanceSetup specifies each gap explicitly, like the global
+        // settings page; egui's default spacing must not add another 8 DIP.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let root = self.settings.game_root.clone();
         let target = (root.clone(), id.clone());
         if self.instance_setup.target.as_ref() != Some(&target) {
@@ -263,22 +266,24 @@ impl Launcher {
 
             });
             titled_card(ui, "内存分配", |ui| {
-                if ui.radio(!state.value.memory_auto && state.value.memory_mb.is_none(), "跟随全局设置").clicked() {
+                ui.spacing_mut().interact_size.y = 22.0;
+                if super::setup_launch_ui::radio_row(ui, !state.value.memory_auto && state.value.memory_mb.is_none(), "跟随全局设置").clicked() {
                     state.value.memory_mb = None;
                     state.value.memory_auto = false;
                 }
                 ui.add_space(9.0);
-                if ui.radio(state.value.memory_auto, "自动配置").on_hover_text("根据安装的 Mod 量与电脑剩余内存动态调整为游戏分配的内存。").clicked() {
+                if super::setup_launch_ui::radio_row(ui, state.value.memory_auto, "自动配置").on_hover_text("根据安装的 Mod 量与电脑剩余内存动态调整为游戏分配的内存。").clicked() {
                     state.value.memory_auto = true;
                     state.value.memory_mb = None;
                 }
                 ui.add_space(9.0);
                 ui.horizontal(|ui| {
-                    if ui.radio(!state.value.memory_auto && state.value.memory_mb.is_some(), "自定义").clicked() {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    if super::setup_launch_ui::radio_row(ui, !state.value.memory_auto && state.value.memory_mb.is_some(), "自定义").clicked() {
                         state.value.memory_mb = Some(self.settings.memory_mb);
                         state.value.memory_auto = false;
                     }
-                    ui.add_space(50.0);
+                    ui.add_space(20.0);
                     let memory = state.value.memory_mb.unwrap_or(self.settings.memory_mb);
                     let maximum = state.memory.map_or(49, |memory| {
                         let gb = memory.total_mb as f64 / 1024.0;
@@ -316,12 +321,7 @@ impl Launcher {
                     text_edit(ui, &mut state.value.server, "").on_hover_text("主机名或 IP，可附加 :端口。IPv6 使用 [地址]:端口 格式。");
                 });
             });
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
-            let response = ui_style::outline_button(ui, rect, "高级选项", None, false, true);
-            if response.clicked() { state.advanced_open = !state.advanced_open; }
-            if state.advanced_open {
-                ui.add_space(5.0);
-                titled_card(ui, "", |ui| {
+            super::setup_launch_ui::setup_card(ui, "高级选项", 15, Some(&mut state.advanced_open), |ui| {
                     row(ui, "Java 虚拟机参数", |ui| { text_edit(ui, &mut state.value.jvm_arguments, "跟随全局设置"); });
                     ui.add_space(9.0);
                     row(ui, "游戏参数", |ui| { text_edit(ui, &mut state.value.game_arguments, "跟随全局设置"); });
@@ -353,8 +353,7 @@ impl Launcher {
                             for (value, label) in choices { ui.selectable_value(&mut state.value.gc_mode, value, label); }
                         });
                     });
-                });
-            }
+            });
         });
         if state.value != previous && !state.load_failed && writable {
             match config::save_instance_settings(&root, &id, &state.value) {
@@ -569,4 +568,154 @@ pub(super) fn text_edit(ui: &mut egui::Ui, value: &mut String, hint: &str) -> eg
             .hint_text(hint)
             .margin(Vec2::new(6.0, 5.0)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Pos2, Rect};
+
+    #[test]
+    fn instance_rows_keep_source_spacing_and_memory_choices_share_the_control_column() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temporary.path());
+        let root = app.settings.game_root.clone();
+        app.settings.selected_version = Some("fixture".into());
+        app.instance_setup.target = Some((root.clone(), "fixture".into()));
+        app.instance_setup.memory_updated = Some(Instant::now());
+        app.instance_setup.memory = Some(config::MemorySnapshot {
+            total_mb: 8192,
+            available_mb: 4096,
+        });
+        app.instance_setup.automatic_mb = Some(2048);
+        app.instance_setup.advanced_open = true;
+        let request = JavaSelectionRequest {
+            root,
+            version_id: "fixture".into(),
+            mode: JavaSelectionMode::Automatic,
+            version_range: String::new(),
+            specified_path: None,
+            priority: Vec::new(),
+            excluded: Vec::new(),
+        };
+        app.instance_setup.java_preview.key = format!("{request:?}/{:?}", app.java);
+        app.instance_setup.java_preview.message = Some(("Fixture Java".into(), None));
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx.style_mut(|style| {
+            style.spacing.item_spacing = Vec2::new(10.0, 8.0);
+            style.spacing.interact_size.y = 28.0;
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+        });
+        for size in [Vec2::new(989.0, 517.0), Vec2::new(810.0, 470.0)] {
+            let mut draw = |offset, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::TopBottomPanel::top("source-title")
+                            .exact_height(48.0)
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |_| {});
+                        egui::SidePanel::left("source-sidebar")
+                            .exact_width(138.0)
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |_| {});
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt(size.x.to_bits())
+                                    .auto_shrink([false, false])
+                                    .vertical_scroll_offset(offset)
+                                    .show(ui, |ui| {
+                                        egui::Frame::NONE
+                                            .inner_margin(25)
+                                            .show(ui, |ui| app.instance_setup_page(ui));
+                                    });
+                            });
+                    },
+                )
+            };
+            let text_rect = |output: &egui::FullOutput, title, minimum_y| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.text() == title && text.pos.y >= minimum_y =>
+                        {
+                            Some(Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {title} at {size:?}"))
+            };
+            let output = draw(0.0, vec![]);
+            let isolation = text_rect(&output, "版本隔离", 0.0);
+            let title = text_rect(&output, "游戏窗口标题", 0.0);
+            assert_eq!(
+                title.top() - isolation.top(),
+                37.0,
+                "28 DIP fields plus a single 9 DIP gap"
+            );
+            let output = draw(300.0, vec![]);
+            let memory_top = text_rect(&output, "内存分配", 0.0).bottom();
+            let choices = ["跟随全局设置", "自动配置", "自定义"]
+                .map(|title| text_rect(&output, title, memory_top));
+            assert_eq!(choices[0].left(), choices[1].left());
+            assert_eq!(choices[1].left(), choices[2].left());
+            assert_eq!(choices[1].center().y - choices[0].center().y, 31.0);
+            assert_eq!(choices[2].center().y - choices[1].center().y, 31.0);
+            let memory_row = choices[2].center().y;
+            let slider_left = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::LineSegment { points, .. }
+                        if (points[0].y - memory_row).abs() < 0.1
+                            && points[1].x - points[0].x > 100.0 =>
+                    {
+                        Some(points[0].x)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(slider_left, 138.0 + 25.0 + 25.0 + 110.0 + 20.0 + 5.0);
+            let point = choices[2].center();
+            let pointer = |pressed| egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let _ = draw(300.0, vec![egui::Event::PointerMoved(point), pointer(true)]);
+            let _ = draw(300.0, vec![pointer(false)]);
+            let advanced = draw(600.0, vec![]);
+            let heading = text_rect(&advanced, "高级选项", 0.0);
+            let first_field = text_rect(&advanced, "Java 虚拟机参数", heading.bottom());
+            assert_eq!(
+                first_field.center().y - heading.center().y,
+                34.0,
+                "one source card header, without a second empty header"
+            );
+        }
+
+        assert!(app.instance_setup.value.memory_mb.is_some());
+        assert!(!app.instance_setup.value.memory_auto);
+        assert!(
+            app.instance_setup.java_preview.receiver.is_none(),
+            "fixture must not spawn Java probing"
+        );
+    }
 }

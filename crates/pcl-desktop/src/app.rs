@@ -1711,6 +1711,31 @@ impl Launcher {
             self.error = Some(format!("打开目录失败：{e}"));
         }
     }
+    fn busy_status_controls(&mut self, ui: &mut egui::Ui) {
+        // Bound the row's height so a following progress rail keeps its space.
+        // Allocate actions before the truncating status label.
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.busy.is_some() && ui.small_button("取消").clicked() {
+                    self.cancel.store(true, Ordering::Relaxed);
+                    self.status = "正在取消…".into();
+                }
+                if ui.small_button("日志").clicked() {
+                    self.show_logs = true;
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    if self.busy.is_some() {
+                        loading_ui::inline(ui, "");
+                    }
+                    ui.add(
+                        egui::Label::new(RichText::new(&self.status).size(12.0).color(MUTED))
+                            .truncate(),
+                    );
+                });
+            });
+        });
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
         if let Some(message) = self.error.clone() {
             if account_ui::account_modal(
@@ -1809,24 +1834,7 @@ impl eframe::App for Launcher {
                         .inner_margin(egui::Margin::symmetric(15, 5)),
                 )
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if self.busy.is_some() {
-                            loading_ui::inline(ui, "");
-                        }
-                        ui.add(
-                            egui::Label::new(RichText::new(&self.status).size(12.0).color(MUTED))
-                                .truncate(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.busy.is_some() && ui.small_button("取消").clicked() {
-                                self.cancel.store(true, Ordering::Relaxed);
-                                self.status = "正在取消…".into();
-                            }
-                            if ui.small_button("日志").clicked() {
-                                self.show_logs = true;
-                            }
-                        });
-                    });
+                    self.busy_status_controls(ui);
                     if let Some(p) = &self.progress {
                         let fraction = if p.total == 0 {
                             0.0
@@ -1968,6 +1976,113 @@ fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+
+    #[test]
+    fn long_busy_status_keeps_both_actions_visible_and_clickable() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = fixture(directory.path());
+        app.busy = Some("fixture".into());
+        let long = "Reading a very long resource or folder name ".repeat(40);
+        let ctx = egui::Context::default();
+        for width in [810.0, 989.0] {
+            for show_progress in [false, true] {
+                app.status = long.clone();
+                app.cancel.store(false, Ordering::Relaxed);
+                app.show_logs = false;
+                let height = if show_progress { 57.0 } else { 31.0 };
+                let draw = |app: &mut Launcher, events| {
+                    let mut rail = None;
+                    let mut content = egui::Rect::NOTHING;
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                Vec2::new(width, 470.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::TopBottomPanel::bottom(egui::Id::new((
+                                "status-audit",
+                                show_progress,
+                            )))
+                            .exact_height(height)
+                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(15, 5)))
+                            .show(ctx, |ui| {
+                                content = ui.max_rect();
+                                app.busy_status_controls(ui);
+                                if show_progress {
+                                    rail = Some(loading_ui::progress(ui, Some(0.5), "").rect);
+                                }
+                            });
+                        },
+                    );
+                    (output, rail, content)
+                };
+                let (output, rail, content) = draw(&mut app, vec![]);
+                let text_rect = |name: &str| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.text() == name => {
+                                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                            }
+                            _ => None,
+                        })
+                        .unwrap()
+                };
+                let status = text_rect(&long);
+                let cancel = text_rect("取消");
+                let logs = text_rect("日志");
+                assert!(
+                    status.right() < logs.left(),
+                    "status overlaps actions at width {width}"
+                );
+                assert!(logs.right() < cancel.left());
+                assert!(cancel.right() <= width - 15.0);
+                for text in [status, cancel, logs] {
+                    assert!(
+                        content.contains_rect(text),
+                        "row text outside {height}-DIP panel: {text:?} / {content:?}"
+                    );
+                }
+                if let Some(rail) = rail {
+                    assert!(
+                        content.contains_rect(rail),
+                        "progress rail outside {height}-DIP panel: {rail:?} / {content:?}"
+                    );
+                    assert!(rail.top() > status.bottom().max(cancel.bottom()).max(logs.bottom()));
+                    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::Shape::Rect(rect) if rect.rect.height()==3.0 && rect.rect.width()>100.0
+                            && rail.contains_rect(rect.rect) && shape.clip_rect.contains_rect(rect.rect)
+                    )), "the actual progress rail must be painted inside its clip");
+                }
+                let click = |app: &mut Launcher, point| {
+                    for pressed in [true, false] {
+                        draw(
+                            app,
+                            vec![
+                                egui::Event::PointerMoved(point),
+                                egui::Event::PointerButton {
+                                    pos: point,
+                                    button: egui::PointerButton::Primary,
+                                    pressed,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ],
+                        );
+                    }
+                };
+                click(&mut app, logs.center());
+                assert!(app.show_logs);
+                click(&mut app, cancel.center());
+                assert!(app.cancel.load(Ordering::Relaxed));
+                assert_eq!(app.status, "正在取消…");
+            }
+        }
+    }
 
     #[test]
     fn launch_cancel_is_normal_but_io_errors_mentioning_cancel_remain_errors() {

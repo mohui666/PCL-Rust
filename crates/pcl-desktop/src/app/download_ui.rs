@@ -352,6 +352,9 @@ impl Launcher {
             });
             ui.add_space(15.0);
             for (index, kind) in categories.into_iter().enumerate() {
+                if grouped[index].is_empty() {
+                    continue;
+                }
                 let id = ui.make_persistent_id(("download-group", index));
                 let mut expanded = ui
                     .ctx()
@@ -395,23 +398,17 @@ impl Launcher {
                         ui.ctx().data_mut(|data| data.insert_temp(id, expanded));
                     }
                     if expanded {
-                        if grouped[index].is_empty() {
-                            ui.label(RichText::new("暂无版本").color(MUTED));
+                        // PageDownloadInstall adds a StackPanel to each card;
+                        // the outer page owns scrolling, including the oldest row.
+                        for value in &grouped[index] {
+                            if self.download_version_row(
+                                ui,
+                                value,
+                                &format!("发布于 {}", release_time(value)),
+                            ) {
+                                selected = value["id"].as_str().map(str::to_owned);
+                            }
                         }
-                        egui::ScrollArea::vertical()
-                            .id_salt(("download-versions", index))
-                            .max_height(300.0)
-                            .show(ui, |ui| {
-                                for value in &grouped[index] {
-                                    if self.download_version_row(
-                                        ui,
-                                        value,
-                                        &format!("发布于 {}", release_time(value)),
-                                    ) {
-                                        selected = value["id"].as_str().map(str::to_owned);
-                                    }
-                                }
-                            });
                         ui.add_space(18.0);
                     }
                 });
@@ -441,6 +438,9 @@ impl Launcher {
             whole.max - Vec2::new(18.0, 0.0),
         );
         let response = ui.interact(rect, response.id, egui::Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return false;
+        }
         let id = value["id"].as_str().unwrap_or("未知版本");
         let ready = self.busy.is_none() && self.game_pid.is_none();
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, id));
@@ -469,7 +469,8 @@ impl Launcher {
                         theme::palette(ui.ctx()).text
                     }),
             )
-            .halign(egui::Align::Min),
+            .halign(egui::Align::Min)
+            .truncate(),
         );
         ui_style::place_left(
             ui,
@@ -477,7 +478,9 @@ impl Launcher {
                 rect.min + Vec2::new(44.0, 23.0),
                 Vec2::new(rect.width() - 54.0, 16.0),
             ),
-            egui::Label::new(RichText::new(lore).size(12.0).color(MUTED)).halign(egui::Align::Min),
+            egui::Label::new(RichText::new(lore).size(12.0).color(MUTED))
+                .halign(egui::Align::Min)
+                .truncate(),
         );
         response.clicked() && ready
     }
@@ -486,6 +489,122 @@ impl Launcher {
 mod tests {
     use super::*;
     use serde_json::json;
+    fn ui_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx
+    }
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                Some(Rect::from_min_size(text.pos, text.galley.size()))
+            }
+            _ => None,
+        })
+    }
+    #[test]
+    fn minecraft_groups_use_page_scroll_and_the_last_row_opens_its_own_id() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.manifest=(0..120).map(|i| json!({"id":format!("fixture-{i:03}"),"type":"release","releaseTime":format!("{}-01-01T00:00:00Z",2000+i)})).collect();
+        app.version_lists.manifest.phase = Phase::Ready;
+        let ctx = ui_context();
+        let draw = |app: &mut Launcher, scroll, events| {
+            let mut size = Vec2::ZERO;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(640.0, 360.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    theme::apply(ctx, &app.settings);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let scroll = egui::ScrollArea::vertical()
+                            .id_salt("manifest-test-page")
+                            .max_height(260.0)
+                            .vertical_scroll_offset(scroll)
+                            .show(ui, |ui| app.downloads(ui));
+                        size = scroll.content_size;
+                    });
+                },
+            );
+            (output, size)
+        };
+        let (closed, _) = draw(&mut app, 0.0, vec![]);
+        for absent in ["预览版", "远古版", "愚人节版"] {
+            assert!(text_rect(&closed, absent).is_none());
+        }
+        let header = text_rect(&closed, "正式版").unwrap();
+        let click = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        for pressed in [true, false] {
+            draw(&mut app, 0.0, click(header.center(), pressed));
+        }
+        let (top, size) = draw(&mut app, 0.0, vec![]);
+        assert!(
+            size.y > 5100.0,
+            "outer page must own all 120 rows: {size:?}"
+        );
+        assert!(text_rect(&top, "fixture-000").is_none());
+        let (bottom, _) = draw(&mut app, size.y - 260.0, vec![]);
+        let last =
+            text_rect(&bottom, "fixture-000").expect("oldest row is reachable by outer scroll");
+        assert!(last.top() >= 0.0 && last.bottom() < 280.0);
+        let pos = egui::pos2(500.0, last.center().y);
+        for pressed in [true, false] {
+            draw(&mut app, size.y - 260.0, click(pos, pressed));
+        }
+        assert_eq!(app.download_selection.as_deref(), Some("fixture-000"));
+    }
+    #[test]
+    fn long_minecraft_names_and_descriptions_stay_inside_their_row() {
+        let root = tempfile::tempdir().unwrap();
+        let app = super::super::event_tests::fixture(root.path());
+        let ctx = ui_context();
+        let title = "long-special-version-".repeat(20);
+        let lore = "Long release description ".repeat(20);
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(320.0, 200.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.download_version_row(ui, &json!({"id":title,"type":"release"}), &lore);
+                });
+            },
+        );
+        for label in [&title, &lore] {
+            let rect = text_rect(&output, label).unwrap();
+            assert!(
+                rect.height() <= 20.0,
+                "label must not wrap into the next row: {rect:?}"
+            );
+            assert!(rect.right() <= 320.0, "label must not escape row: {rect:?}");
+        }
+    }
+
     #[test]
     fn stale_and_duplicate_list_replies_cannot_release_the_current_request() {
         let temp = tempfile::tempdir().unwrap();

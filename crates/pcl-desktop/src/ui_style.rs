@@ -17,12 +17,16 @@ pub fn card_title(text: &str) -> egui::RichText {
 }
 
 pub fn place_left(ui: &mut egui::Ui, rect: Rect, widget: impl egui::Widget) -> egui::Response {
-    ui.new_child(
+    let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    )
-    .add(widget)
+    );
+    // Positioned labels decorate a parent row/header. Text selection must not
+    // claim their clicks before that row receives them; real editors and
+    // buttons keep their own interaction senses.
+    child.style_mut().interaction.selectable_labels = false;
+    child.add(widget)
 }
 
 /// MyCard's source path, rotated up for an expanded card.
@@ -579,11 +583,23 @@ fn outline_button_impl(
         color,
     );
     if let Some(subtitle) = subtitle {
-        ui.painter().text(
-            Pos2::new(rect.center().x, rect.bottom() - 15.5),
-            egui::Align2::CENTER_CENTER,
-            subtitle,
+        // PageLaunchLeft.LabVersion has 35-DIP window margins, 15 inside
+        // the launch button, and CharacterEllipsis for long instance names.
+        let mut job = egui::text::LayoutJob::simple(
+            subtitle.into(),
             egui::FontId::proportional(11.0),
+            GRAY,
+            (rect.width() - 30.0).max(0.0),
+        );
+        job.break_on_newline = false;
+        job.wrap.max_rows = 1;
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        ui.painter().with_clip_rect(rect).galley(
+            Pos2::new(
+                rect.center().x - galley.size().x / 2.0,
+                rect.bottom() - 15.5 - galley.size().y / 2.0,
+            ),
+            galley,
             GRAY,
         );
     }
@@ -620,6 +636,74 @@ pub fn background(painter: &egui::Painter, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn positioned_caption_does_not_steal_its_parent_row_click() {
+        let ctx = egui::Context::default();
+        let mut point = Pos2::ZERO;
+        let mut draw = |events| {
+            let mut clicked = false;
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(Vec2::new(300.0, 40.0), egui::Sense::click());
+                        let caption = place_left(
+                            ui,
+                            rect.shrink2(Vec2::new(15.0, 0.0)),
+                            egui::Label::new("Expand this category"),
+                        );
+                        point = caption.rect.center();
+                        clicked = response.clicked();
+                    });
+                },
+            );
+            (clicked, point)
+        };
+        let (_, point) = draw(vec![]);
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert!(!draw(vec![egui::Event::PointerMoved(point), pointer(true)]).0);
+        assert!(
+            draw(vec![pointer(false)]).0,
+            "clicking title text must activate its row"
+        );
+    }
+
+    #[test]
+    fn long_launch_version_stays_inside_its_button_without_wrapping() {
+        let ctx = egui::Context::default();
+        let subtitle = "A very long Minecraft instance name with Fabric and mods ".repeat(8);
+        for width in [180.0, 260.0] {
+            let rect = Rect::from_min_size(Pos2::new(30.0, 50.0), Vec2::new(width, 54.0));
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    outline_button(ui, rect, "Launch", Some(&subtitle), true, true);
+                });
+            });
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == subtitle => Some(text),
+                    _ => None,
+                })
+                .expect("version subtitle is rendered");
+            assert_eq!(text.galley.rows.len(), 1);
+            assert!(text.galley.elided, "long version must show an ellipsis");
+            assert!(text.pos.x >= rect.left() + 14.0);
+            assert!(text.pos.x + text.galley.size().x <= rect.right() - 14.0);
+            assert!(text.pos.y + text.galley.size().y <= rect.bottom());
+        }
+    }
 
     #[test]
     fn changing_theme_repaints_shared_controls_and_window_gradients() {

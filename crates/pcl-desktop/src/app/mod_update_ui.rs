@@ -226,66 +226,7 @@ impl Launcher {
                     super::loading_ui::inline(ui, "正在检查 Mod 更新……");
                     return;
                 }
-                if let Some(error) = &self.mod_update.error {
-                    ui.colored_label(egui::Color32::from_rgb(255, 76, 76), error);
-                    return;
-                }
-                let Some(plan) = &self.mod_update.plan else {
-                    return;
-                };
-                egui::ScrollArea::vertical()
-                    .max_height(height)
-                    .show(ui, |ui| {
-                        if plan.updates().is_empty() {
-                            ui.label("没有找到可更新的 Mod。");
-                        }
-                        for update in plan.updates() {
-                            let mut selected = self.mod_update.selected.contains(&update.file_name);
-                            if crate::ui_style::checkbox(
-                                ui,
-                                &mut selected,
-                                &format!(
-                                    "{}  {} → {}{}",
-                                    update.name,
-                                    update.current_version,
-                                    update.new_version,
-                                    if update.enabled {
-                                        ""
-                                    } else {
-                                        "（已禁用）"
-                                    }
-                                ),
-                                "",
-                            )
-                            .changed()
-                            {
-                                if selected {
-                                    self.mod_update.selected.insert(update.file_name.clone());
-                                } else {
-                                    self.mod_update.selected.remove(&update.file_name);
-                                }
-                            }
-                            ui.label(
-                                RichText::new(format!("{} · {}", update.source, update.file_name))
-                                    .size(12.0)
-                                    .color(theme::palette(ui.ctx()).dark),
-                            );
-                        }
-                        for issue in plan.issues() {
-                            ui.label(issue);
-                        }
-                        if !plan.unmatched().is_empty() {
-                            ui.collapsing(
-                                format!("未识别的文件（{}）", plan.unmatched().len()),
-                                |ui| {
-                                    for name in plan.unmatched() {
-                                        ui.label(name);
-                                    }
-                                    ui.label("无法匹配官方哈希，不代表已经是最新版本。");
-                                },
-                            );
-                        }
-                    });
+                update_results(ui, &mut self.mod_update, height);
             },
         );
         if let Some(action) = action {
@@ -296,6 +237,74 @@ impl Launcher {
             }
         }
     }
+}
+fn update_results(
+    ui: &mut egui::Ui,
+    state: &mut ModUpdateState,
+    height: f32,
+) -> egui::scroll_area::ScrollAreaOutput<()> {
+    egui::ScrollArea::vertical()
+        .id_salt("mod-update-results")
+        .max_height(height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if let Some(error) = &state.error {
+                ui.colored_label(egui::Color32::from_rgb(255, 76, 76), error);
+                return;
+            }
+            let Some(plan) = &state.plan else {
+                return;
+            };
+            if plan.updates().is_empty() {
+                ui.label("没有找到可更新的 Mod。");
+            }
+            for update in plan.updates() {
+                let mut selected = state.selected.contains(&update.file_name);
+                if crate::ui_style::checkbox(
+                    ui,
+                    &mut selected,
+                    &format!(
+                        "{}  {} → {}{}",
+                        update.name,
+                        update.current_version,
+                        update.new_version,
+                        if update.enabled {
+                            ""
+                        } else {
+                            "（已禁用）"
+                        }
+                    ),
+                    "",
+                )
+                .changed()
+                {
+                    if selected {
+                        state.selected.insert(update.file_name.clone());
+                    } else {
+                        state.selected.remove(&update.file_name);
+                    }
+                }
+                ui.label(
+                    RichText::new(format!("{} · {}", update.source, update.file_name))
+                        .size(12.0)
+                        .color(theme::palette(ui.ctx()).dark),
+                );
+            }
+            for issue in plan.issues() {
+                ui.label(issue);
+            }
+            if !plan.unmatched().is_empty() {
+                ui.collapsing(
+                    format!("未识别的文件（{}）", plan.unmatched().len()),
+                    |ui| {
+                        for name in plan.unmatched() {
+                            ui.label(name);
+                        }
+                        ui.label("无法匹配官方哈希，不代表已经是最新版本。");
+                    },
+                );
+            }
+        })
 }
 fn target_info(version: &serde_json::Value) -> anyhow::Result<(String, String)> {
     let libraries = version["libraries"]
@@ -324,6 +333,57 @@ fn target_info(version: &serde_json::Value) -> anyhow::Result<(String, String)> 
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_provider_error_can_be_scrolled_to_its_last_line() {
+        let ctx = egui::Context::default();
+        let mut state = ModUpdateState {
+            error: Some(format!(
+                "{}\nlast error detail",
+                "download failure\n".repeat(60)
+            )),
+            ..Default::default()
+        };
+        let mut viewport = egui::Rect::NOTHING;
+        let mut last = None;
+        for frame in 0..6 {
+            let mut events = if frame > 0 {
+                vec![egui::Event::PointerMoved(viewport.center())]
+            } else {
+                vec![]
+            };
+            if frame >= 2 {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -10000.0),
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 300.0),
+                    )),
+                    events,
+                    time: Some(frame as f64 * 0.1),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let output = update_results(ui, &mut state, 120.0);
+                        viewport = output.inner_rect;
+                        last = Some(output);
+                    });
+                },
+            );
+        }
+        let output = last.unwrap();
+        assert!(output.content_size.y > 120.0);
+        assert!(output.inner_rect.height() <= 120.0);
+        assert!(output.state.offset.y + output.inner_rect.height() >= output.content_size.y - 1.0);
+        assert!(state.error.as_ref().unwrap().ends_with("last error detail"));
+    }
+
     #[test]
     fn disabled_instance_updates_do_not_start_network_request() {
         let d = tempfile::tempdir().unwrap();

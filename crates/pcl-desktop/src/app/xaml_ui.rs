@@ -798,9 +798,9 @@ impl Renderer {
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
                     let text=value("Text");
                     if node.attr("_PclBindingText")=="True" && self.bound_values.get(&key)!=Some(&text) {
-                        self.bound_values.insert(key.clone(),text.clone());self.inputs.insert(key.clone(),text);
+                        self.bound_values.insert(key.clone(),text.clone());self.inputs.insert(key.clone(),text.clone());
                     }
-                    let selected=self.inputs.entry(key).or_default();
+                    let selected=self.inputs.entry(key).or_insert(text);
                     ui_style::PclComboBox::from_id_salt(ui.id()).width(ui.available_width()).selected_text(selected.clone()).show_ui(ui,|ui|{
                         for item in &node.children {let text=replace(item.attr("Content"),values);if ui.selectable_value(selected,text.clone(),text).clicked(){collect_actions(item,values,actions);}}
                     });
@@ -1568,6 +1568,28 @@ fn read_picture(source: &str) -> Result<egui::ColorImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unnamed_combo_displays_initial_text_and_keeps_the_changed_selection() {
+        let ctx = egui::Context::default();
+        let nodes = parse("<local:MyComboBox Text='Initial'><local:MyComboBoxItem Content='Initial'/><local:MyComboBoxItem Content='Changed'/></local:MyComboBox>").unwrap();
+        let mut renderer = Renderer::default();
+        let draw = |renderer: &mut Renderer| {
+            ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let actions = renderer.render(ui, &nodes, &Origin::default(), &HashMap::new());
+                    assert!(actions.is_empty());
+                });
+            })
+        };
+        let output = draw(&mut renderer);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Initial")));
+        assert_eq!(renderer.inputs.len(), 1);
+        *renderer.inputs.values_mut().next().unwrap() = "Changed".into();
+        let output = draw(&mut renderer);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Changed")));
+        assert_eq!(renderer.inputs.values().next().unwrap(), "Changed");
+    }
+
     #[test]
     fn dock_panel_reserves_edges_and_fills_remaining_rectangle() {
         let nodes=parse(r##"<DockPanel Width="300" Height="100"><Border Width="80" DockPanel.Dock="Left" Background="#FF0000"/><Border Height="20" DockPanel.Dock="Top" Background="#0000FF"/><Border Background="#00FF00"/></DockPanel>"##).unwrap();

@@ -160,7 +160,7 @@ impl Launcher {
                                 ui.close();
                             }
                         });
-                        if response.hovered() {
+                        if response.contains_pointer() {
                             ui.painter()
                                 .rect_filled(row, 6, theme::palette(ui.ctx()).light);
                         }
@@ -201,7 +201,7 @@ impl Launcher {
                                 MUTED
                             },
                         );
-                        if response.hovered() {
+                        if response.contains_pointer() || response.has_focus() {
                             let settings = Rect::from_min_size(
                                 row.right_top() + Vec2::new(-42.0, 7.0),
                                 Vec2::splat(28.0),
@@ -929,7 +929,7 @@ impl Launcher {
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, mutable, &value.name)
                     });
-                    if response.hovered() || selection.contains(&value.file_name) {
+                    if response.contains_pointer() || selection.contains(&value.file_name) {
                         ui.painter()
                             .rect_filled(row, 4, theme::palette(ui.ctx()).light);
                     }
@@ -993,7 +993,9 @@ impl Launcher {
                         Vec2::new(72.0, 24.0),
                     );
                     let mut enabled = value.enabled;
-                    if response.hovered() || !value.enabled || selection.contains(&value.file_name)
+                    if response.contains_pointer()
+                        || !value.enabled
+                        || selection.contains(&value.file_name)
                     {
                         let builder = egui::UiBuilder::new().max_rect(toggle);
                         let mut toggle_ui =
@@ -1406,6 +1408,205 @@ fn button(
 #[cfg(test)]
 mod management_tests {
     use super::*;
+    fn ui_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx
+    }
+    #[test]
+    fn installed_last_row_and_its_hover_settings_button_keep_the_correct_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        for i in 0..40 {
+            let id = format!("instance-{i:03}");
+            let folder = app.settings.game_root.join("versions").join(&id);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(
+                folder.join(format!("{id}.json")),
+                serde_json::to_vec(&serde_json::json!({"id":id,"type":"release","libraries":[]}))
+                    .unwrap(),
+            )
+            .unwrap();
+            app.versions.push(InstalledVersion {
+                id,
+                kind: "release".into(),
+                required_java: 21,
+                error: None,
+            });
+        }
+        let ctx = ui_context();
+        // Let the real async catalog resolve fixture metadata, not live game files.
+        for _ in 0..100 {
+            version_catalog(&ctx, &app.settings.game_root, &app.versions);
+            if ctx.data(|data| {
+                data.get_temp::<CatalogCache>(egui::Id::new("instance-version-catalog"))
+                    .is_some_and(|cache| !cache.loading)
+            }) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let draw = |app: &mut Launcher, scroll, events| {
+            let mut size = Vec2::ZERO;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 360.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    theme::apply(ctx, &app.settings);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        size = egui::ScrollArea::vertical()
+                            .id_salt("version-audit-page")
+                            .max_height(260.0)
+                            .vertical_scroll_offset(scroll)
+                            .show(ui, |ui| app.versions_page(ui))
+                            .content_size;
+                    });
+                },
+            );
+            (output, size)
+        };
+        let (_, size) = draw(&mut app, 0.0, vec![]);
+        assert!(size.y > 1600.0);
+        let offset = size.y - 260.0;
+        let (bottom, _) = draw(&mut app, offset, vec![]);
+        let last = bottom
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "instance-039" => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let click = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        for pressed in [true, false] {
+            draw(&mut app, offset, click(last.center(), pressed));
+        }
+        assert_eq!(
+            app.settings.selected_version.as_deref(),
+            Some("instance-039")
+        );
+        assert!(!app.version_tools);
+        // Keep the mouse over the settings column across several frames before clicking.
+        let pos = Pos2::new(586.0, last.center().y + 7.0);
+        for _ in 0..3 {
+            let (output, _) = draw(&mut app, offset, vec![egui::Event::PointerMoved(pos)]);
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect.contains(pos) && rect.rect.width() > 300.0
+                    && (rect.rect.height()-42.0).abs()<0.1 && rect.fill==theme::palette(&ctx).light
+            )), "row highlight must remain under the settings button");
+        }
+        for pressed in [true, false] {
+            draw(&mut app, offset, click(pos, pressed));
+        }
+        assert!(
+            app.version_tools,
+            "hover button must not disappear when it becomes the topmost widget"
+        );
+        assert_eq!(
+            app.settings.selected_version.as_deref(),
+            Some("instance-039")
+        );
+    }
+
+    #[test]
+    fn hovering_over_mod_checkbox_keeps_it_visible_and_changes_only_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let instance = app.settings.game_root.clone();
+        std::fs::create_dir_all(instance.join("mods")).unwrap();
+        let path = instance.join("mods/one.jar");
+        std::fs::write(&path, b"fixture").unwrap();
+        let other = instance.join("mods/other.jar");
+        std::fs::write(&other, b"other").unwrap();
+        app.local_mods = vec![mods::LocalMod {
+            file_name: "one.jar".into(),
+            path: path.clone(),
+            enabled: true,
+            name: "Fixture Mod".into(),
+            version: None,
+            mod_ids: vec![],
+            loader: "fabric".into(),
+            error: None,
+        }];
+        let ctx = ui_context();
+        let draw = |app: &mut Launcher, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 650.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    theme::apply(ctx, &app.settings);
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.instance_mods(ui, "fixture", &instance));
+                },
+            )
+        };
+        let text = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+        };
+        let output = draw(&mut app, vec![]);
+        let row = text(&output, "Fixture Mod").unwrap();
+        let pos = Pos2::new(580.0, row.center().y + 7.0);
+        for _ in 0..4 {
+            let output = draw(&mut app, vec![egui::Event::PointerMoved(pos)]);
+            assert!(
+                text(&output, "启用").is_some(),
+                "checkbox must remain present under its own pointer"
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect.contains(pos) && rect.rect.width() > 300.0
+                    && (rect.rect.height()-44.0).abs()<0.1 && rect.fill==theme::palette(&ctx).light
+            )), "row highlight must remain under the enable checkbox");
+        }
+        for pressed in [true, false] {
+            draw(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(instance.join("mods/one.jar.disabled")).unwrap(),
+            b"fixture"
+        );
+        assert_eq!(std::fs::read(other).unwrap(), b"other");
+    }
+
     #[test]
     fn version_preferences_cannot_write_during_root_job() {
         let d = tempfile::tempdir().unwrap();
