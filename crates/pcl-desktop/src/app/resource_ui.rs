@@ -1,8 +1,5 @@
 //! Community resources use PageResource.xaml / MyResourceItem.xaml geometry.
-#[path = "loading_ui.rs"]
-mod loading_ui;
-
-use super::{Event, Launcher, MUTED};
+use super::{loading_ui, Event, Launcher, MUTED};
 use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 use pcl_core::{
@@ -39,6 +36,7 @@ pub(super) struct ResourceBrowser {
     detail_id: Option<String>,
     detail_hit: Option<resources::ProjectHit>,
     page_error: Option<String>,
+    cancelled: bool,
     loading: bool,
     loading_indicator: loading_ui::Indicator,
     version_filter: String,
@@ -105,6 +103,7 @@ pub(crate) enum ResourceEvent {
     ),
     Icon(RequestKey, String, Vec<u8>),
     Failed(RequestKey, String),
+    Cancelled(RequestKey),
     Installed(String, String),
     Plan(RequestKey, Vec<resources::PlannedResource>),
     PlanFinished(RequestKey),
@@ -158,6 +157,7 @@ impl Launcher {
         state.detail_hit = None;
         state.project = None;
         state.page_error = None;
+        state.cancelled = false;
         state.versions.clear();
         state.open_groups.clear();
         state.install_selection = None;
@@ -172,18 +172,18 @@ impl Launcher {
             .map(|_| self.resource_browser.dependency_plan.as_slice())
     }
     fn finish_resource_request(&mut self, key: &RequestKey) -> bool {
-        if self
+        let pending = self
             .resource_browser
             .pending
             .as_ref()
-            .is_some_and(|pending| pending.same(key))
-        {
+            .is_some_and(|pending| pending.same(key));
+        if pending {
             self.resource_browser.pending = None;
             self.resource_browser.loading = false;
             self.busy = None;
             self.progress = None;
         }
-        self.resource_browser.accepts(key, &self.settings.game_root)
+        pending && self.resource_browser.accepts(key, &self.settings.game_root)
     }
     pub(super) fn handle_resource_event(&mut self, event: ResourceEvent) {
         match event {
@@ -235,6 +235,13 @@ impl Launcher {
                 }
                 self.record(message.clone());
                 self.resource_browser.page_error = Some(message);
+            }
+            ResourceEvent::Cancelled(key) => {
+                if !self.finish_resource_request(&key) {
+                    return;
+                }
+                self.resource_browser.cancelled = true;
+                self.status = "资源列表获取已取消".into();
             }
             ResourceEvent::Plan(key, plan) => {
                 if self
@@ -316,6 +323,7 @@ impl Launcher {
             state.detail_id = None;
             state.detail_hit = None;
             state.page_error = None;
+            state.cancelled = false;
             state.loading = false;
             state.install_selection = None;
             state.open_groups.clear();
@@ -369,6 +377,7 @@ impl Launcher {
         }
         state.generation += 1;
         state.page_error = None;
+        state.cancelled = false;
         state.loading = false;
         state.plan_key = None;
         state.dependency_plan.clear();
@@ -404,6 +413,12 @@ impl Launcher {
     fn retry_resource_search(&mut self) {
         if let Some((request, category)) = self.resource_browser.last_attempt.clone() {
             self.start_resource_search(request, category);
+        }
+    }
+    fn cancel_resource_request(&mut self) {
+        if let Some(cancel) = &self.resource_browser.cancel {
+            cancel.store(true, Ordering::Relaxed);
+            self.status = "正在取消资源列表获取…".into();
         }
     }
     fn start_resource_search(&mut self, request: resources::SearchOptions, category: String) {
@@ -450,10 +465,16 @@ impl Launcher {
                     }
                 }
                 Err(error) => {
-                    let _ = tx.send(Event::Resource(ResourceEvent::Failed(
-                        key,
-                        format!("资源搜索失败：{error:#}"),
-                    )));
+                    let event = if error.is::<pcl_core::model::OperationCancelled>()
+                        || error
+                            .chain()
+                            .any(|cause| cause.is::<pcl_core::model::OperationCancelled>())
+                    {
+                        ResourceEvent::Cancelled(key)
+                    } else {
+                        ResourceEvent::Failed(key, format!("资源搜索失败：{error:#}"))
+                    };
+                    let _ = tx.send(Event::Resource(event));
                 }
             }
         });
@@ -503,10 +524,16 @@ impl Launcher {
                     }
                 }
                 Err(error) => {
-                    let _ = tx.send(Event::Resource(ResourceEvent::Failed(
-                        key,
-                        format!("获取资源版本失败：{error:#}"),
-                    )));
+                    let event = if error.is::<pcl_core::model::OperationCancelled>()
+                        || error
+                            .chain()
+                            .any(|cause| cause.is::<pcl_core::model::OperationCancelled>())
+                    {
+                        ResourceEvent::Cancelled(key)
+                    } else {
+                        ResourceEvent::Failed(key, format!("获取资源版本失败：{error:#}"))
+                    };
+                    let _ = tx.send(Event::Resource(event));
                 }
             }
         });
@@ -672,8 +699,8 @@ impl Launcher {
                     .width(star - 12.0)
                     .selected_text("Modrinth")
                     .show_ui(ui, |ui| {
-                        ui.label("Modrinth");
-                        ui.add_enabled(false, egui::Label::new("CurseForge 需要 API Key"));
+                        ui.selectable_label(true, "Modrinth");
+                        ui.selectable_label_enabled(false, false, "CurseForge 需要 API Key");
                     });
             });
             crate::ui_style::place_left(
@@ -793,7 +820,21 @@ impl Launcher {
         let mut selected = None;
         let mut page_request = None;
         let state = &mut self.resource_browser;
-        let loading = state.loading_indicator.show(
+        let status = if state.loading {
+            loading_ui::Status::Running {
+                cancelling: state
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|token| token.load(Ordering::Relaxed)),
+            }
+        } else if state.cancelled {
+            loading_ui::Status::Cancelled
+        } else if let Some(error) = &state.page_error {
+            loading_ui::Status::Failed(error)
+        } else {
+            loading_ui::Status::Ready
+        };
+        let loading = state.loading_indicator.show_status(
             ui,
             &format!(
                 "正在获取{}列表",
@@ -803,13 +844,14 @@ impl Launcher {
                     kind.label()
                 }
             ),
-            state.page_error.as_deref(),
-            state.loading,
+            status,
             loading_ui::Placement::List,
         );
-        if let Some(retry) = loading {
-            if retry {
-                self.retry_resource_search();
+        if let Some(action) = loading {
+            match action {
+                loading_ui::Action::Retry => self.retry_resource_search(),
+                loading_ui::Action::Cancel => self.cancel_resource_request(),
+                loading_ui::Action::None => (),
             }
         } else if let Some(page) = &self.resource_browser.page {
             resource_frame().inner_margin(12).show(ui, |ui| {
@@ -991,17 +1033,32 @@ impl Launcher {
             ui.add_space(17.0); // parent spacing contributes the remaining 8 DIP.
         }
         let state = &mut self.resource_browser;
-        if let Some(retry) = state.loading_indicator.show(
+        let status = if state.loading {
+            loading_ui::Status::Running {
+                cancelling: state
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|token| token.load(Ordering::Relaxed)),
+            }
+        } else if state.cancelled {
+            loading_ui::Status::Cancelled
+        } else if let Some(error) = &state.page_error {
+            loading_ui::Status::Failed(error)
+        } else {
+            loading_ui::Status::Ready
+        };
+        if let Some(action) = state.loading_indicator.show_status(
             ui,
             "正在获取版本列表",
-            state.page_error.as_deref(),
-            state.loading,
+            status,
             loading_ui::Placement::Detail,
         ) {
-            if retry {
+            if action == loading_ui::Action::Retry {
                 if let Some(id) = self.resource_browser.detail_id.clone() {
                     self.open_resource(id);
                 }
+            } else if action == loading_ui::Action::Cancel {
+                self.cancel_resource_request();
             }
             return;
         }
@@ -1385,88 +1442,17 @@ fn concrete_minecraft(value: &str) -> bool {
     value.contains('.') || value.contains('w')
 }
 fn editable_version(ui: &mut egui::Ui, rect: Rect, value: &mut String) -> egui::Response {
-    let arrow = Rect::from_min_size(
-        Pos2::new(rect.right() - 26.0, rect.top()),
-        Vec2::new(26.0, 28.0),
-    );
-    let response = ui.interact(
-        arrow,
-        ui.id().with("editable-minecraft-arrow"),
-        egui::Sense::click(),
-    );
-    let popup = egui::Popup::menu(&response)
-        .at_position(rect.left_bottom())
-        .width(rect.width());
-    let open = popup.is_open();
-    let hovered = ui.rect_contains_pointer(rect);
-    let border = if open {
-        theme::palette(ui.ctx()).accent
-    } else if hovered {
-        theme::palette(ui.ctx()).border
-    } else {
-        theme::palette(ui.ctx()).control_border
-    };
-    ui.painter().rect_filled(
+    crate::ui_style::editable_combo(
+        ui,
         rect,
-        3,
-        if open || hovered {
-            theme::palette(ui.ctx()).light
-        } else {
-            Color32::from_white_alpha(85)
-        },
-    );
-    ui.painter().rect_stroke(
-        rect,
-        3,
-        egui::Stroke::new(1.0_f32, border),
-        egui::StrokeKind::Inside,
-    );
-    let text = ui.place(
-        Rect::from_min_max(
-            rect.min + Vec2::new(6.0, 0.0),
-            Pos2::new(arrow.left(), rect.bottom()),
-        ),
-        egui::TextEdit::singleline(value)
-            .frame(false)
-            .margin(Vec2::new(0.0, 6.0))
-            .hint_text("全部 (也可自行输入)"),
-    );
-    let phase = ui
-        .ctx()
-        .animate_bool_with_time(response.id.with("rotation"), open, 0.2);
-    let rotation = egui::emath::Rot2::from_angle(phase * std::f32::consts::PI);
-    let points = [
-        Vec2::new(-3.5, -1.75),
-        Vec2::new(0.0, 1.75),
-        Vec2::new(3.5, -1.75),
-    ]
-    .map(|p| arrow.center() + rotation * p);
-    ui.painter().add(egui::Shape::line(
-        points.to_vec(),
-        egui::Stroke::new(1.5_f32, border),
-    ));
-    popup.show(|ui| {
-        for preset in [
+        "resource-minecraft-version",
+        value,
+        &[
             "", "26.2", "26.1", "1.21.11", "1.21.8", "1.21.4", "1.21.1", "1.20.1", "1.19.2",
             "1.18.2", "1.16.5", "1.12.2", "1.7.10",
-        ] {
-            if ui
-                .selectable_label(
-                    value == preset,
-                    if preset.is_empty() {
-                        "全部 (也可自行输入)"
-                    } else {
-                        preset
-                    },
-                )
-                .clicked()
-            {
-                *value = preset.into();
-                ui.close();
-            }
-        }
-    });
-    text
+        ],
+        "全部 (也可自行输入)",
+    )
 }
 
 fn chevron(ui: &egui::Ui, center: Pos2, down: bool, color: Color32) {
@@ -2222,6 +2208,34 @@ fn resource_target_info(version: &serde_json::Value) -> Option<(String, String)>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn list_cancel_waits_for_the_matching_terminal_and_late_reply_keeps_new_busy() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temp.path());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let old = app.resource_request(Some(cancel.clone()));
+        app.resource_browser.loading = true;
+        app.busy = Some("resource list".into());
+        app.cancel_resource_request();
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(app.resource_browser.loading);
+        assert!(app.busy.is_some());
+        app.handle_resource_event(ResourceEvent::Cancelled(old.clone()));
+        assert!(app.resource_browser.cancelled);
+        assert!(!app.resource_browser.loading);
+        assert!(app.busy.is_none());
+        let current = app.resource_request(Some(Arc::new(AtomicBool::new(false))));
+        app.resource_browser.loading = true;
+        app.busy = Some("new resource list".into());
+        app.handle_resource_event(ResourceEvent::Cancelled(old));
+        assert!(app.resource_browser.loading);
+        assert_eq!(app.busy.as_deref(), Some("new resource list"));
+        app.cancel_resource_request();
+        app.handle_resource_event(ResourceEvent::Failed(current, "HTTP 503".into()));
+        assert!(!app.resource_browser.cancelled);
+        assert_eq!(app.resource_browser.page_error.as_deref(), Some("HTTP 503"));
+        assert!(app.busy.is_none());
+    }
     fn version(id: &str, game_versions: &[&str], loaders: &[&str]) -> resources::ModrinthVersion {
         serde_json::from_value(serde_json::json!({
             "id": id, "project_id": "project", "name": id, "version_number": id,

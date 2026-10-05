@@ -25,6 +25,8 @@ pub struct InstanceSettings {
     pub custom_info: String,
     pub jvm_arguments: String,
     pub game_arguments: String,
+    pub pre_launch_command: String,
+    pub pre_launch_wait: bool,
     pub gc_mode: Option<GcMode>,
     pub server: String,
     pub login_requirement: LoginRequirement,
@@ -60,6 +62,8 @@ impl Default for InstanceSettings {
             custom_info: String::new(),
             jvm_arguments: String::new(),
             game_arguments: String::new(),
+            pre_launch_command: String::new(),
+            pre_launch_wait: true,
             gc_mode: None,
             server: String::new(),
             login_requirement: LoginRequirement::Any,
@@ -151,6 +155,7 @@ pub fn validate_instance_settings(settings: &InstanceSettings) -> Result<()> {
         ("游戏参数", &settings.game_arguments),
         ("自定义信息", &settings.custom_info),
         ("版本描述", &settings.description),
+        ("启动前执行命令", &settings.pre_launch_command),
     ] {
         if value.len() > 16_384 || value.contains('\0') {
             bail!("{name}过长或含无效字符");
@@ -405,6 +410,26 @@ pub fn parse_server_address(server: &str) -> Result<(String, Option<u16>)> {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum LauncherVisibility {
+    CloseOnLaunch,
+    HideThenClose,
+    HideThenRestore,
+    Minimize,
+    #[default]
+    Keep,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessPriority {
+    High,
+    #[default]
+    Normal,
+    Low,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WindowMode {
     #[default]
     Default,
@@ -455,6 +480,11 @@ pub struct Settings {
     pub game_roots: Vec<PathBuf>,
     pub ui_background_folder: Option<PathBuf>,
     pub ui_background_colorful: bool,
+    pub ui_background_opacity: u16,
+    pub ui_background_blur: u8,
+    pub ui_background_fit: u8,
+    pub ui_launcher_logo: bool,
+    pub ui_launcher_opacity: u16,
     pub ui_theme: u8,
     pub ui_theme_hue: f32,
     pub ui_theme_saturation: f32,
@@ -469,6 +499,10 @@ pub struct Settings {
     pub custom_info: String,
     pub jvm_arguments: String,
     pub game_arguments: String,
+    pub pre_launch_command: String,
+    pub pre_launch_wait: bool,
+    pub launcher_visibility: LauncherVisibility,
+    pub process_priority: ProcessPriority,
     pub window_mode: WindowMode,
     pub width: u32,
     pub height: u32,
@@ -491,6 +525,11 @@ impl Default for Settings {
             game_roots: Vec::new(),
             ui_background_folder: None,
             ui_background_colorful: true,
+            ui_background_opacity: 1000,
+            ui_background_blur: 0,
+            ui_background_fit: 0,
+            ui_launcher_logo: true,
+            ui_launcher_opacity: 100,
             ui_theme: 0,
             ui_theme_hue: 180.0,
             ui_theme_saturation: 80.0,
@@ -504,6 +543,10 @@ impl Default for Settings {
             custom_info: String::new(),
             jvm_arguments: String::new(),
             game_arguments: String::new(),
+            pre_launch_command: String::new(),
+            pre_launch_wait: true,
+            launcher_visibility: LauncherVisibility::Keep,
+            process_priority: ProcessPriority::Normal,
             window_mode: WindowMode::Default,
             width: 854,
             height: 480,
@@ -526,6 +569,15 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn validate_settings(settings: &Settings) -> Result<()> {
+    if settings.ui_background_opacity > 1000
+        || settings.ui_background_blur > 40
+        || settings.ui_background_fit > 12
+    {
+        bail!("背景透明度、模糊或布局设置超出范围");
+    }
+    if !(40..=100).contains(&settings.ui_launcher_opacity) {
+        bail!("启动器不透明度必须介于 40 和 100 之间");
+    }
     if settings.ui_theme > 14 {
         bail!("主题编号必须介于 0 和 14 之间");
     }
@@ -572,6 +624,7 @@ pub fn validate_settings(settings: &Settings) -> Result<()> {
         custom_info: settings.custom_info.clone(),
         jvm_arguments: settings.jvm_arguments.clone(),
         game_arguments: settings.game_arguments.clone(),
+        pre_launch_command: settings.pre_launch_command.clone(),
         width: Some(settings.width),
         height: Some(settings.height),
         ..InstanceSettings::default()
@@ -863,5 +916,56 @@ mod tests {
         assert_eq!(settings.memory_mb, 4096);
         assert_eq!(settings.offline_name, "Player");
         assert!(settings.game_root.is_absolute());
+    }
+    #[test]
+    fn new_launch_and_background_defaults_preserve_old_settings_and_validate_before_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::write(&path, br#"{"unknown":{"preserve":1}}"#).unwrap();
+        let mut settings = load_settings(&path).unwrap();
+        assert_eq!(settings.launcher_visibility, LauncherVisibility::Keep);
+        assert_eq!(settings.process_priority, ProcessPriority::Normal);
+        assert!(settings.pre_launch_wait && settings.pre_launch_command.is_empty());
+        assert_eq!(
+            (
+                settings.ui_background_opacity,
+                settings.ui_background_blur,
+                settings.ui_background_fit,
+                settings.ui_launcher_opacity
+            ),
+            (1000, 0, 0, 100)
+        );
+        assert!(settings.ui_launcher_logo);
+        settings.pre_launch_command = "printf local".into();
+        settings.launcher_visibility = LauncherVisibility::HideThenRestore;
+        settings.process_priority = ProcessPriority::Low;
+        save_settings(&path, &settings).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(load_settings(&path).unwrap(), settings);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["unknown"]["preserve"],
+            1
+        );
+        for field in [
+            "ui_background_opacity",
+            "ui_background_blur",
+            "ui_background_fit",
+            "ui_launcher_opacity",
+        ] {
+            let mut value = serde_json::to_value(&settings).unwrap();
+            value[field] = serde_json::json!(match field {
+                "ui_launcher_opacity" => 39,
+                "ui_background_opacity" => 1001,
+                "ui_background_blur" => 41,
+                _ => 13,
+            });
+            let invalid: Settings = serde_json::from_value(value).unwrap();
+            assert!(save_settings(&path, &invalid).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        settings.pre_launch_command.push('\0');
+        assert!(save_settings(&path, &settings).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(InstanceSettings::default().pre_launch_wait);
     }
 }

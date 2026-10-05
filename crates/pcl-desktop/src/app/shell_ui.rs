@@ -39,7 +39,7 @@ impl Launcher {
                         .clicked()
                 {
                     // Only the Child owned by this launch is terminated. Keep
-                    // the entry visible until GameExited confirms its exit.
+                    // the entry visible until GameFinished confirms its exit.
                     self.game_stop.store(true, Ordering::Relaxed);
                 }
             });

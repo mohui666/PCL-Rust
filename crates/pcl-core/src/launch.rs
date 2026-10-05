@@ -19,10 +19,91 @@ pub struct LaunchOptions {
     pub height: u32,
 }
 
+#[derive(Clone)]
+pub struct PreLaunchCommand {
+    pub label: &'static str,
+    pub text: String,
+    pub wait: bool,
+}
+
+pub struct LaunchBehavior {
+    pub visibility: crate::config::LauncherVisibility,
+    pub priority: crate::config::ProcessPriority,
+    pub commands: Vec<PreLaunchCommand>,
+    pub command_cwd: PathBuf,
+    /// User path values are environment data, never injected as shell syntax.
+    pub variables: Vec<(String, String)>,
+}
+impl LaunchBehavior {
+    pub fn environment(&self) -> Vec<(String, String)> {
+        self.variables
+            .iter()
+            .enumerate()
+            .map(|(i, (_, value))| (format!("PCL_LAUNCH_{i}"), value.clone()))
+            .collect()
+    }
+
+    /// Preserve the user's shell program while expanding supported PCL markers
+    /// via quoted environment references. Path punctuation cannot become code.
+    /// Windows uses cmd /D /V:ON; Unix uses /bin/sh.
+    pub fn shell_text(&self, text: &str, windows: bool) -> String {
+        let mut output = String::new();
+        let mut quote = None;
+        let mut offset = 0;
+        while offset < text.len() {
+            let rest = &text[offset..];
+            let ch = rest.chars().next().unwrap();
+            if (ch == '\\' && !windows && quote != Some('\''))
+                || (ch == '^' && windows && quote != Some('"'))
+            {
+                output.push(ch);
+                offset += ch.len_utf8();
+                if let Some(next) = text[offset..].chars().next() {
+                    output.push(next);
+                    offset += next.len_utf8();
+                }
+                continue;
+            }
+            if let Some((index, (marker, _))) = self
+                .variables
+                .iter()
+                .enumerate()
+                .find(|(_, (marker, _))| rest.starts_with(marker))
+            {
+                let reference = if windows {
+                    format!("!PCL_LAUNCH_{index}!")
+                } else {
+                    format!("${{PCL_LAUNCH_{index}}}")
+                };
+                match quote {
+                    Some('"') => output.push_str(&reference),
+                    Some('\'') if !windows => output.push_str(&format!("'\"{reference}\"'")),
+                    _ => output.push_str(&format!("\"{reference}\"")),
+                }
+                offset += marker.len();
+                continue;
+            }
+            if ch == '"' && quote != Some('\'') {
+                quote = if quote == Some('"') { None } else { Some('"') };
+            } else if ch == '\'' && !windows && quote != Some('"') {
+                quote = if quote == Some('\'') {
+                    None
+                } else {
+                    Some('\'')
+                };
+            }
+            output.push(ch);
+            offset += ch.len_utf8();
+        }
+        output
+    }
+}
+
 pub struct LaunchPlan {
     pub java: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    pub behavior: LaunchBehavior,
     secrets: Vec<String>,
 }
 
@@ -37,6 +118,39 @@ impl std::fmt::Debug for LaunchPlan {
 }
 
 impl LaunchPlan {
+    pub(crate) fn sanitized_pre_launch(
+        &self,
+    ) -> (Vec<PreLaunchCommand>, Vec<(String, String)>, bool) {
+        let mut removed = false;
+        let mut sanitize = |text: &str| {
+            let mut value = text.to_owned();
+            for secret in &self.secrets {
+                if !secret.is_empty() && secret != "0" && value.contains(secret) {
+                    value = value.replace(secret, "F");
+                    removed = true;
+                }
+            }
+            value
+        };
+        let commands = self
+            .behavior
+            .commands
+            .iter()
+            .map(|c| PreLaunchCommand {
+                label: c.label,
+                text: sanitize(&c.text),
+                wait: c.wait,
+            })
+            .collect();
+        let variables = self
+            .behavior
+            .environment()
+            .into_iter()
+            .map(|(k, v)| (k, sanitize(&v)))
+            .collect();
+        (commands, variables, removed)
+    }
+
     /// Export only inert credential placeholders, even when a token appears in
     /// a custom argument or an inline `--accessToken=value` form.
     pub(crate) fn sanitized_arguments(&self) -> (Vec<String>, bool) {
@@ -144,6 +258,17 @@ pub fn build_plan_with_settings(
     settings: &crate::config::Settings,
     java_major: u32,
 ) -> Result<LaunchPlan> {
+    build_plan_with_settings_and_viewport(options, session, platform, settings, java_major, None)
+}
+
+pub fn build_plan_with_settings_and_viewport(
+    options: &LaunchOptions,
+    session: &Session,
+    platform: &Platform,
+    settings: &crate::config::Settings,
+    java_major: u32,
+    launcher_size: Option<(u32, u32)>,
+) -> Result<LaunchPlan> {
     crate::config::validate_settings(settings)?;
     let mut instance = crate::config::load_instance_settings(&options.root, &options.version_id)?;
     // Selection already resolved the instance's Java mode. Do not replace the
@@ -182,18 +307,44 @@ pub fn build_plan_with_settings(
             options.width = settings.width.max(100);
             options.height = settings.height.max(100);
         }
-        crate::config::WindowMode::LauncherSize | crate::config::WindowMode::Maximized => {
-            bail!("此游戏窗口模式尚未支持，请选择默认、全屏或自定义尺寸")
+        crate::config::WindowMode::LauncherSize => {
+            let (width, height) =
+                launcher_size.context("跟随窗口尺寸需要当前启动器窗口，命令行请使用自定义尺寸")?;
+            anyhow::ensure!(
+                (100..=16_384).contains(&width) && (100..=16_384).contains(&height),
+                "启动器窗口尺寸超出有效范围"
+            );
+            options.width = width;
+            options.height = height;
+            instance.width = None;
+            instance.height = None;
+            instance.window_mode = Some(crate::config::WindowMode::Custom);
+        }
+        crate::config::WindowMode::Maximized => {
+            bail!("游戏窗口最大化尚未支持，请选择默认、全屏、跟随窗口或自定义尺寸")
         }
     }
     let gc = instance.gc_mode.unwrap_or(settings.gc_mode);
-    build_plan_with_instance(
+    let mut plan = build_plan_with_instance(
         &options,
         session,
         platform,
         instance,
         Some((gc, java_major)),
-    )
+    )?;
+    plan.behavior.visibility = settings.launcher_visibility;
+    plan.behavior.priority = settings.process_priority;
+    if !settings.pre_launch_command.trim().is_empty() {
+        plan.behavior.commands.insert(
+            0,
+            PreLaunchCommand {
+                label: "全局",
+                text: settings.pre_launch_command.clone(),
+                wait: settings.pre_launch_wait,
+            },
+        );
+    }
+    Ok(plan)
 }
 
 fn build_plan_with_instance(
@@ -511,11 +662,58 @@ fn build_plan_with_instance(
     replacements.clear();
     fs::create_dir_all(&cwd).context("无法创建游戏实例目录")?;
     fs::create_dir_all(&natives).context("无法创建 natives 目录")?;
+    let folder = |path: &Path| {
+        let mut value = path.to_string_lossy().into_owned();
+        if !value.ends_with(['/', '\\']) {
+            value.push(if platform.os == "windows" { '\\' } else { '/' });
+        }
+        value
+    };
+    let executable = std::env::current_exe().context("无法定位启动器可执行文件")?;
+    let version_path = confined_path(&root, &Path::new("versions").join(&options.version_id))?;
+    let variables = vec![
+        ("{minecraft}".into(), folder(&root)),
+        ("{version_path}".into(), folder(&version_path)),
+        ("{verpath}".into(), folder(&version_path)),
+        ("{version_indie}".into(), folder(&cwd)),
+        ("{verindie}".into(), folder(&cwd)),
+        (
+            "{java}".into(),
+            folder(java.parent().context("Java 缺少父目录")?),
+        ),
+        ("{name}".into(), options.version_id.clone()),
+        ("{version}".into(), jar_id.to_owned()),
+        (
+            "{path}".into(),
+            folder(executable.parent().context("启动器缺少父目录")?),
+        ),
+        (
+            "{path_with_name}".into(),
+            executable.to_string_lossy().into_owned(),
+        ),
+        ("{pcl_version}".into(), env!("CARGO_PKG_VERSION").into()),
+    ];
+    let commands = if instance.pre_launch_command.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![PreLaunchCommand {
+            label: "版本",
+            text: instance.pre_launch_command,
+            wait: instance.pre_launch_wait,
+        }]
+    };
     Ok(LaunchPlan {
         java,
         args,
         cwd,
         secrets,
+        behavior: LaunchBehavior {
+            visibility: crate::config::LauncherVisibility::Keep,
+            priority: crate::config::ProcessPriority::Normal,
+            commands,
+            command_cwd: root,
+            variables,
+        },
     })
 }
 
@@ -1199,5 +1397,83 @@ mod tests {
         assert!(plan.args[position + 1].contains(';'));
         assert!(plan.args[position + 1].ends_with("versions/test/test.jar"));
         assert!(!plan.args.contains(&"-XstartOnFirstThread".into()));
+    }
+    #[test]
+    fn explicit_commands_are_ordered_and_download_metadata_cannot_add_commands() {
+        let (_dir, options, session, platform) = fixture(json!({
+            "mainClass":"Main", "minecraftArguments":"", "pre_launch_command":"evil metadata",
+            "behavior":{"commands":["evil"]}
+        }));
+        let instance = crate::config::InstanceSettings {
+            pre_launch_command: "printf instance".into(),
+            pre_launch_wait: false,
+            ..Default::default()
+        };
+        crate::config::save_instance_settings(&options.root, "test", &instance).unwrap();
+        let settings = crate::config::Settings {
+            pre_launch_command: "printf global".into(),
+            pre_launch_wait: true,
+            launcher_visibility: crate::config::LauncherVisibility::HideThenRestore,
+            process_priority: crate::config::ProcessPriority::Low,
+            ..Default::default()
+        };
+        let plan = build_plan_with_settings(&options, &session, &platform, &settings, 21).unwrap();
+        assert_eq!(
+            plan.behavior
+                .commands
+                .iter()
+                .map(|c| (c.label, c.text.as_str(), c.wait))
+                .collect::<Vec<_>>(),
+            [
+                ("全局", "printf global", true),
+                ("版本", "printf instance", false)
+            ]
+        );
+        assert_eq!(plan.behavior.priority, crate::config::ProcessPriority::Low);
+        assert_eq!(
+            plan.behavior.visibility,
+            crate::config::LauncherVisibility::HideThenRestore
+        );
+        assert_eq!(
+            plan.behavior.command_cwd,
+            options.root.canonicalize().unwrap()
+        );
+        assert!(!plan.redacted_command().contains("printf"));
+    }
+
+    #[test]
+    fn launcher_size_uses_frozen_pixels_instead_of_old_instance_dimensions() {
+        let (_dir, options, session, platform) = fixture(
+            json!({"mainClass":"Main", "minecraftArguments":"--width ${resolution_width} --height ${resolution_height}"}),
+        );
+        let instance = crate::config::InstanceSettings {
+            window_mode: Some(crate::config::WindowMode::LauncherSize),
+            width: Some(111),
+            height: Some(222),
+            ..Default::default()
+        };
+        crate::config::save_instance_settings(&options.root, "test", &instance).unwrap();
+        let settings = crate::config::Settings::default();
+        assert!(build_plan_with_settings(&options, &session, &platform, &settings, 21).is_err());
+        let plan = build_plan_with_settings_and_viewport(
+            &options,
+            &session,
+            &platform,
+            &settings,
+            21,
+            Some((1234, 765)),
+        )
+        .unwrap();
+        assert!(plan.args.windows(2).any(|p| p == ["--width", "1234"]));
+        assert!(plan.args.windows(2).any(|p| p == ["--height", "765"]));
+        assert!(build_plan_with_settings_and_viewport(
+            &options,
+            &session,
+            &platform,
+            &settings,
+            21,
+            Some((0, 1))
+        )
+        .is_err());
     }
 }

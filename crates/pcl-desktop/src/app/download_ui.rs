@@ -1,8 +1,91 @@
-use super::{Launcher, MUTED};
+use super::install_ui::InstallKind;
+use super::{loading_ui, Event, Launcher, MUTED};
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
+use pcl_core::{install, loaders::LoaderVersion, model::OperationCancelled};
 use serde_json::Value;
+use std::sync::atomic::Ordering;
+
+#[derive(Default)]
+pub(super) struct VersionLists {
+    pub(super) manifest: VersionRequest,
+    pub(super) loader: VersionRequest,
+    pub(super) loader_target: Option<(String, InstallKind)>,
+}
+#[derive(Default)]
+pub(super) struct VersionRequest {
+    id: u64,
+    pub(super) phase: Phase,
+    pub(super) indicator: loading_ui::Indicator,
+}
+#[derive(Default)]
+pub(super) enum Phase {
+    #[default]
+    Idle,
+    Loading,
+    Ready,
+    Failed(String),
+    Cancelled,
+}
+impl VersionRequest {
+    pub(super) fn start(&mut self) -> u64 {
+        self.id = self.id.wrapping_add(1);
+        self.phase = Phase::Loading;
+        self.indicator.start();
+        self.id
+    }
+    fn accepts(&self, id: u64) -> bool {
+        self.id == id && self.running()
+    }
+    pub(super) fn running(&self) -> bool {
+        matches!(self.phase, Phase::Loading)
+    }
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        cancelling: bool,
+        placement: loading_ui::Placement,
+    ) -> Option<loading_ui::Action> {
+        let status = match &self.phase {
+            Phase::Loading => loading_ui::Status::Running { cancelling },
+            Phase::Failed(error) => loading_ui::Status::Failed(error),
+            Phase::Cancelled => loading_ui::Status::Cancelled,
+            Phase::Idle | Phase::Ready => loading_ui::Status::Ready,
+        };
+        self.indicator
+            .show_status(ui, "正在获取版本列表", status, placement)
+    }
+    fn finish(&mut self, failure: Option<ListFailure>) {
+        self.phase = match failure {
+            Some(error) if error.cancelled => Phase::Cancelled,
+            Some(error) => Phase::Failed(error.message),
+            None => Phase::Ready,
+        };
+    }
+}
+pub(crate) struct ListFailure {
+    message: String,
+    cancelled: bool,
+}
+impl ListFailure {
+    pub(super) fn from_error(error: anyhow::Error) -> Self {
+        Self {
+            cancelled: error.is::<OperationCancelled>()
+                || error.chain().any(|cause| cause.is::<OperationCancelled>()),
+            message: format!("获取版本列表失败：{error:#}"),
+        }
+    }
+}
+pub(crate) enum VersionListEvent {
+    Manifest(u64, Result<Value, ListFailure>),
+    Loader(
+        u64,
+        String,
+        InstallKind,
+        Result<Vec<LoaderVersion>, ListFailure>,
+    ),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Category {
@@ -97,6 +180,72 @@ fn frame() -> egui::Frame {
         })
 }
 impl Launcher {
+    pub(super) fn version_list_request_active(&self) -> bool {
+        self.version_lists.manifest.running()
+            || self.version_lists.loader.running()
+            || self.java_download.is_loading()
+    }
+    pub(super) fn load_manifest(&mut self) {
+        let Some((tx, cancel)) = self.start_job("正在获取版本列表") else {
+            return;
+        };
+        let request = self.version_lists.manifest.start();
+        std::thread::spawn(move || {
+            let result =
+                install::fetch_manifest_with_cancel(&cancel).map_err(ListFailure::from_error);
+            let _ = tx.send(Event::VersionList(VersionListEvent::Manifest(
+                request, result,
+            )));
+        });
+    }
+    pub(super) fn handle_version_list_event(&mut self, event: VersionListEvent) {
+        let (state, result) = match event {
+            VersionListEvent::Manifest(id, result) => {
+                if !self.version_lists.manifest.accepts(id) {
+                    return;
+                }
+                let result = result.and_then(|value| {
+                    let versions = value["versions"]
+                        .as_array()
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(|| ListFailure {
+                            message: "获取版本列表失败：服务未返回有效版本列表".into(),
+                            cancelled: false,
+                        })?;
+                    self.manifest = versions.clone();
+                    Ok(())
+                });
+                (&mut self.version_lists.manifest, result)
+            }
+            VersionListEvent::Loader(id, minecraft, kind, result) => {
+                if !self.version_lists.loader.accepts(id) {
+                    return;
+                }
+                let visible = self.download_selection.as_deref() == Some(&minecraft)
+                    && self.loader_expanded == Some(kind);
+                let result = result.map(|versions| {
+                    if visible {
+                        self.loader_versions = versions;
+                    }
+                });
+                (&mut self.version_lists.loader, result)
+            }
+        };
+        self.status = match &result {
+            Ok(()) => "版本列表已更新".into(),
+            Err(error) if error.cancelled => "版本列表获取已取消".into(),
+            Err(error) => error.message.clone(),
+        };
+        state.finish(result.err());
+        self.busy = None;
+        self.progress = None;
+    }
+    pub(super) fn version_list_action(&mut self, action: loading_ui::Action) {
+        if action == loading_ui::Action::Cancel {
+            self.cancel.store(true, Ordering::Relaxed);
+            self.status = "正在取消版本列表获取…".into();
+        }
+    }
     pub(super) fn downloads(&mut self, ui: &mut egui::Ui) {
         if (1..=5).contains(&self.download_tab) {
             self.resource_page(ui);
@@ -104,6 +253,26 @@ impl Launcher {
         }
         if let Some(minecraft) = self.download_selection.clone() {
             self.install_selection_page(ui, minecraft);
+            return;
+        }
+        if self.manifest.is_empty()
+            && matches!(self.version_lists.manifest.phase, Phase::Idle)
+            && self.busy.is_none()
+        {
+            self.load_manifest();
+        }
+        if let Some(action) = self.version_lists.manifest.show(
+            ui,
+            self.cancel.load(Ordering::Relaxed),
+            loading_ui::Placement::Detail,
+        ) {
+            self.version_list_action(action);
+            if action == loading_ui::Action::Retry && self.busy.is_none() {
+                self.load_manifest();
+            }
+            return;
+        }
+        if self.manifest.is_empty() {
             return;
         }
         let mut selected = None;
@@ -151,14 +320,7 @@ impl Launcher {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
-                        ui.label(
-                            RichText::new(if self.busy.is_some() {
-                                "正在获取版本列表…"
-                            } else {
-                                "尚未获取版本列表"
-                            })
-                            .color(MUTED),
-                        );
+                        ui.label(RichText::new("当前列表没有正式版").color(MUTED));
                         if self.busy.is_none() && ui.small_button("重新获取").clicked() {
                             refresh = true;
                         }
@@ -265,17 +427,7 @@ impl Launcher {
             self.loader_versions.clear();
             self.loader_version = None;
         }
-        let attempted = egui::Id::new("download-manifest-first-request");
-        if self.manifest.is_empty()
-            && self.busy.is_none()
-            && !ui
-                .ctx()
-                .data_mut(|d| d.get_temp::<bool>(attempted).unwrap_or(false))
-        {
-            refresh = true;
-        }
         if refresh && self.busy.is_none() {
-            ui.ctx().data_mut(|d| d.insert_temp(attempted, true));
             self.load_manifest();
         }
     }
@@ -332,6 +484,98 @@ impl Launcher {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn stale_and_duplicate_list_replies_cannot_release_the_current_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temp.path());
+        let old = app.version_lists.manifest.start();
+        let current = app.version_lists.manifest.start();
+        app.busy = Some("new list request".into());
+        app.handle_version_list_event(VersionListEvent::Manifest(
+            old,
+            Ok(json!({"versions":[{"id":"old"}]})),
+        ));
+        assert!(app.manifest.is_empty());
+        assert!(app.version_lists.manifest.running());
+        assert_eq!(app.busy.as_deref(), Some("new list request"));
+        app.handle_version_list_event(VersionListEvent::Manifest(
+            current,
+            Ok(json!({"versions":[{"id":"1.21.1","type":"release"}]})),
+        ));
+        assert_eq!(app.manifest[0]["id"], "1.21.1");
+        assert!(matches!(app.version_lists.manifest.phase, Phase::Ready));
+        assert!(app.busy.is_none());
+        app.busy = Some("unrelated operation".into());
+        app.handle_version_list_event(VersionListEvent::Manifest(
+            current,
+            Err(ListFailure::from_error(anyhow::anyhow!("late reply"))),
+        ));
+        assert_eq!(app.busy.as_deref(), Some("unrelated operation"));
+        assert!(matches!(app.version_lists.manifest.phase, Phase::Ready));
+    }
+    #[test]
+    fn cancellation_waits_for_worker_and_does_not_hide_a_real_failure_or_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temp.path());
+        let id = app.version_lists.manifest.start();
+        app.busy = Some("list request".into());
+        app.version_list_action(loading_ui::Action::Cancel);
+        assert!(app.cancel.load(Ordering::Relaxed));
+        assert!(app.version_lists.manifest.running());
+        assert!(app.busy.is_some());
+        app.handle_version_list_event(VersionListEvent::Manifest(
+            id,
+            Err(ListFailure::from_error(anyhow::anyhow!("HTTP 503"))),
+        ));
+        assert!(
+            matches!(&app.version_lists.manifest.phase, Phase::Failed(message) if message.contains("503"))
+        );
+        assert!(app.busy.is_none());
+        let retry = app.version_lists.manifest.start();
+        app.handle_version_list_event(VersionListEvent::Manifest(
+            retry,
+            Err(ListFailure::from_error(
+                anyhow::Error::new(OperationCancelled).context("request stopped"),
+            )),
+        ));
+        assert!(matches!(app.version_lists.manifest.phase, Phase::Cancelled));
+        let retry = app.version_lists.manifest.start();
+        app.handle_version_list_event(VersionListEvent::Manifest(
+            retry,
+            Ok(json!({"versions":[{"id":"ready"}]})),
+        ));
+        assert!(matches!(app.version_lists.manifest.phase, Phase::Ready));
+        assert_eq!(app.manifest[0]["id"], "ready");
+    }
+    #[test]
+    fn invalid_manifest_and_loader_error_are_not_successful_empty_lists() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temp.path());
+        for data in [json!({}), json!({"versions":[]})] {
+            let id = app.version_lists.manifest.start();
+            app.handle_version_list_event(VersionListEvent::Manifest(id, Ok(data)));
+            assert!(matches!(app.version_lists.manifest.phase, Phase::Failed(_)));
+        }
+        let id = app.version_lists.loader.start();
+        app.handle_version_list_event(VersionListEvent::Loader(
+            id,
+            "1.21.1".into(),
+            InstallKind::Fabric,
+            Err(ListFailure::from_error(anyhow::anyhow!(
+                "service unavailable"
+            ))),
+        ));
+        assert!(matches!(app.version_lists.loader.phase, Phase::Failed(_)));
+        let retry = app.version_lists.loader.start();
+        assert_ne!(id, retry);
+        app.handle_version_list_event(VersionListEvent::Loader(
+            retry,
+            "1.21.1".into(),
+            InstallKind::Fabric,
+            Ok(vec![]),
+        ));
+        assert!(matches!(app.version_lists.loader.phase, Phase::Ready));
+    }
     #[test]
     fn real_manifest_ids_are_classified_without_rewriting_download_ids() {
         for id in [

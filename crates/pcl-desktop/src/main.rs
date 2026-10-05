@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod native_window;
 mod process;
 mod theme;
 mod ui_style;

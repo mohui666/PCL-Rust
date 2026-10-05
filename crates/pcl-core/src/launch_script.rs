@@ -115,16 +115,41 @@ fn require_new_file(path: &Path) -> Result<()> {
 }
 
 #[derive(Serialize)]
+struct ScriptCommand {
+    text: String,
+    wait: bool,
+}
+
+#[derive(Serialize)]
 struct ScriptData<'a> {
     java: &'a str,
     cwd: &'a str,
     arguments: &'a [String],
+    command_cwd: &'a str,
+    commands: &'a [ScriptCommand],
+    environment: &'a [(String, String)],
     authenticated_credentials_removed: bool,
 }
 fn render(plan: &LaunchPlan, format: ScriptFormat) -> Result<(String, bool)> {
     // Only the plan itself knows every credential that may be embedded in its
     // custom arguments. Never ask the caller to pair an unrelated Session with it.
     let (arguments, removed) = plan.sanitized_arguments();
+    let (pre_launch, environment, pre_removed) = plan.sanitized_pre_launch();
+    let removed = removed || pre_removed;
+    let commands: Vec<_> = pre_launch
+        .iter()
+        .map(|c| ScriptCommand {
+            text: plan
+                .behavior
+                .shell_text(&c.text, format == ScriptFormat::WindowsBatch),
+            wait: c.wait,
+        })
+        .collect();
+    let command_cwd = plan
+        .behavior
+        .command_cwd
+        .to_str()
+        .context("命令工作目录不是有效 Unicode")?;
     let java = plan.java.to_str().context("Java 路径不是有效 Unicode")?;
     let cwd = plan.cwd.to_str().context("游戏目录不是有效 Unicode")?;
     ensure!(
@@ -138,8 +163,24 @@ fn render(plan: &LaunchPlan, format: ScriptFormat) -> Result<(String, bool)> {
         "启动计划含不能传递给操作系统的 NUL 字符"
     );
     let text = match format {
-        ScriptFormat::MacCommand => render_posix(java, cwd, &arguments, removed),
-        ScriptFormat::WindowsBatch => render_windows(java, cwd, &arguments, removed)?,
+        ScriptFormat::MacCommand => render_posix(
+            java,
+            cwd,
+            &arguments,
+            removed,
+            command_cwd,
+            &commands,
+            &environment,
+        ),
+        ScriptFormat::WindowsBatch => render_windows(
+            java,
+            cwd,
+            &arguments,
+            removed,
+            command_cwd,
+            &commands,
+            &environment,
+        )?,
     };
     Ok((text, !removed))
 }
@@ -147,7 +188,15 @@ fn render(plan: &LaunchPlan, format: ScriptFormat) -> Result<(String, bool)> {
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
-fn render_posix(java: &str, cwd: &str, arguments: &[String], removed: bool) -> String {
+fn render_posix(
+    java: &str,
+    cwd: &str,
+    arguments: &[String],
+    removed: bool,
+    command_cwd: &str,
+    commands: &[ScriptCommand],
+    environment: &[(String, String)],
+) -> String {
     let mut text = String::from(
         "#!/bin/sh\n# PCL Rust exported launch script. Generated only; export did not start Java.\nset +x\n",
     );
@@ -155,6 +204,23 @@ fn render_posix(java: &str, cwd: &str, arguments: &[String], removed: bool) -> S
         text.push_str("# DIAGNOSTIC: authentication credentials were replaced with F.\n# Authenticated login is unavailable in this script; launch through PCL Rust.\nprintf '%s\\n' 'Authentication credentials are redacted; use the launcher to sign in.' >&2\n");
     } else {
         text.push_str("# Offline launch: no authenticated credentials are stored here.\n");
+    }
+    if !commands.is_empty() {
+        for (name, value) in environment {
+            text.push_str(&format!("export {name}={}\n", shell_quote(value)));
+        }
+        for command in commands {
+            let action = format!(
+                "(cd {} && /bin/sh -c {} </dev/null)",
+                shell_quote(command_cwd),
+                shell_quote(&command.text)
+            );
+            if command.wait {
+                text.push_str(&format!("if ! {action}; then printf '%s\\n' 'Pre-launch command failed; continuing.' >&2; fi\n"));
+            } else {
+                text.push_str(&format!("{action} &\n"));
+            }
+        }
     }
     text.push_str("cd ");
     text.push_str(&shell_quote(cwd));
@@ -193,7 +259,15 @@ fn quote_windows_argument(value: &str) -> String {
     result.push('"');
     result
 }
-fn render_windows(java: &str, cwd: &str, arguments: &[String], removed: bool) -> Result<String> {
+fn render_windows(
+    java: &str,
+    cwd: &str,
+    arguments: &[String],
+    removed: bool,
+    command_cwd: &str,
+    commands: &[ScriptCommand],
+    environment: &[(String, String)],
+) -> Result<String> {
     let commandline = arguments
         .iter()
         .map(|arg| quote_windows_argument(arg))
@@ -211,6 +285,9 @@ fn render_windows(java: &str, cwd: &str, arguments: &[String], removed: bool) ->
         java,
         cwd,
         arguments,
+        command_cwd,
+        commands,
+        environment,
         authenticated_credentials_removed: removed,
     })
     .context("无法编码脱敏启动计划")?;
@@ -240,6 +317,13 @@ fn render_windows(java: &str, cwd: &str, arguments: &[String], removed: bool) ->
     text.push_str("')))\r\n");
     // The payload is inert JSON. Quoting happens on each argument before passing
     // a command line to ProcessStartInfo; neither shell interprets user values.
+    text.push_str(concat!(
+        "foreach($command in $data.commands){try{\r\n",
+        "$pre=New-Object Diagnostics.ProcessStartInfo;$pre.FileName=[IO.Path]::Combine($env:SystemRoot,'System32','cmd.exe');$pre.Arguments='/D /S /V:ON /C '+[char]34+[string]$command.text+[char]34;$pre.WorkingDirectory=[string]$data.command_cwd;$pre.UseShellExecute=$false;$pre.CreateNoWindow=$true\r\n",
+        "foreach($pair in $data.environment){$pre.EnvironmentVariables[[string]$pair[0]]=[string]$pair[1]}\r\n",
+        "$child=[Diagnostics.Process]::Start($pre);if($command.wait){$child.WaitForExit();if($child.ExitCode -ne 0){[Console]::Error.WriteLine('Pre-launch command failed; continuing.')}}\r\n",
+        "}catch{[Console]::Error.WriteLine('Pre-launch command could not start; continuing.')}}\r\n",
+    ));
     text.push_str(WINDOWS_PROCESS_WRAPPER);
     Ok(text)
 }
@@ -551,5 +635,44 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+    }
+    #[test]
+    fn exported_pre_commands_preserve_wait_order_environment_and_redact_session() {
+        let (dir, mut plan) = fixture("PRIVATE-CREDENTIAL", false);
+        plan.behavior.commands = vec![
+            crate::launch::PreLaunchCommand {
+                label: "全局",
+                text: "echo PRIVATE-CREDENTIAL {minecraft}".into(),
+                wait: true,
+            },
+            crate::launch::PreLaunchCommand {
+                label: "版本",
+                text: "echo second".into(),
+                wait: false,
+            },
+        ];
+        let (posix, runnable) = render(&plan, ScriptFormat::MacCommand).unwrap();
+        assert!(!runnable && !posix.contains("PRIVATE-CREDENTIAL"));
+        assert!(posix.contains("echo F"));
+        let path = dir.path().join("pre.command");
+        fs::write(&path, &posix).unwrap();
+        #[cfg(unix)]
+        assert!(std::process::Command::new("/bin/sh")
+            .arg("-n")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        let (windows, runnable) = render(&plan, ScriptFormat::WindowsBatch).unwrap();
+        assert!(!runnable);
+        let data = decode_payload(&windows);
+        assert_eq!(data["commands"][0]["wait"], true);
+        assert_eq!(data["commands"][1]["wait"], false);
+        assert!(data["commands"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("!PCL_LAUNCH_"));
+        assert!(!data.to_string().contains("PRIVATE-CREDENTIAL"));
+        assert!(data["environment"].as_array().unwrap().len() > 3);
     }
 }

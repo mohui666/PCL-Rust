@@ -1,4 +1,7 @@
-use super::{Event, Launcher, MUTED};
+use super::{
+    download_ui::{ListFailure, Phase, VersionListEvent},
+    loading_ui, Event, Launcher, MUTED,
+};
 use crate::theme;
 use crate::ui_style;
 use anyhow::Context;
@@ -65,6 +68,8 @@ impl Launcher {
             return;
         };
         self.loader_versions.clear();
+        let request = self.version_lists.loader.start();
+        self.version_lists.loader_target = Some((minecraft.clone(), kind));
         std::thread::spawn(move || {
             let result = if let Some(kind) = kind.meta_kind() {
                 loaders::list_loader_versions(kind, &minecraft, &cancel)
@@ -81,10 +86,12 @@ impl Launcher {
                     },
                 )
             };
-            let _ = tx.send(match result {
-                Ok(versions) => Event::LoaderVersions(minecraft, kind, versions),
-                Err(error) => Event::Error(format!("加载器列表获取失败：{error:#}")),
-            });
+            let _ = tx.send(Event::VersionList(VersionListEvent::Loader(
+                request,
+                minecraft,
+                kind,
+                result.map_err(ListFailure::from_error),
+            )));
         });
     }
     fn install_selected_loader(
@@ -484,6 +491,19 @@ impl Launcher {
             };
             let status = if selected {
                 self.loader_version.as_deref().unwrap_or("可以添加")
+            } else if self
+                .version_lists
+                .loader_target
+                .as_ref()
+                .is_some_and(|(mc, target)| mc == minecraft && *target == kind)
+            {
+                match &self.version_lists.loader.phase {
+                    Phase::Loading => "获取中……",
+                    Phase::Failed(_) => "获取失败，点击重试",
+                    Phase::Cancelled => "已取消，点击重试",
+                    Phase::Ready if self.loader_versions.is_empty() => "无可用版本",
+                    _ => "可以添加",
+                }
             } else {
                 "可以添加"
             };
@@ -544,7 +564,16 @@ impl Launcher {
                 }
             }
             if response.clicked() && !cleared && self.busy.is_none() {
-                if expanded {
+                let retry = self
+                    .version_lists
+                    .loader_target
+                    .as_ref()
+                    .is_some_and(|(mc, target)| mc == minecraft && *target == kind)
+                    && matches!(
+                        self.version_lists.loader.phase,
+                        Phase::Failed(_) | Phase::Cancelled
+                    );
+                if expanded && !retry {
                     self.loader_expanded = None;
                 } else {
                     *open = Some(kind);
@@ -559,12 +588,19 @@ impl Launcher {
                         bottom: 15,
                     })
                     .show(ui, |ui| {
+                        if let Some(action) = self.version_lists.loader.show(
+                            ui,
+                            self.cancel.load(std::sync::atomic::Ordering::Relaxed),
+                            loading_ui::Placement::Component,
+                        ) {
+                            self.version_list_action(action);
+                            if action == loading_ui::Action::Retry && self.busy.is_none() {
+                                *open = Some(kind);
+                            }
+                            return;
+                        }
                         if self.loader_versions.is_empty() {
-                            ui.label(if self.busy.is_some() {
-                                "正在获取版本列表…"
-                            } else {
-                                "此 Minecraft 版本暂无可安装版本。"
-                            });
+                            ui.label("此 Minecraft 版本暂无可安装版本。");
                             if ui
                                 .add_enabled(self.busy.is_none(), egui::Button::new("重新获取"))
                                 .clicked()

@@ -320,6 +320,15 @@ impl Launcher {
                     ui.add_space(9.0);
                     row(ui, "游戏参数", |ui| { text_edit(ui, &mut state.value.game_arguments, "跟随全局设置"); });
                     ui.add_space(9.0);
+                    row(ui, "启动前执行命令", |ui| {
+                        text_edit(ui, &mut state.value.pre_launch_command, "")
+                            .on_hover_text(super::setup_launch_ui::PRE_LAUNCH_HELP);
+                    });
+                    if !state.value.pre_launch_command.trim().is_empty() {
+                        ui.add_space(5.0);
+                        row(ui, "", |ui| { ui.checkbox(&mut state.value.pre_launch_wait, "等待命令执行完成后再继续启动"); });
+                    }
+                    ui.add_space(9.0);
                     row(ui, "垃圾回收器", |ui| {
                         let choices = [
                             (None, "跟随全局设置"),

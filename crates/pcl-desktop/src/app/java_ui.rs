@@ -1,4 +1,4 @@
-use super::{account_ui, Event, Launcher, MUTED};
+use super::{account_ui, loading_ui, Event, Launcher, MUTED};
 use crate::theme;
 use eframe::egui::{self, RichText};
 use pcl_core::{
@@ -27,6 +27,8 @@ pub(crate) struct RuntimeFailure {
 pub(super) struct JavaDownloadState {
     open: bool,
     loading: bool,
+    cancelled: bool,
+    indicator: loading_ui::Indicator,
     request: u64,
     entries: Vec<RuntimeDownload>,
     selected: Option<usize>,
@@ -39,6 +41,9 @@ pub(super) struct JavaDownloadState {
     download_requirement: Option<JavaRequirement>,
 }
 impl JavaDownloadState {
+    pub(super) fn is_loading(&self) -> bool {
+        self.loading
+    }
     pub(super) fn has_dialog(&self) -> bool {
         self.open || self.installed.is_some() || self.selection_error.is_some()
     }
@@ -191,6 +196,8 @@ impl Launcher {
         self.java_download.download_requirement = requirement;
         self.java_download.open = true;
         self.java_download.loading = true;
+        self.java_download.cancelled = false;
+        self.java_download.indicator.start();
         self.java_download.selected = None;
         self.java_download.error = None;
         self.java_download.entries.clear();
@@ -201,7 +208,8 @@ impl Launcher {
             let label = platform_label(&platform);
             let result =
                 java_download::list_runtimes(&platform, &cancel).map_err(|error| RuntimeFailure {
-                    cancelled: error.chain().any(|cause| cause.is::<OperationCancelled>()),
+                    cancelled: error.is::<OperationCancelled>()
+                        || error.chain().any(|cause| cause.is::<OperationCancelled>()),
                     message: format!("Java 列表获取失败：{error:#}"),
                 });
             let _ = tx.send(Event::Runtime(RuntimeEvent::Listed(request, label, result)));
@@ -261,7 +269,7 @@ impl Launcher {
                 }
             }
             RuntimeEvent::Listed(request, label, result) => {
-                if request != self.java_download.request {
+                if request != self.java_download.request || !self.java_download.loading {
                     return;
                 }
                 self.busy = None;
@@ -289,6 +297,7 @@ impl Launcher {
                         self.status = "官方 Java 列表已更新".into();
                     }
                     Err(error) => {
+                        self.java_download.cancelled = error.cancelled;
                         self.status = if error.cancelled {
                             "Java 列表获取已取消"
                         } else {
@@ -362,28 +371,12 @@ impl Launcher {
         if !self.java_download.open {
             return;
         }
-        if let Some(error) = self.java_download.error.clone() {
-            if let Some(action) = account_ui::account_modal(
-                ctx,
-                "java-list-error",
-                "Java 列表获取失败",
-                &error,
-                &["重试", "关闭"],
-            ) {
-                self.java_download.error = None;
-                if action == 0 {
-                    self.open_java_downloads_for(self.java_download.download_requirement.clone());
-                } else {
-                    self.java_download.open = false;
-                }
-            }
-            return;
-        }
         let width = (ctx.content_rect().width() - 50.0).clamp(400.0, 600.0);
         let height = (ctx.content_rect().height() - 225.0).clamp(180.0, 320.0);
         let mut selected = self.java_download.selected;
         let mut major = self.java_download.major;
         let loading = self.java_download.loading;
+        let cancelling = loading && self.cancel.load(Ordering::Relaxed);
         let entries = &self.java_download.entries;
         let requirement = self.java_download.download_requirement.as_ref();
         let mut majors: Vec<u32> = entries
@@ -394,13 +387,16 @@ impl Launcher {
         majors.sort_unstable_by(|a, b| b.cmp(a));
         majors.dedup();
         let mut download = false;
+        let mut retry = false;
         let action = account_ui::modal_frame(
             ctx,
             "java-download",
             "下载 Java",
             width,
             height,
-            if loading {
+            if cancelling {
+                &["取消中…"]
+            } else if loading {
                 &["取消"]
             } else {
                 &["刷新列表", "关闭"]
@@ -430,11 +426,22 @@ impl Launcher {
                     );
                     ui.add_space(6.0);
                 }
-                if loading {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("正在获取可用版本…");
-                    });
+                let status = if loading {
+                    loading_ui::Status::Running { cancelling }
+                } else if self.java_download.cancelled {
+                    loading_ui::Status::Cancelled
+                } else if let Some(error) = &self.java_download.error {
+                    loading_ui::Status::Failed(error)
+                } else {
+                    loading_ui::Status::Ready
+                };
+                if let Some(action) = self.java_download.indicator.show_status(
+                    ui,
+                    "正在获取版本列表",
+                    status,
+                    loading_ui::Placement::Dialog,
+                ) {
+                    retry = action == loading_ui::Action::Retry;
                 } else {
                     ui.horizontal_wrapped(|ui| {
                         if ui.selectable_label(major.is_none(), "全部").clicked() {
@@ -510,13 +517,17 @@ impl Launcher {
         if download {
             self.install_selected_java();
         }
+        if retry && self.busy.is_none() {
+            self.open_java_downloads_for(self.java_download.download_requirement.clone());
+            return;
+        }
         match action {
             Some(0) if !loading && self.busy.is_none() => {
                 self.open_java_downloads_for(self.java_download.download_requirement.clone())
             }
             Some(0) if loading => {
                 self.cancel.store(true, Ordering::Relaxed);
-                self.java_download.open = false;
+                self.status = "正在取消 Java 列表获取…".into();
             }
             Some(1) => {
                 if loading {
@@ -649,6 +660,61 @@ pub(super) fn pick_java_path() -> Option<Result<PathBuf, String>> {
 mod tests {
     use super::*;
     use pcl_core::java_selection::JavaSelectionMode;
+    #[test]
+    fn java_list_stale_and_duplicate_terminals_preserve_the_new_operation() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temp.path());
+        app.java_download.request = 2;
+        app.java_download.loading = true;
+        app.busy = Some("new Java list".into());
+        app.handle_runtime_event(RuntimeEvent::Listed(1, "old platform".into(), Ok(vec![])));
+        assert!(app.java_download.loading);
+        assert_eq!(app.busy.as_deref(), Some("new Java list"));
+        app.cancel.store(true, Ordering::Relaxed);
+        app.handle_runtime_event(RuntimeEvent::Listed(2, "macOS ARM64".into(), Ok(vec![])));
+        assert!(!app.java_download.loading);
+        assert!(!app.java_download.cancelled);
+        assert!(app.java_download.error.is_none());
+        assert!(app.busy.is_none());
+        app.busy = Some("next task".into());
+        app.handle_runtime_event(RuntimeEvent::Listed(
+            2,
+            "old platform".into(),
+            Err(RuntimeFailure {
+                message: "duplicate".into(),
+                cancelled: false,
+            }),
+        ));
+        assert_eq!(app.busy.as_deref(), Some("next task"));
+        assert!(app.java_download.error.is_none());
+    }
+    #[test]
+    fn java_list_cancellation_and_error_stay_inside_the_list_dialog() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temp.path());
+        app.java_download.open = true;
+        for cancelled in [true, false] {
+            app.java_download.request += 1;
+            app.java_download.loading = true;
+            app.java_download.cancelled = false;
+            app.java_download.error = None;
+            app.busy = Some("Java list".into());
+            app.cancel.store(true, Ordering::Relaxed);
+            app.handle_runtime_event(RuntimeEvent::Listed(
+                app.java_download.request,
+                "macOS ARM64".into(),
+                Err(RuntimeFailure {
+                    message: "HTTP 503".into(),
+                    cancelled,
+                }),
+            ));
+            assert_eq!(app.java_download.cancelled, cancelled);
+            assert_eq!(app.java_download.error.is_some(), !cancelled);
+            assert!(app.java_download.open);
+            assert!(app.error.is_none());
+            assert!(app.busy.is_none());
+        }
+    }
     #[test]
     fn legacy_global_preference_never_overrides_instance_modes_or_specific_path() {
         let global = Settings {

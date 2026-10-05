@@ -6,7 +6,9 @@ use super::{
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
-use pcl_core::config::{self, GcMode, IsolationPolicy, WindowMode};
+use pcl_core::config::{
+    self, GcMode, IsolationPolicy, LauncherVisibility, ProcessPriority, WindowMode,
+};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -108,17 +110,27 @@ impl Launcher {
                         text_edit(ui,&mut settings.custom_info,"默认").on_hover_text("在支持此选项的游戏中显示于主界面与 F3 信息。Minecraft 26.1 起不再显示这项自定义信息。");
                     });
                     ui.add_space(9.0);
-                    argument_row(ui,"启动器可见性",|ui| { unavailable_combo(ui,"launcher-visibility","游戏启动后仍保持不变","自动隐藏、关闭和最小化尚未迁移。"); });
+                    argument_row(ui,"启动器可见性",|ui| {
+                        ui_style::PclComboBox::from_id_salt("launcher-visibility").width(ui.available_width()).selected_text(visibility_label(settings.launcher_visibility)).show_ui(ui,|ui| {
+                            for value in [LauncherVisibility::CloseOnLaunch,LauncherVisibility::HideThenClose,LauncherVisibility::HideThenRestore,LauncherVisibility::Minimize,LauncherVisibility::Keep] {
+                                ui.selectable_value(&mut settings.launcher_visibility,value,visibility_label(value));
+                            }
+                        }).response.on_hover_text("检测到游戏加载完成后执行。隐藏后若游戏异常退出或由启动器关闭，会重新显示启动器。");
+                    });
                     ui.add_space(9.0);
-                    argument_row(ui,"进程优先级",|ui| { unavailable_combo(ui,"process-priority","中（平衡）","游戏使用操作系统默认优先级；手动优先级尚未迁移。"); });
+                    argument_row(ui,"进程优先级",|ui| {
+                        ui_style::PclComboBox::from_id_salt("process-priority").width(ui.available_width()).selected_text(priority_label(settings.process_priority)).show_ui(ui,|ui| {
+                            for value in [ProcessPriority::High,ProcessPriority::Normal,ProcessPriority::Low] { ui.selectable_value(&mut settings.process_priority,value,priority_label(value)); }
+                        }).response.on_hover_text("只调整本次启动的游戏进程。macOS/Linux提高优先级可能被系统拒绝，届时会提示并继续使用允许的优先级，不申请提权。");
+                    });
                     ui.add_space(9.0);
                     argument_row(ui,"窗口大小",|ui| {
                         let custom = settings.window_mode == WindowMode::Custom;
                         let width = if custom { (ui.available_width()-177.0).max(110.0) } else {ui.available_width()};
                         ui_style::PclComboBox::from_id_salt("global-window").width(width).selected_text(window_label(settings.window_mode)).show_ui(ui,|ui| {
                             for mode in [WindowMode::Fullscreen,WindowMode::Default,WindowMode::LauncherSize,WindowMode::Custom,WindowMode::Maximized] {
-                                let available = !matches!(mode,WindowMode::LauncherSize|WindowMode::Maximized);
-                                let response = ui.add_enabled(available,egui::Button::selectable(settings.window_mode==mode,window_label(mode)));
+                                let available = !matches!(mode,WindowMode::Maximized);
+                                let response = ui.selectable_label_enabled(available,settings.window_mode==mode,window_label(mode));
                                 if response.clicked(){settings.window_mode=mode;}
                                 if !available {response.on_hover_text("跨平台游戏窗口控制尚未迁移。");}
                             }
@@ -179,7 +191,11 @@ impl Launcher {
                     ui.add_space(9.0);
                     advanced_row(ui,"游戏参数",|ui|{text_edit(ui,&mut settings.game_arguments,"");});
                     ui.add_space(9.0);
-                    advanced_row(ui,"启动前执行命令",|ui|{unavailable_text(ui,"","启动前执行外部程序与等待策略尚未迁移。");});
+                    advanced_row(ui,"启动前执行命令",|ui|{text_edit(ui,&mut settings.pre_launch_command,"").on_hover_text(PRE_LAUNCH_HELP);});
+                    if !settings.pre_launch_command.trim().is_empty() {
+                        ui.add_space(8.0);
+                        advanced_row(ui,"",|ui|{ui.checkbox(&mut settings.pre_launch_wait,"等待命令执行完成后再继续启动");});
+                    }
                     ui.add_space(9.0);
                     advanced_row(ui,"Java 列表",|ui| {
                         let detecting=self.java_download.is_detecting();
@@ -514,16 +530,6 @@ fn unavailable_text(ui: &mut egui::Ui, hint: &str, reason: &str) {
     .response
     .on_hover_text(reason);
 }
-fn unavailable_combo(ui: &mut egui::Ui, id: &str, label: &str, reason: &str) {
-    ui.add_enabled_ui(false, |ui| {
-        ui_style::PclComboBox::from_id_salt(id)
-            .width(ui.available_width())
-            .selected_text(label)
-            .show_ui(ui, |_| {});
-    })
-    .response
-    .on_hover_text(reason);
-}
 fn disabled_checkbox(ui: &mut egui::Ui, text: &str, checked: bool, reason: &str, height: f32) {
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), height),
@@ -583,6 +589,25 @@ fn isolation_label(value: IsolationPolicy) -> &'static str {
         IsolationPolicy::All => "隔离所有版本",
     }
 }
+pub(super) const PRE_LAUNCH_HELP: &str = "仅运行你在本机设置中填写的命令；不会执行下载元数据中的命令。先执行全局命令，再执行版本命令，工作目录为游戏根目录。Windows 使用 cmd /D /V:ON；macOS 使用 /bin/sh。支持 {minecraft}、{verpath}/{version_path}、{verindie}/{version_indie}、{java}、{name}、{version}、{path}、{path_with_name}、{pcl_version}。路径标记安全传入环境变量；命令输出不写入启动器日志。非零退出会提示后继续，取消启动会请求终止本次命令树。";
+
+fn visibility_label(value: LauncherVisibility) -> &'static str {
+    match value {
+        LauncherVisibility::CloseOnLaunch => "游戏启动后立即关闭",
+        LauncherVisibility::HideThenClose => "游戏启动后隐藏，游戏退出后自动关闭",
+        LauncherVisibility::HideThenRestore => "游戏启动后隐藏，游戏退出后重新打开",
+        LauncherVisibility::Minimize => "游戏启动后最小化",
+        LauncherVisibility::Keep => "游戏启动后仍保持不变",
+    }
+}
+fn priority_label(value: ProcessPriority) -> &'static str {
+    match value {
+        ProcessPriority::High => "高（优先保证游戏运行）",
+        ProcessPriority::Normal => "中（平衡）",
+        ProcessPriority::Low => "低（优先保证其他程序运行）",
+    }
+}
+
 fn window_label(value: WindowMode) -> &'static str {
     match value {
         WindowMode::Default => "默认",

@@ -137,7 +137,7 @@ pub fn validate_architecture(runtime: &JavaRuntime, platform: &Platform) -> Resu
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn bounded_output(command: Command, timeout: Duration) -> Result<String> {
     bounded_output_with_cancel(command, timeout, &AtomicBool::new(false))
 }

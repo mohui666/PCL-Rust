@@ -1,4 +1,4 @@
-//! MyLoading.xaml / MyLoading.xaml.vb, fixed PCL 2.13.1.1 source.
+//! MyLoading.xaml / MyLoading.xaml.vb from the fixed upstream source snapshot.
 //! Animation time is presentation only: it never generates task progress.
 use crate::theme;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Vec2};
@@ -12,6 +12,23 @@ const WAIT: f64 = 0.4;
 pub(super) enum Placement {
     List,
     Detail,
+    Component,
+    /// A modal already supplies its own frame and cancel button.
+    Dialog,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Status<'a> {
+    Ready,
+    Running { cancelling: bool },
+    Failed(&'a str),
+    Cancelled,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Action {
+    None,
+    Retry,
+    Cancel,
 }
 
 pub(super) struct Indicator {
@@ -53,6 +70,7 @@ impl Indicator {
     }
     /// Some means the loading view owns this area; true is a click on a failed
     /// control. None means the real content can be shown.
+    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -61,13 +79,46 @@ impl Indicator {
         running: bool,
         placement: Placement,
     ) -> Option<bool> {
+        self.show_status(
+            ui,
+            label,
+            if let Some(error) = error {
+                Status::Failed(error)
+            } else if running {
+                Status::Running { cancelling: false }
+            } else {
+                Status::Ready
+            },
+            placement,
+        )
+        .map(|action| action == Action::Retry)
+    }
+    pub(super) fn show_status(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        status: Status<'_>,
+        placement: Placement,
+    ) -> Option<Action> {
+        let running = matches!(status, Status::Running { .. });
+        let cancelled = matches!(status, Status::Cancelled);
+        let cancelling = matches!(status, Status::Running { cancelling: true });
+        let error = match status {
+            Status::Failed(error) => Some(error),
+            _ => None,
+        };
         let elapsed = self.started.elapsed().as_secs_f64();
-        let visible = self.visible(elapsed, running, error.is_some());
+        let visible = if cancelled {
+            self.visible_at.get_or_insert(elapsed);
+            true
+        } else {
+            self.visible(elapsed, running, error.is_some())
+        };
         if !visible {
             if running {
                 ui.ctx()
                     .request_repaint_after(Duration::from_secs_f64((WAIT - elapsed).max(0.01)));
-                return Some(false);
+                return Some(Action::None);
             }
             return None;
         }
@@ -83,15 +134,29 @@ impl Indicator {
         let max_width = (ui.available_width()
             - match placement {
                 Placement::List => 80.0,
-                Placement::Detail => 0.0,
+                Placement::Detail => 80.0,
+                Placement::Component | Placement::Dialog => 0.0,
             })
         .max(100.0);
-        let text = ui.painter().layout(
-            error.unwrap_or(label).into(),
+        let label = if cancelling {
+            "正在取消…"
+        } else if cancelled {
+            "已取消，点击重新获取"
+        } else {
+            error.unwrap_or(label)
+        };
+        let mut text_job = egui::text::LayoutJob::simple(
+            label.into(),
             FontId::proportional(16.0),
             color,
             (max_width - 40.0).max(60.0),
         );
+        text_job.wrap.max_rows = if matches!(placement, Placement::Dialog) {
+            ((ui.available_height() - 94.0) / 20.0).clamp(1.0, 5.0) as usize
+        } else {
+            5
+        };
+        let text = ui.fonts_mut(|fonts| fonts.layout_job(text_job));
         let card_size = Vec2::new(
             text.size().x.max(60.0) + 40.0,
             20.0 + 47.0 + 10.0 + text.size().y + 17.0,
@@ -101,6 +166,8 @@ impl Indicator {
         let height = match placement {
             Placement::List => card_size.y + 100.0,
             Placement::Detail => (ui.clip_rect().bottom() - top - 10.0).max(card_size.y + 8.0),
+            Placement::Component => card_size.y + 45.0,
+            Placement::Dialog => ui.available_height().max(card_size.y),
         };
         let (area, _) = ui.allocate_exact_size(Vec2::new(available, height), egui::Sense::hover());
         let card = Rect::from_center_size(
@@ -109,6 +176,8 @@ impl Indicator {
                 match placement {
                     Placement::List => area.top() + 50.0 + card_size.y / 2.0,
                     Placement::Detail => area.center().y - 4.0,
+                    Placement::Component => area.top() + card_size.y / 2.0,
+                    Placement::Dialog => area.center().y,
                 },
             ),
             card_size,
@@ -120,7 +189,7 @@ impl Indicator {
         let response = ui.interact(
             control,
             ui.id().with("pcl-resource-loader"),
-            if error.is_some() {
+            if error.is_some() || cancelled {
                 egui::Sense::click()
             } else {
                 egui::Sense::hover()
@@ -128,33 +197,41 @@ impl Indicator {
         );
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
-                if error.is_some() {
+                if error.is_some() || cancelled {
                     egui::WidgetType::Button
                 } else {
                     egui::WidgetType::Label
                 },
                 true,
-                error.unwrap_or(label),
+                label,
             )
         });
-        let response = if error.is_some() {
-            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        let response = if error.is_some() || cancelled {
+            response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(format!("{label}\n点击重新获取"))
         } else {
             response
         };
-        ui.painter().add(
-            egui::epaint::Shadow {
-                offset: [0, 2],
-                blur: 3,
-                spread: 0,
-                color: Color32::from_black_alpha(9),
-            }
-            .as_shape(card, 5),
-        );
-        ui.painter()
-            .rect_filled(card, 5, Color32::from_rgba_unmultiplied(255, 255, 255, 245));
+        if matches!(placement, Placement::List | Placement::Detail) {
+            ui.painter().add(
+                egui::epaint::Shadow {
+                    offset: [0, 2],
+                    blur: 3,
+                    spread: 0,
+                    color: Color32::from_black_alpha(9),
+                }
+                .as_shape(card, 5),
+            );
+            ui.painter()
+                .rect_filled(card, 5, Color32::from_rgba_unmultiplied(255, 255, 255, 245));
+        }
         let origin = Pos2::new(card.center().x - 30.0, card.top() + 20.0);
-        let pose_time = failed_at.map_or(now, |at| now.min((at / CYCLE).floor() * CYCLE + CYCLE));
+        let pose_time = if cancelled {
+            0.0
+        } else {
+            failed_at.map_or(now, |at| now.min((at / CYCLE).floor() * CYCLE + CYCLE))
+        };
         let pose = motion(pose_time);
         if self.texture.is_none() {
             self.texture = Some(pickaxe_texture(ui.ctx()));
@@ -239,10 +316,34 @@ impl Indicator {
             text,
             color,
         );
-        if running || error_elapsed.is_some_and(|age| age < CYCLE) || error.is_none() {
+        let cancel_clicked = if running && !matches!(placement, Placement::Dialog) {
+            ui.place(
+                Rect::from_center_size(
+                    egui::pos2(card.center().x, card.bottom() + 22.0),
+                    Vec2::new(70.0, 26.0),
+                ),
+                egui::Button::new(if cancelling { "取消中…" } else { "取消" })
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::NONE),
+            )
+            .clicked()
+                && !cancelling
+        } else {
+            false
+        };
+        if running
+            || error_elapsed.is_some_and(|age| age < CYCLE)
+            || (!cancelled && error.is_none())
+        {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
-        Some(error.is_some() && response.clicked())
+        Some(if cancel_clicked {
+            Action::Cancel
+        } else if (error.is_some() || cancelled) && response.clicked() {
+            Action::Retry
+        } else {
+            Action::None
+        })
     }
 }
 
@@ -343,6 +444,117 @@ fn pickaxe_texture(ctx: &egui::Context) -> egui::TextureHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_control_retries_and_modal_does_not_duplicate_its_cancel_button() {
+        let ctx = egui::Context::default();
+        let mut indicator = Indicator::default();
+        let pos = Pos2::new(425.0, 110.0);
+        let mut action = None;
+        for pressed in [None, Some(true), Some(false)] {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(850.0, 600.0))),
+                ..Default::default()
+            };
+            if let Some(pressed) = pressed {
+                input.events = vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ];
+            }
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    action = indicator.show_status(
+                        ui,
+                        "正在获取版本列表",
+                        Status::Cancelled,
+                        Placement::List,
+                    );
+                });
+            });
+        }
+        assert_eq!(action, Some(Action::Retry));
+        assert!(indicator.failed_at.is_none());
+        indicator.start();
+        indicator.started -= Duration::from_secs(2);
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                indicator.show_status(
+                    ui,
+                    "正在获取版本列表",
+                    Status::Running { cancelling: false },
+                    Placement::Dialog,
+                );
+            });
+        });
+        assert!(!output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "取消")
+        ));
+    }
+    #[test]
+    fn running_cancel_button_emits_a_request_without_turning_into_retry() {
+        let ctx = egui::Context::default();
+        let mut indicator = Indicator {
+            started: Instant::now() - Duration::from_secs(2),
+            ..Default::default()
+        };
+        let mut action = None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(850.0, 600.0))),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                action = indicator.show_status(
+                    ui,
+                    "正在获取版本列表",
+                    Status::Running { cancelling: false },
+                    Placement::List,
+                );
+            });
+        });
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    (text.galley.text() == "取消").then(|| text.pos + text.galley.size() / 2.0)
+                } else {
+                    None
+                }
+            })
+            .expect("the loading control exposes a real cancel button");
+        for pressed in [true, false] {
+            let input = egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    action = indicator.show_status(
+                        ui,
+                        "正在获取版本列表",
+                        Status::Running { cancelling: false },
+                        Placement::List,
+                    );
+                });
+            });
+        }
+        assert_eq!(action, Some(Action::Cancel));
+        assert!(indicator.failed_at.is_none());
+    }
     #[test]
     fn fast_requests_never_flash_and_visible_loader_has_source_minimum_stay() {
         let mut indicator = Indicator::default();
