@@ -2,31 +2,49 @@
 
 [项目首页](../README.md) / [文档索引](README.md)
 
-更新日期：2026-10-05。每项结论绑定对应源码、平台和验证方式；开发产物仅列指纹，不提供下载。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+更新日期：2026-10-05。下表列当前源码的检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
 
 ## 当前结果速览
 
-| 项目 | 记录 |
-| --- | --- |
-| 本机冻结源码 | 616 通过、0 失败、4 忽略；200 个构建输入保持一致。 |
-| 本地构建 | macOS 签名包与 Windows 交叉编译包完成；哈希见下节。 |
-| CI | [faba0a0](https://github.com/mohui666/PCL-Rust/commit/faba0a024b86d216473352ca70a4f8b1ad4035ba) 的 [运行 37311469385](https://github.com/mohui666/PCL-Rust/actions/runs/37311469385) 两平台通过：Mac 616 通过、4 忽略；Windows 588 通过、3 忽略，均无失败。格式、严格 Clippy、工作区测试与 release 构建通过。 |
-| Mac 原生操作 | 帮助条目、跳转与图文布局；初始化确认后取消；独立设置往返；CF 输入提示居中。 |
-| 真实网络 | 三款历史 Forge 样本的库与 native 准备；公开 Mod Menu 元数据与图标查询。详见专项表。 |
-| Windows 实机 / 全页像素 | 尚未完成。 |
-| 登录审批 | 未确认过审；登录到 Minecraft 4/6，未取得终态。见 [登录说明](login.md)。 |
-| CurseForge | 申请已提交待审核，尚无 Key 或真实 API 验证。见 [服务状态](upstream.md#外部服务状态)。 |
+本批源码：[3c83f20](https://github.com/mohui666/PCL-Rust/commit/3c83f208450c0845db10909acdb23aac9fed47e7)。
 
-CI 结果仅对应提交 `faba0a0`，不包含之后的文案和三端导出改动。
+| 项目 | 结果 |
+| --- | --- |
+| 本机检查 | 619 通过、0 失败、4 忽略（核心 352、桌面 267），严格 Clippy 通过。图标接入后另跑关于页定向测试，10 项通过。 |
+| macOS CI | 619 通过、0 失败、4 忽略；格式、严格 Clippy、release 构建通过。 |
+| Windows CI | 591 通过、0 失败、3 忽略；格式、严格 Clippy、release 构建通过。 |
+| Linux CI | Ubuntu 22.04 x86_64 release 构建与产物上传通过；该 job 未运行单元测试。 |
+| Mac 原生界面 | 新应用已重开，标题为 PCL Rust，关于页显示新图标；导出页默认勾选三端启动器并显示“已就绪”。 |
+| 三端导出 | 用合成实例和三个真实程序完成导出、解压校验及回导；详见下节。 |
+| Windows/Linux GUI 与全页像素 | 尚未完成。 |
+| 微软登录 | 审批未确认，按用户选择跳过复测。见[登录说明](login.md)。 |
+| CurseForge | 申请已提交待审核，尚无 Key 或真实 API 验证。见[服务状态](upstream.md#外部服务状态)。 |
+
+[本批 CI 运行 37314634553](https://github.com/mohui666/PCL-Rust/actions/runs/37314634553) 的提交与上列源码一致。平台测试数量差异来自条件编译。
+
+## 三端导出与构建（2026-10-05）
+
+导出默认附带三端启动器，取消勾选后仍可普通导出。缺少任何一端或格式不符会在生成文件前报错。定向测试覆盖资源保留、缺端、错误格式、取消及来源变化。
+
+| 主程序 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| macOS arm64，签名后 | 26,596,576 | `c28c710e4a871c9edf7ae690c0873d1ac2f3b772eb2d193a6f1eba3329d9c935` |
+| Windows x86_64 GUI，交叉构建 | 28,747,264 | `9b81dd3290fc650ebf7c2eb13d0d3c970e29d7b4c74d1f68f4994ecef0f21dac` |
+| Linux x86_64，CI 构建 | 35,503,784 | `62a2850638cfdd184f6f7884882c46d36724798f17fb77c40f90b59380c0c23d` |
+
+Mac 严格签名校验通过；Windows PE 静态检查通过，导入 30 个系统 DLL，无额外 MinGW 动态运行库。Linux 包含 Noto Sans SC Regular/Semibold 和 OFL 许可；`--help`、ELF、字体与动态依赖检查通过，要求 glibc 2.35 或更新版本。Windows/Linux GUI 与游戏未运行。
+
+实际导出使用合成的 1.21.1 实例和上述三个程序，不读取用户游戏数据：
+
+- ZIP 内 19 个启动器及资源文件逐一与源文件 SHA256 一致；Mac 字体和签名资源完整，解压后 `codesign --verify --deep --strict` 通过。
+- Mac/Linux 主程序在 ZIP 内保留 `0755` 权限。
+- 内层 `.mrpack` 和外层 ZIP 分别回导，结果均仅含测试用 `options.txt`，未将启动器混入游戏目录。
+- 导出前后源程序与合成实例字节一致。本次经生产核心 API 验证；原生界面验证限于入口、默认勾选和就绪状态，未操作用户实例的保存流程。
+
+验收 ZIP：62,959,508 字节，SHA256 `f24604b002af0fa8e692e15807fd926cc7133c29aaa5dd58621067567bed9ad2`。完整日志、合成实例、原生截图及验收包保留在开发者本地，不随源码发布。
 
 <details>
-<summary>前一提交的 CI 失败记录</summary>
-
-[973fc8f](https://github.com/mohui666/PCL-Rust/commit/973fc8fafe7ee9c9431d91877f38de4947af0056) 的 [运行 37310136786](https://github.com/mohui666/PCL-Rust/actions/runs/37310136786) 失败。两平台格式与严格 Clippy 通过；Mac 核心 349 通过/2 忽略，桌面 264 通过/3 失败/2 忽略。3 项帮助几何测试缺少中文字库，报 `Chinese system/fixture font required on supported desktop targets`；Windows 测试被取消，两平台 release 均跳过。后续提交补入字体准备步骤，结果见上表。
-
-</details>
-
-历史批次折叠保留于页尾，原始本地日志与截图不随公开仓库提供。术语见 [文档索引](README.md#状态怎么读)。
+<summary>上一批：九类能力与帮助格式修复（2026-10-05）</summary>
 
 ## 九类能力补齐与帮助格式修复（2026-10-05）
 
@@ -79,6 +97,8 @@ CI 结果仅对应提交 `faba0a0`，不包含之后的文案和三端导出改�
 固定上游 `PageDownloadInstall.xaml.vb:724、757` 明确跳过 universal/client ZIP，故不列为原版自动安装漏迁。格式和平台限制见 [当前范围](remaining-migration.md)；登录与联机排除本批。
 
 本轮完整测试/构建日志、输入快照、原生操作记录及网络探测原始证据保留在开发者本地，不随公开仓库提供。公开代码中的回归可分别查阅 [任务与权重](../crates/pcl-desktop/src/app/task_ui.rs)、[帮助渲染](../crates/pcl-desktop/src/app/more_ui.rs)、[XAML 布局](../crates/pcl-desktop/src/app/xaml_ui.rs)、[历史安装](../crates/pcl-core/src/forge.rs)及[崩溃归因](../crates/pcl-core/src/crash_analysis.rs)。历史结果按原批次保留。
+
+</details>
 
 ## 历史批次
 

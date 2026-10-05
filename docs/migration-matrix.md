@@ -66,7 +66,7 @@ Minecraft 审批仍待核实；CurseForge 已提交申请、待审核且尚无 K
 | `PageInstance/PageInstanceSetup.xaml` | 实例隔离、Java 范围/强制选择、RAM、登录服务器、GC/参数/预命令、禁用更新或补丁 | 隔离/Java四模式/RAM/GC/参数/服务器/预命令；标题/最大化、内存回收、补丁禁用与禁 Mod 更新；独立说明关闭记忆，页尾居中全局设置箭头 | 初始化/恢复在侧栏，不占页尾；保留展示属性/游戏文件，备份恢复不执行命令；真实游戏/Windows与全部组合未验，第三方认证排除 |
 | `PageInstance/PageInstanceMod.xaml` | 搜索、解析、导入、批量启停/删除/更新、远端信息、冲突反馈 | 扫描/导入/启停/搜索/批选；本地描述/作者/环境、声明依赖/冲突和重复 ID 诊断；哈希关联远端名称/冻结译名/图标/标签；显式更新、备份移除/恢复 | 未识别内容不按文件名猜项目；未知版本/内嵌依赖不武断判错，离页/替换文件隔离旧结果；固定夹具不等于 CF 在线、完整组合游戏或原生像素验收 |
 | `PageInstance/PageInstanceModDisabled.xaml` | 不支持 Mod 的版本提示、转下载或版本选择 | `version_ui` 按已读取真实加载器、LiteLoader 或手动 Mod 分类显示不可用页/下载入口 | 不在元数据未读完时冒充原版；真实加载器识别不等于支持其安装；新页面 GUI/像素待验 |
-| `PageInstance/PageInstanceExport.xaml` | 配置式导出整合包、文件精细选择、隐私排除、协议、资源下载引用、含启动器包 | 逐项文件/世界/资源与排除；mrpack/MMC/MCBBS/HMCL；HMCL 加载器、HMCL/MCBBS OptiFine与LiteLoader、MMC LiteLoader；附Java/当前平台启动器包 | mrpack 规范未定义的附加加载器拒绝并提示换格式；Mac派生字体禁止附带；新格式往返夹具不等于跨启动器、Windows或真实游戏互通，全部高级来源策略仍需逐项核对 |
+| `PageInstance/PageInstanceExport.xaml` | 配置式导出整合包、文件精细选择、隐私排除、协议、资源下载引用、含启动器包 | 逐项文件/世界/资源与排除；mrpack/MMC/MCBBS/HMCL；HMCL 加载器、HMCL/MCBBS OptiFine与LiteLoader、MMC LiteLoader；附Java及Windows/macOS/Linux三端启动器，默认附带且可关闭；自动发现或手选目录，Mac字体/签名资源完整保留，Linux附静态Noto/OFL | mrpack 规范未定义的附加加载器拒绝并提示换格式；缺少平台或程序格式不符时报错。夹具不替代跨启动器、三端GUI或游戏验证 |
 | `PageInstance/MyLocalModItem.xaml` | 本地 Mod 项：名称/译名/描述/标签/版本/启用/选择/更新状态 | 本地与远端名称/译名/描述、图标/标签/版本、启用/选择/更新状态及声明问题提示；受校验项目链接/百科 | 内容哈希识别、文件快照/取消与行内布局有夹具；冻结译名非实时完整库，缺详情保留本地信息，所有状态原生像素未验 |
 
 </details>
@@ -156,7 +156,7 @@ Minecraft 审批仍待核实；CurseForge 已提交申请、待审核且尚无 K
 | `Minecraft/ModJava.vb` | java/java_selection/java_download：完整版本与范围、四种模式、原版约束、有界发现、优先/排除、官方平台下载 | 21.0.7/21.0.12.1实际只读探测/选择通过；全部历史版本/发行版/原版缓存与Windows运行仍未验，手选/范围不是无条件exact-major |
 | `Minecraft/ModLaunch.vb` | `launch/process/native_window/launch_patches/offline_skin`会话/配置优先级、预命令/窗口/进服/可见性、PID窗口控制、条件补丁、离线资源包与本进程内存回收 | 只用本机预命令；真实游戏/Windows、全部历史版本/事件/变量仍需验；第三方认证不在本轮范围，GPU强杀启动器可能遗留临时偏好 |
 | `Minecraft/ModMinecraft.vb` | 目录创建/登记/显示名/移除/切换；任意本地图标、收藏分类、隔离、实例初始化/备份恢复、改名/回收站 | 目录显示名不搬盘、移除不删数据；全部识别/多目录GUI与Windows仍未验；旧PCL配置迁移排除 |
-| `Minecraft/ModModpack.vb` | mrpack/MMC-Prism/HMCL pack.json/MCBBS/CF及单叶游戏ZIP导入；加载器/受支持LiteLoader与OptiFine依赖；多格式导出/逐项选择/附Java/平台包 | 多独立实例ZIP/未知组件/任意执行钩子/任意私人fileApi域拒绝；规范不支持的mrpack依赖提示换格式；Mac派生字体禁随包，跨启动器/游戏未全验 |
+| `Minecraft/ModModpack.vb` | mrpack/MMC-Prism/HMCL pack.json/MCBBS/CF及单叶游戏ZIP导入；加载器/受支持LiteLoader与OptiFine依赖；多格式导出/逐项选择/附Java及三端启动器包；Mac完整资源、Linux字体与许可保留 | 多独立实例ZIP/未知组件/任意执行钩子/任意私人fileApi域拒绝；规范不支持的mrpack依赖提示换格式；三端导出缺端/错误格式拒绝，跨启动器/游戏未全验 |
 | `Minecraft/ModWatcher.vb` | 仅本次Child/PID日志/就绪/退出、关闭按钮与可见性；PID窗口标题/最大化和异常退出本地崩溃分析 | 单受管游戏；操作系统/游戏可拒绝窗口控制；本批真实游戏/Windows全生命周期未验，日志标记不是视觉就绪证明 |
 | `ModDevelop.vb` | 系统调试模式、动画倍率、请求及任务开始/结束可取消随机延迟、跨目录缓存复制禁用已接 | 只作用实际已接调用链，不改变安全校验或认证；原版内部开发工具/全计数器及GUI仍未等价 |
 | `ModEvent.vb` | 静态资源/Style.BasedOn、局部单双向Binding/ElementName、TargetName显示Trigger/DockPanel与显式事件；带服务器启动需确认并检查会话 | 只写本文档局部值；不实现CLR/转换器/任意数据源或自动副作用，不新发认证或持久改server；应用设置/公开变量仍白名单 |

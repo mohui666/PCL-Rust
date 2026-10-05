@@ -2,13 +2,14 @@
 
 [项目首页](../README.md)
 
-面向 macOS 与 Windows 的第三方 Rust 重构。外观基准为 Windows PCL 2.13.1.1，macOS 使用苹方。按用途选择下方文档。
+提供 macOS、Windows 与 Linux x86_64 构建的第三方 Rust 重构。外观基准为 Windows PCL 2.13.1.1，macOS 使用苹方。按用途选择下方文档。
 
 ## 从这里开始
 
 | 你想了解 | 阅读 |
 | --- | --- |
 | 如何从源码运行、打包，配置放在哪里 | [开发与构建](development.md) |
+| 如何导出附带三端启动器的整合包 | [三端导出](development.md#导出时附带三端启动器) |
 | 现在有哪些功能，哪些仍有限制 | [当前范围与剩余边界](remaining-migration.md) · [功能与 UI 核对](ui-gap-audit.md) |
 | 微软登录流程、账号保存、403 和审核状态 | [登录说明](login.md) |
 | CurseForge 申请和其它外部服务进度 | [外部服务状态](upstream.md#外部服务状态) |

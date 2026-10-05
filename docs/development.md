@@ -10,12 +10,12 @@
 | --- | --- |
 | `crates/pcl-core/` | 配置、版本与启动计划、下载与校验、Java、账号、加载器、资源与整合包处理 |
 | `crates/pcl-desktop/` | egui 原生窗口、页面、消息框、提示、任务进度与交互 |
-| `scripts/` | 本机字体处理、macOS 与 Windows 打包入口 |
+| `scripts/` | 字体处理与 macOS、Windows、Linux 打包入口 |
 | `docs/` | 公开迁移矩阵、验证摘要、登录与来源说明 |
 | `crates/pcl-desktop/assets/` | 构建所需资产及来源记录 |
-| `.github/workflows/build.yml` | 格式、Clippy、测试及 release 构建验证；不打包或上传发行产物 |
+| `.github/workflows/build.yml` | Mac/Windows 格式、Clippy、测试与 release 检查；Linux 构建、静态字体与包产物 |
 | `test-output/` | 本地生成目录，含字体和验证产物；不提交 |
-| `dist/` | 手动打包生成的应用目录；不随源码提交或由 CI 上传 |
+| `dist/` | 打包生成的应用目录，不提交到源码；Linux CI 上传压缩包产物 |
 
 工作区使用 Rust 2021 edition，声明最低 Rust 版本为 1.88。当前记录中的开发验证使用 Rust 1.99；这不代表已经在最低版本上完成测试。依赖由 `Cargo.lock` 锁定。
 
@@ -28,6 +28,7 @@
 | 通用 | Rust 工具链；依赖版本由 Cargo.lock 锁定。 |
 | macOS | Python 3、Xcode Command Line Tools（xcrun swift）、系统苹方；首次运行前生成字库。 |
 | Windows | 与所选 Rust target 匹配的编译/链接工具；MSVC target 需要 C++ 构建工具和 Windows SDK。 |
+| Linux x86_64 | Ubuntu 22.04、系统图形开发库、Python 3 与 fontTools；命令见下节。 |
 
 ```sh
 git clone https://github.com/mohui666/PCL-Rust.git
@@ -43,7 +44,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-默认测试跳过标记为 ignored 的用例。CI 在 macOS/Windows runner 执行格式、严格 Clippy、测试及 release 构建，不打包或上传 dist；运行结果见 [验证记录](validation.md)。
+默认测试跳过标记为 ignored 的用例。CI 的 Mac/Windows job 执行格式、严格 Clippy、测试及 release 构建；Linux job 在 Ubuntu 22.04 生成程序、中文字库与压缩包，并上传构建产物。运行结果见 [验证记录](validation.md)。
 
 ### macOS
 
@@ -59,7 +60,7 @@ bash scripts/package-macos.sh
 python3 scripts/build-local-pingfang-sfnt.py --style all
 ```
 
-新增中文文案后需重新生成字库；macOS 打包入口会执行这一步。生成的 Regular/Semibold 字体和轮廓仅用于本机运行，不在本仓库分发。其他系统的字体可用性与许可需分别确认。
+新增中文文案后需重新生成字库；macOS 打包入口会执行这一步。生成的 Regular/Semibold 字体放在应用 Resources 内，不提交到源码仓库。整合包附带 Mac 启动器时完整保留所选 .app 的字体、资源和签名文件。
 
 ### Windows
 
@@ -70,6 +71,46 @@ python3 scripts/build-local-pingfang-sfnt.py --style all
 ```
 
 本地 Windows 开发产物验证来自 macOS 上对 `x86_64-pc-windows-gnu` 的交叉构建和 PE 静态检查。Windows 原生打包、启动、系统凭据管理与游戏运行仍需实机验证，不能据交叉构建成功推定通过。
+
+### Linux x86_64
+
+构建脚本面向 Ubuntu 22.04 x86_64。安装依赖并准备独立 Python 环境：
+
+```sh
+sudo apt-get install build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev python3-venv
+python3 -m venv test-output/linux-fonts-venv
+test-output/linux-fonts-venv/bin/pip install fonttools==4.60.1
+PYTHON_BIN="$PWD/test-output/linux-fonts-venv/bin/python" bash scripts/package-linux.sh
+```
+
+输出为 `dist/PCL-Rust-Linux-x86_64/` 和同名 `.tar.gz`。脚本从固定来源校验并生成 Noto Sans SC Regular/Semibold 静态 TrueType 字体，随包保存 OFL 许可与来源记录；检查 ELF、动态依赖、CLI 启动和中文字形。
+
+在 Linux 桌面会话运行 `./PCL-Rust`，并将 `resources/` 保留在程序旁。运行需要 X11 或 Wayland、OpenGL/EGL 和桌面的 xdg-desktop-portal 文件对话框服务。Linux GUI、文件选择和游戏运行尚未验证。
+
+## 导出时附带三端启动器
+
+导出页默认勾选“PCL Rust 启动器（Windows、macOS、Linux）”。取消勾选后按所选格式导出普通整合包；勾选时导出外层 ZIP，内含 `modpack.mrpack` 和三端程序。
+
+启动器会寻找应用旁的 `launcher-bundle`，也可点击“选择启动器目录”。目录结构：
+
+```text
+launcher-bundle/
+├── windows/
+│   └── PCL-Rust.exe
+├── macos/
+│   └── PCL-Rust.app/
+└── linux/
+    ├── PCL-Rust
+    └── resources/
+        ├── NotoSansSC-Regular.ttf
+        ├── NotoSansSC-Semibold.ttf
+        ├── OFL.txt
+        └── FONT-SOURCES.json
+```
+
+Windows 与 Linux 的运行依赖、资源和许可文件放在各自目录内。Mac 使用完整 `.app`，保留字体、资源和签名字节；Linux 与 Mac 主程序在 ZIP 中保留可执行权限。缺少任一平台或程序格式不符时明确报错，不用本机程序代替。
+
+导出不包含账户和全局设置，不覆盖已有目标文件。接收方打开对应平台的启动器后手动导入 `modpack.mrpack`；Java 与游戏不会自动运行。
 
 ## 配置与数据
 
