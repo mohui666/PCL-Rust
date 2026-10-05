@@ -75,6 +75,7 @@ impl ForgeKind {
 /// official index, so universal/client ZIPs are not presented as installer JARs.
 pub fn list_versions(kind: ForgeKind, minecraft: &str, cancel: &AtomicBool) -> Result<Vec<String>> {
     validate_id(minecraft)?;
+    cancelled(cancel)?;
     if kind == ForgeKind::Forge && legacy_minecraft(minecraft) {
         return Ok(legacy_entries(minecraft, cancel)?
             .into_iter()
@@ -82,6 +83,9 @@ pub fn list_versions(kind: ForgeKind, minecraft: &str, cancel: &AtomicBool) -> R
             .map(|entry| entry.file_version)
             .collect());
     }
+    let Some(prefix) = maven_version_prefix(kind, minecraft) else {
+        return Ok(Vec::new());
+    };
     let bytes = request_bytes(
         &http_client()?,
         &format!("{}/maven-metadata.xml", kind.repository_for(minecraft)),
@@ -90,28 +94,56 @@ pub fn list_versions(kind: ForgeKind, minecraft: &str, cancel: &AtomicBool) -> R
         cancel,
     )?;
     let text = std::str::from_utf8(&bytes).context("Maven 版本清单不是 UTF-8")?;
-    let prefix = match kind {
-        ForgeKind::Forge => format!("{minecraft}-"),
-        ForgeKind::NeoForge if minecraft == "1.20.1" => format!("{minecraft}-"),
+    parse_maven_versions(kind, minecraft, &prefix, text)
+}
+
+fn maven_version_prefix(kind: ForgeKind, minecraft: &str) -> Option<String> {
+    match kind {
+        ForgeKind::Forge => Some(format!("{minecraft}-")),
+        ForgeKind::NeoForge if minecraft == "1.20.1" => Some(format!("{minecraft}-")),
         ForgeKind::NeoForge => {
             let parts: Vec<_> = minecraft.split('.').collect();
             if !(2..=3).contains(&parts.len())
-                || parts[0] != "1"
-                || parts[1..]
+                || parts
                     .iter()
                     .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
             {
-                bail!("NeoForge 版本列表目前支持正式版 1.x[.y]，具体兼容性由官方安装包核对");
+                return None;
             }
-            format!("{}.{}.", parts[1], parts.get(2).unwrap_or(&"0"))
+            let patch = parts.get(2).unwrap_or(&"0");
+            // Official versioning: 1.21.1 -> 21.1.x; from Minecraft 26.1
+            // onward, retain the year and add the omitted hotfix zero:
+            // 26.3 -> 26.3.0.x, 26.1.2 -> 26.1.2.x.
+            // https://docs.neoforged.net/docs/gettingstarted/versioning/
+            if parts[0] == "1" {
+                Some(format!("{}.{patch}.", parts[1]))
+            } else if parts[0].parse::<u32>().ok().is_some_and(|year| year >= 26) {
+                Some(format!("{}.{}.{patch}.", parts[0], parts[1]))
+            } else {
+                None
+            }
         }
-    };
+    }
+}
+
+fn parse_maven_versions(
+    kind: ForgeKind,
+    minecraft: &str,
+    prefix: &str,
+    text: &str,
+) -> Result<Vec<String>> {
     let regex = regex::Regex::new(r"<version>([^<>]+)</version>")?;
     let mut seen = HashSet::new();
     let mut versions = Vec::new();
     for capture in regex.captures_iter(text) {
         let raw = capture[1].trim();
-        if !raw.starts_with(&prefix) {
+        if !raw.starts_with(prefix) {
+            continue;
+        }
+        // NeoForge snapshot/pre-release builds carry +snapshot-N / +pre-N.
+        // They share the release prefix but do not target the final Minecraft
+        // release. Official installer metadata remains the final install guard.
+        if kind == ForgeKind::NeoForge && raw.contains('+') {
             continue;
         }
         let version = if kind == ForgeKind::Forge || minecraft == "1.20.1" {
@@ -2608,6 +2640,71 @@ mod tests {
             ),
         }
     }
+    #[test]
+    fn neoforge_official_calendar_versions_keep_exact_minecraft_hotfix() {
+        let text = include_str!("../tests/fixtures/forge/neoforge-calver-metadata.xml");
+        for (minecraft, expected) in [
+            (
+                "26.3",
+                vec!["26.3.0.48-beta", "26.3.0.47-beta", "26.3.0.9-beta"],
+            ),
+            ("26.2", vec!["26.2.0.88"]),
+            ("26.1.2", vec!["26.1.2.114"]),
+            ("26.1.1", vec!["26.1.1.15-beta"]),
+            // A release must not include +snapshot / +pre builds sharing its prefix.
+            ("26.1", vec!["26.1.0.19-beta"]),
+            ("1.21.1", vec!["21.1.255"]),
+            ("1.21", vec!["21.0.167"]),
+            ("26.3.1", vec![]),
+            ("26.30", vec![]),
+        ] {
+            let prefix = maven_version_prefix(ForgeKind::NeoForge, minecraft).unwrap();
+            assert_eq!(
+                parse_maven_versions(ForgeKind::NeoForge, minecraft, &prefix, text).unwrap(),
+                expected,
+                "Minecraft {minecraft}"
+            );
+        }
+    }
+
+    #[test]
+    fn maven_version_lists_preserve_forge_early_neo_and_invalid_entry_errors() {
+        let text = "<metadata><version>1.20.1-47.1.106</version>\
+                    <version>1.20.1-47.1.99</version>\
+                    <version>1.20.1-47.1.106</version>\
+                    <version>1.20.10-47.1.107</version></metadata>";
+        for kind in [ForgeKind::Forge, ForgeKind::NeoForge] {
+            let prefix = maven_version_prefix(kind, "1.20.1").unwrap();
+            assert_eq!(
+                parse_maven_versions(kind, "1.20.1", &prefix, text).unwrap(),
+                ["47.1.106", "47.1.99"]
+            );
+        }
+        assert!(parse_maven_versions(
+            ForgeKind::NeoForge,
+            "26.3",
+            "26.3.0.",
+            "<metadata><version>26.3.0.1/bad</version></metadata>"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unknown_neoforge_minecraft_names_are_empty_but_cancellation_is_not_success() {
+        for minecraft in ["24w14a", "26.1-snapshot-1", "1.21-pre1", "2.0", "26.3.1.2"] {
+            assert!(maven_version_prefix(ForgeKind::NeoForge, minecraft).is_none());
+            // Unmapped names do not start a request or invent compatible builds.
+            assert!(
+                list_versions(ForgeKind::NeoForge, minecraft, &AtomicBool::new(false))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let error = list_versions(ForgeKind::NeoForge, "26.3", &AtomicBool::new(true)).unwrap_err();
+        assert!(error.is::<crate::model::OperationCancelled>());
+        assert!(list_versions(ForgeKind::NeoForge, "../26.3", &AtomicBool::new(false)).is_err());
+    }
+
     #[test]
     fn loader_version_sort_is_numeric_newest_first() {
         let mut values = vec![

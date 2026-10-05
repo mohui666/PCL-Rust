@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Representative exact version entries from the official Maven metadata,
+     lastUpdated=20261004064226.
+     Source: https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml
+     Full response SHA256: 9be5a0668bf76c86338376ce4a19f250d1c79cc9346330bd9e62581515008b4f
+     Reduced fixture only; it is not the complete list of available versions. -->
+<metadata>
+  <groupId>net.neoforged</groupId>
+  <artifactId>neoforge</artifactId>
+  <versioning><versions>
+    <version>21.0.167</version>
+    <version>21.1.255</version>
+    <version>26.1.0.0-alpha.1+snapshot-1</version>
+    <version>26.1.0.0-alpha.15+pre-3</version>
+    <version>26.1.0.19-beta</version>
+    <version>26.1.1.15-beta</version>
+    <version>26.1.2.114</version>
+    <version>26.2.0.88</version>
+    <version>26.3.0.9-beta</version>
+    <version>26.3.0.47-beta</version>
+    <version>26.3.0.48-beta</version>
+  </versions></versioning>
+</metadata>

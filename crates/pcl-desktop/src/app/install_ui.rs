@@ -208,6 +208,7 @@ impl Launcher {
         }
         let mut fetch = false;
         component_frame().show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::click());
             response
@@ -258,51 +259,63 @@ impl Launcher {
                 fetch = state.expanded && !matches!(state.phase, Phase::Ready | Phase::Loading);
             }
             if state.expanded {
-                let status = match &state.phase {
-                    Phase::Loading => loading_ui::Status::Running {
-                        cancelling: self.cancel.load(std::sync::atomic::Ordering::Relaxed),
-                    },
-                    Phase::Failed(error) => loading_ui::Status::Failed(error),
-                    Phase::Cancelled => loading_ui::Status::Cancelled,
-                    _ => loading_ui::Status::Ready,
-                };
-                match state.indicator.show_status(
-                    ui,
-                    "正在获取版本列表",
-                    status,
-                    loading_ui::Placement::Component,
-                ) {
-                    Some(loading_ui::Action::Retry) => fetch = true,
-                    Some(loading_ui::Action::Cancel) => self
-                        .cancel
-                        .store(true, std::sync::atomic::Ordering::Relaxed),
-                    _ => (),
-                }
-                if matches!(state.phase, Phase::Ready) {
-                    if state.versions.is_empty() {
-                        ui.label("此 Minecraft 版本没有发行方声明兼容的版本");
+                component_body().show(ui, |ui| {
+                    let status = match &state.phase {
+                        Phase::Loading => loading_ui::Status::Running {
+                            cancelling: self.cancel.load(std::sync::atomic::Ordering::Relaxed),
+                        },
+                        Phase::Failed(error) => loading_ui::Status::Failed(error),
+                        Phase::Cancelled => loading_ui::Status::Cancelled,
+                        _ => loading_ui::Status::Ready,
+                    };
+                    match state.indicator.show_status(
+                        ui,
+                        "正在获取版本列表",
+                        status,
+                        loading_ui::Placement::Component,
+                    ) {
+                        Some(loading_ui::Action::Retry) => fetch = true,
+                        Some(loading_ui::Action::Cancel) => self
+                            .cancel
+                            .store(true, std::sync::atomic::Ordering::Relaxed),
+                        _ => (),
                     }
-                    for (index, entry) in state.versions.iter().enumerate() {
-                        let label = format!(
-                            "{}{}",
-                            entry.version_number,
-                            if index == 0 { "  · 推荐" } else { "" }
-                        );
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 30.0],
-                                egui::Button::selectable(
-                                    state.selected.as_ref().is_some_and(|v| v.id == entry.id),
-                                    label,
-                                ),
+                    if matches!(state.phase, Phase::Ready) {
+                        if state.versions.is_empty() {
+                            ui.label(format!("此版本暂无可用的 {title}"));
+                        }
+                        for (index, entry) in state.versions.iter().enumerate() {
+                            let info = format!(
+                                "{}{}",
+                                match entry.version_type.as_str() {
+                                    "release" => "正式版",
+                                    "beta" => "测试版",
+                                    "alpha" => "预览版",
+                                    _ => "",
+                                },
+                                if index == 0 { " · 推荐" } else { "" }
+                            );
+                            if component_version_row(
+                                ui,
+                                &self.assets,
+                                if kind == InstallKind::Fabric {
+                                    "block-fabric"
+                                } else {
+                                    "mod"
+                                },
+                                &entry.version_number,
+                                &info,
+                                state.selected.as_ref().is_some_and(|v| v.id == entry.id),
+                                self.busy.is_none(),
                             )
                             .clicked()
-                        {
-                            state.selected = Some(entry.clone());
-                            state.expanded = false;
+                            {
+                                state.selected = Some(entry.clone());
+                                state.expanded = false;
+                            }
                         }
                     }
-                }
+                });
             }
         });
         ui.add_space(12.0);
@@ -384,6 +397,7 @@ impl Launcher {
         }
         let mut retry = false;
         component_frame().show(ui,|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let (rect,response)=ui.allocate_exact_size(Vec2::new(ui.available_width(),40.0),egui::Sense::click());
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,self.busy.is_none(),"OptiFine"));
             ui_style::place_left(ui,Rect::from_min_size(rect.min+Vec2::new(15.0,12.0),Vec2::new(110.0,18.0)),egui::Label::new(ui_style::card_title("OptiFine")));
@@ -401,6 +415,7 @@ impl Launcher {
                 retry=self.optifine.expanded && !matches!(self.optifine.phase,Phase::Ready);
             }
             if self.optifine.expanded {
+                component_body().show(ui, |ui| {
                 let status=match &self.optifine.phase {
                     Phase::Loading=>loading_ui::Status::Running{cancelling:self.cancel.load(std::sync::atomic::Ordering::Relaxed)},
                     Phase::Failed(error)=>loading_ui::Status::Failed(error),Phase::Cancelled=>loading_ui::Status::Cancelled,
@@ -409,17 +424,17 @@ impl Launcher {
                     Some(loading_ui::Action::Retry)=>retry=true,
                     Some(loading_ui::Action::Cancel)=>self.cancel.store(true,std::sync::atomic::Ordering::Relaxed),_=>()}
                 if matches!(self.optifine.phase,Phase::Ready) {
-                    if self.optifine.versions.is_empty(){ui.label("官方暂无此 Minecraft 版本的 OptiFine");}
+                    if self.optifine.versions.is_empty(){ui.label("此版本暂无可用的 OptiFine");}
                     for entry in &self.optifine.versions {
                         let compatible=match self.loader_kind {None=>true,Some(InstallKind::Forge)=>self.loader_version.as_deref().is_some_and(|forge|entry.compatible_forge(minecraft,forge)),Some(InstallKind::Fabric)=>true,_=>false};
-                        let label=format!("{}{}",entry.version,if entry.preview{" · 预览版"}else{""});
-                        let response=ui.add_enabled(compatible && self.busy.is_none(),egui::Button::selectable(self.optifine.selected.as_ref()==Some(entry),label));
+                        let response=component_version_row(ui, &self.assets, "block-grass", &entry.version,
+                            if entry.preview { "测试版" } else { "正式版" }, self.optifine.selected.as_ref()==Some(entry), compatible && self.busy.is_none());
                         if !compatible {response.clone().on_hover_text("此组合不在 OptiFine 官方 Forge 兼容列表中；Fabric 组合还需要选中兼容的 OptiFabric 桥接。");}
                         if response.clicked(){self.optifine.selected=Some(entry.clone());self.optifine.expanded=false;
                             if !self.install_name_edited {self.install_name=if let (Some(kind),Some(loader))=(self.loader_kind,self.loader_version.as_deref()){format!("{}-OptiFine_{}",kind.default_id(minecraft,loader),entry.version)}else{entry.id()};}}
                     }
                 }
-                ui.add_space(18.0);
+                });
             }
         });
         if retry {
@@ -1055,6 +1070,7 @@ impl Launcher {
             self.loader_kind == Some(kind)
         };
         component_frame().show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::click());
             response.widget_info(|| {
@@ -1190,72 +1206,64 @@ impl Launcher {
                 }
             }
             if expanded {
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin {
-                        left: 20,
-                        right: 18,
-                        top: 0,
-                        bottom: 15,
-                    })
-                    .show(ui, |ui| {
-                        if let Some(action) = self.version_lists.loader.show(
+                component_body().show(ui, |ui| {
+                    if let Some(action) = self.version_lists.loader.show(
+                        ui,
+                        self.cancel.load(std::sync::atomic::Ordering::Relaxed),
+                        loading_ui::Placement::Component,
+                    ) {
+                        self.version_list_action(action);
+                        if action == loading_ui::Action::Retry && self.busy.is_none() {
+                            *open = Some(kind);
+                        }
+                        return;
+                    }
+                    if self.loader_versions.is_empty() {
+                        ui.label(format!("此版本暂无可用的 {}", kind.label()));
+                        if ui
+                            .add_enabled(self.busy.is_none(), egui::Button::new("重新获取"))
+                            .clicked()
+                        {
+                            *open = Some(kind);
+                        }
+                    }
+                    // The original card contains a StackPanel, not a second
+                    // ScrollViewer. Its complete height belongs to PanBack.
+                    for version in &self.loader_versions {
+                        let checked = selected
+                            && (if kind == InstallKind::LiteLoader {
+                                self.optifine.lite.as_deref()
+                            } else {
+                                self.loader_version.as_deref()
+                            }) == Some(&version.version);
+                        if component_version_row(
                             ui,
-                            self.cancel.load(std::sync::atomic::Ordering::Relaxed),
-                            loading_ui::Placement::Component,
-                        ) {
-                            self.version_list_action(action);
-                            if action == loading_ui::Action::Retry && self.busy.is_none() {
-                                *open = Some(kind);
+                            &self.assets,
+                            kind.icon(),
+                            &version.version,
+                            if version.stable {
+                                "稳定版"
+                            } else {
+                                "测试版"
+                            },
+                            checked,
+                            self.busy.is_none(),
+                        )
+                        .clicked()
+                        {
+                            if kind == InstallKind::LiteLoader {
+                                self.optifine.lite = Some(version.version.clone());
+                            } else {
+                                self.loader_kind = Some(kind);
+                                self.loader_version = Some(version.version.clone());
                             }
-                            return;
-                        }
-                        if self.loader_versions.is_empty() {
-                            ui.label("此 Minecraft 版本暂无可安装版本。");
-                            if ui
-                                .add_enabled(self.busy.is_none(), egui::Button::new("重新获取"))
-                                .clicked()
-                            {
-                                *open = Some(kind);
+                            self.loader_expanded = None;
+                            if !self.install_name_edited {
+                                self.install_name = self.selected_install_parent_id(minecraft);
                             }
                         }
-                        egui::ScrollArea::vertical()
-                            .max_height(180.0)
-                            .id_salt(("component-list", kind as u8))
-                            .show(ui, |ui| {
-                                for version in &self.loader_versions {
-                                    let label = format!(
-                                        "{}{}",
-                                        version.version,
-                                        if version.stable { "" } else { "（预览）" }
-                                    );
-                                    if ui
-                                        .selectable_label(
-                                            selected
-                                                && (if kind == InstallKind::LiteLoader {
-                                                    self.optifine.lite.as_deref()
-                                                } else {
-                                                    self.loader_version.as_deref()
-                                                }) == Some(&version.version),
-                                            label,
-                                        )
-                                        .clicked()
-                                        && self.busy.is_none()
-                                    {
-                                        if kind == InstallKind::LiteLoader {
-                                            self.optifine.lite = Some(version.version.clone());
-                                        } else {
-                                            self.loader_kind = Some(kind);
-                                            self.loader_version = Some(version.version.clone());
-                                        }
-                                        self.loader_expanded = None;
-                                        if !self.install_name_edited {
-                                            self.install_name =
-                                                self.selected_install_parent_id(minecraft);
-                                        }
-                                    }
-                                }
-                            });
-                    });
+                    }
+                });
             }
         });
     }
@@ -1272,9 +1280,320 @@ fn component_frame() -> egui::Frame {
         })
 }
 
+fn component_body() -> egui::Frame {
+    // PageDownloadInstall: StackPanel Margin="20,40,18,15"; the header above
+    // already consumes the top 40 DIP. Only the page owns vertical scrolling.
+    egui::Frame::NONE.inner_margin(egui::Margin {
+        left: 20,
+        right: 18,
+        top: 0,
+        bottom: 15,
+    })
+}
+
+fn component_version_row(
+    ui: &mut egui::Ui,
+    assets: &ui_style::Assets,
+    icon: &str,
+    title: &str,
+    info: &str,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    // MyListItem and all upstream loader item factories use a 42 DIP row.
+    // Allocate every row so the page can scroll to the end, but do not decode
+    // icons or lay out text for rows outside the page's visible clip rectangle.
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), 42.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, title));
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let palette = theme::palette(ui.ctx());
+    if selected || (response.hovered() && enabled) {
+        ui.painter().rect_filled(rect, 3, palette.light);
+    }
+    assets.icon(
+        ui,
+        icon,
+        Rect::from_min_size(rect.min + Vec2::new(6.0, 5.0), Vec2::new(31.0, 32.0)),
+        if icon == "mod" {
+            MUTED
+        } else if enabled {
+            Color32::WHITE
+        } else {
+            Color32::from_white_alpha(128)
+        },
+    );
+    ui_style::place_left(
+        ui,
+        Rect::from_min_size(
+            rect.min + Vec2::new(44.0, 4.0),
+            Vec2::new((rect.width() - 54.0).max(1.0), 19.0),
+        ),
+        egui::Label::new(RichText::new(title).size(14.0).color(if !enabled {
+            MUTED
+        } else if response.hovered() || selected {
+            palette.accent
+        } else {
+            palette.text
+        }))
+        .halign(egui::Align::Min)
+        .truncate(),
+    );
+    ui_style::place_left(
+        ui,
+        Rect::from_min_size(
+            rect.min + Vec2::new(44.0, 23.0),
+            Vec2::new((rect.width() - 54.0).max(1.0), 16.0),
+        ),
+        egui::Label::new(RichText::new(info).size(12.0).color(MUTED))
+            .halign(egui::Align::Min)
+            .truncate(),
+    );
+    response
+}
+
 #[cfg(test)]
 mod optifine_ui_tests {
     use super::*;
+
+    fn component_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx
+    }
+
+    fn component_frame_test(
+        app: &mut Launcher,
+        ctx: &egui::Context,
+        kind: InstallKind,
+        scroll: f32,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, Vec2) {
+        let mut content = Vec2::ZERO;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 360.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                theme::apply(ctx, &app.settings);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let output = egui::ScrollArea::vertical()
+                        .id_salt("fixture-page-scroll")
+                        .max_height(260.0)
+                        .vertical_scroll_offset(scroll)
+                        .show(ui, |ui| {
+                            let mut open = None;
+                            app.install_component_card(ui, kind, "1.20.1", &mut open);
+                        });
+                    content = output.content_size;
+                });
+            },
+        );
+        (output, content)
+    }
+
+    fn text_bounds(output: &egui::FullOutput, text: &str) -> Option<(Rect, Rect)> {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(value) if value.galley.job.text == text => Some((
+                Rect::from_min_size(value.pos, value.galley.size()),
+                shape.clip_rect,
+            )),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn every_loader_list_uses_page_scroll_and_its_last_full_row_is_selectable() {
+        for kind in [
+            InstallKind::Forge,
+            InstallKind::NeoForge,
+            InstallKind::Fabric,
+            InstallKind::Quilt,
+            InstallKind::LiteLoader,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut app = super::super::event_tests::fixture(root.path());
+            app.loader_expanded = Some(kind);
+            app.version_lists.loader.phase = Phase::Ready;
+            app.version_lists.loader_target = Some(("1.20.1".into(), kind));
+            app.loader_versions = (0..120)
+                .map(|i| LoaderVersion {
+                    version: format!("fixture-{i:03}"),
+                    stable: i % 2 == 0,
+                })
+                .collect();
+            let ctx = component_context();
+            let (top, size) = component_frame_test(&mut app, &ctx, kind, 0.0, vec![]);
+            assert!(
+                (size.y - (40.0 + 120.0 * 42.0 + 15.0)).abs() < 1.0,
+                "{} list must reserve every full row, actual {}",
+                kind.label(),
+                size.y
+            );
+            assert!(text_bounds(&top, "fixture-000").is_some());
+            assert!(
+                text_bounds(&top, "fixture-119").is_none(),
+                "off-screen rows must not lay out text"
+            );
+            let offset = size.y - 260.0;
+            let (bottom, _) = component_frame_test(&mut app, &ctx, kind, offset, vec![]);
+            let (last, clip) = text_bounds(&bottom, "fixture-119")
+                .expect("page scrolling must reach the last row");
+            assert!(
+                clip.contains_rect(last),
+                "last row title must be fully visible: {last:?} / {clip:?}"
+            );
+            let painted_rows = bottom
+                .shapes
+                .iter()
+                .filter(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => text.galley.job.text.starts_with("fixture-"),
+                    _ => false,
+                })
+                .count();
+            assert!(
+                painted_rows <= 8,
+                "long lists must skip invisible text layout"
+            );
+            // Select from the empty right half, not merely from the version text.
+            let pos = egui::pos2(500.0, last.center().y);
+            for pressed in [true, false] {
+                component_frame_test(
+                    &mut app,
+                    &ctx,
+                    kind,
+                    offset,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert_eq!(
+                if kind == InstallKind::LiteLoader {
+                    app.optifine.lite.as_deref()
+                } else {
+                    app.loader_version.as_deref()
+                },
+                Some("fixture-119"),
+                "{} row is not full-width clickable",
+                kind.label()
+            );
+            assert!(app.loader_expanded.is_none());
+        }
+    }
+
+    #[test]
+    fn empty_loader_state_is_short_and_does_not_reserve_a_fixed_list_height() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.loader_expanded = Some(InstallKind::NeoForge);
+        app.version_lists.loader.phase = Phase::Ready;
+        app.version_lists.loader_target = Some(("1.20.1".into(), InstallKind::NeoForge));
+        let ctx = component_context();
+        let (output, size) =
+            component_frame_test(&mut app, &ctx, InstallKind::NeoForge, 0.0, vec![]);
+        assert!(text_bounds(&output, "此版本暂无可用的 NeoForge").is_some());
+        assert!(
+            size.y < 120.0,
+            "empty list must not retain the old 180 DIP viewport"
+        );
+    }
+
+    #[test]
+    fn api_and_optifine_cards_share_the_same_full_row_geometry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.loader_kind = Some(InstallKind::Fabric);
+        let versions: Vec<ModrinthVersion> = (0..12)
+            .map(|i| ModrinthVersion {
+                id: i.to_string(),
+                project_id: "fixture".into(),
+                name: format!("fixture-{i}"),
+                version_number: format!("fixture-{i}"),
+                version_type: "release".into(),
+                date_published: String::new(),
+                game_versions: vec!["1.20.1".into()],
+                loaders: vec!["fabric".into()],
+                files: vec![],
+                dependencies: vec![],
+                environment: None,
+            })
+            .collect();
+        for state in [&mut app.optifine.api, &mut app.optifine.bridge] {
+            state.target = Some(("1.20.1".into(), "fabric".into()));
+            state.versions = versions.clone();
+            state.expanded = true;
+            state.phase = Phase::Ready;
+        }
+        app.optifine.minecraft = Some("1.20.1".into());
+        app.optifine.expanded = true;
+        app.optifine.phase = Phase::Ready;
+        app.optifine.versions = (0..12)
+            .map(|i| OptiFineVersion {
+                minecraft: "1.20.1".into(),
+                version: format!("HD_U_I{i}"),
+                filename: "fixture.jar".into(),
+                forge: Some(String::new()),
+                preview: false,
+            })
+            .collect();
+        let ctx = component_context();
+        let mut sizes = Vec::new();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 360.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                theme::apply(ctx, &app.settings);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for bridge in [false, true] {
+                            let start = ui.next_widget_position().y;
+                            app.companion_card(ui, "1.20.1", bridge);
+                            sizes.push(ui.next_widget_position().y - start);
+                        }
+                        let start = ui.next_widget_position().y;
+                        app.optifine_card(ui, "1.20.1");
+                        sizes.push(ui.next_widget_position().y - start);
+                    });
+                });
+            },
+        );
+        for size in sizes {
+            assert!(
+                (559.0..580.0).contains(&size),
+                "all component bodies must include twelve full 42 DIP rows: {size}"
+            );
+        }
+    }
     #[test]
     fn companion_response_cannot_replace_another_game_or_cancelled_request() {
         let root = tempfile::tempdir().unwrap();

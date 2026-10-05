@@ -7,7 +7,7 @@ use pcl_core::{
     resources::{self, ResourceKind},
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -46,10 +46,14 @@ pub(super) struct ResourceBrowser {
     open_groups: HashSet<String>,
     install_selection: Option<String>,
     versions: Vec<resources::ModrinthVersion>,
+    dependency_projects: BTreeMap<DependencyRef, resources::ProjectHit>,
+    dependency_failed: BTreeSet<DependencyRef>,
+    dependency_pending: Option<RequestKey>,
     target: Option<String>,
     world: Option<PathBuf>,
     pack_name: String,
     pack_optional: bool,
+    saved_folders: Vec<(ResourceKind, PathBuf)>,
     local_pack: bool,
     auto_searched: bool,
     icons: HashMap<String, egui::TextureHandle>,
@@ -103,11 +107,135 @@ pub(crate) enum ResourceEvent {
         Vec<resources::ModrinthVersion>,
     ),
     Icon(RequestKey, String, Vec<u8>),
+    Dependencies(RequestKey, DependencyBatch),
     Failed(RequestKey, String),
     Cancelled(RequestKey),
     Installed(String, String),
     Plan(RequestKey, Vec<resources::PlannedResource>),
     PlanFinished(RequestKey),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DependencyRef {
+    Project(String),
+    Version(String),
+}
+#[derive(Default)]
+pub(crate) struct DependencyBatch {
+    projects: BTreeMap<DependencyRef, resources::ProjectHit>,
+    failed: BTreeSet<DependencyRef>,
+}
+fn visible_dependency_project(id: &str) -> bool {
+    // ResourceVersion.FromJson hides Fabric API and Quilt API from this list.
+    !matches!(id, "P7dR8mSH" | "qvIfYCYJ" | "cf:306612" | "cf:634179")
+}
+fn required_dependencies<'a>(
+    kind: ResourceKind,
+    versions: impl IntoIterator<Item = &'a resources::ModrinthVersion>,
+) -> Vec<DependencyRef> {
+    if kind == ResourceKind::Modpack {
+        return Vec::new();
+    }
+    versions
+        .into_iter()
+        .flat_map(|version| {
+            version.dependencies.iter().filter_map(|dependency| {
+                if dependency.dependency_type != "required" {
+                    return None;
+                }
+                if let Some(id) = dependency.project_id.as_ref().filter(|id| !id.is_empty()) {
+                    (id != &version.project_id && visible_dependency_project(id))
+                        .then(|| DependencyRef::Project(id.clone()))
+                } else {
+                    dependency
+                        .version_id
+                        .as_ref()
+                        .filter(|id| !id.is_empty())
+                        .map(|id| DependencyRef::Version(id.clone()))
+                }
+            })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+fn dependency_hit(project: resources::ModrinthProject) -> resources::ProjectHit {
+    resources::ProjectHit {
+        project_id: project.id,
+        slug: project.slug,
+        title: project.title,
+        description: project.description,
+        author: String::new(),
+        downloads: project.downloads,
+        categories: project.loaders,
+        icon_url: project.icon_url,
+        date_modified: project.updated,
+        versions: project.game_versions,
+    }
+}
+fn resolve_dependency_projects(
+    references: &[DependencyRef],
+    cancel: &AtomicBool,
+    mut get_project: impl FnMut(&str, &AtomicBool) -> anyhow::Result<resources::ModrinthProject>,
+    mut get_version: impl FnMut(&str, &AtomicBool) -> anyhow::Result<resources::ModrinthVersion>,
+) -> DependencyBatch {
+    let mut batch = DependencyBatch::default();
+    let mut cached = HashMap::<String, resources::ProjectHit>::new();
+    for reference in references {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let result = (|| {
+            let id = match reference {
+                DependencyRef::Project(id) => id.clone(),
+                DependencyRef::Version(id) => get_version(id, cancel)?.project_id,
+            };
+            if !visible_dependency_project(&id) {
+                return Ok(None);
+            }
+            let project = if let Some(project) = cached.get(&id) {
+                project.clone()
+            } else {
+                let project = dependency_hit(get_project(&id, cancel)?);
+                cached.insert(id, project.clone());
+                project
+            };
+            anyhow::Ok(Some(project))
+        })();
+        match result {
+            Ok(Some(project)) => {
+                batch.projects.insert(reference.clone(), project);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                batch.failed.insert(reference.clone());
+            }
+        }
+    }
+    batch
+}
+fn resource_save_subdirectory(
+    kind: ResourceKind,
+    version: &resources::ModrinthVersion,
+    instance: &std::path::Path,
+) -> PathBuf {
+    match kind {
+        ResourceKind::Mod => instance.join("mods"),
+        ResourceKind::ResourcePack => instance.join("resourcepacks"),
+        ResourceKind::Shader => {
+            let vanilla = version.loaders.iter().any(|loader| loader == "vanilla")
+                && !version
+                    .loaders
+                    .iter()
+                    .any(|loader| matches!(loader.as_str(), "iris" | "optifine"));
+            instance.join(if vanilla {
+                "resourcepacks"
+            } else {
+                "shaderpacks"
+            })
+        }
+        _ => instance.to_path_buf(),
+    }
 }
 
 fn tab_kind(tab: usize) -> ResourceKind {
@@ -160,6 +288,9 @@ impl Launcher {
         state.page_error = None;
         state.cancelled = false;
         state.versions.clear();
+        state.dependency_projects.clear();
+        state.dependency_failed.clear();
+        state.dependency_pending = None;
         state.open_groups.clear();
         state.install_selection = None;
     }
@@ -220,7 +351,27 @@ impl Launcher {
                     .filter(|g| g.selected || groups.len() == 1)
                     .map(|g| g.title.clone())
                     .collect();
+                if state.open_groups.is_empty() {
+                    if let Some(first) = groups.first() {
+                        state.open_groups.insert(first.title.clone());
+                    }
+                }
                 self.status = format!("{}版本列表已更新", key.kind.label());
+                self.load_resource_dependencies(false);
+            }
+            ResourceEvent::Dependencies(key, batch) => {
+                let state = &mut self.resource_browser;
+                if !state.accepts(&key, &self.settings.game_root)
+                    || !state
+                        .dependency_pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.same(&key))
+                {
+                    return;
+                }
+                state.dependency_projects.extend(batch.projects);
+                state.dependency_failed = batch.failed;
+                state.dependency_pending = None;
             }
             ResourceEvent::Icon(key, id, data) => {
                 if self
@@ -346,6 +497,9 @@ impl Launcher {
             state.auto_searched = false;
             state.plan_key = None;
             state.dependency_plan.clear();
+            state.dependency_projects.clear();
+            state.dependency_failed.clear();
+            state.dependency_pending = None;
         }
         if kind == ResourceKind::Modpack {
             return;
@@ -390,6 +544,9 @@ impl Launcher {
         state.loading = false;
         state.plan_key = None;
         state.dependency_plan.clear();
+        state.dependency_projects.clear();
+        state.dependency_failed.clear();
+        state.dependency_pending = None;
         let key = RequestKey {
             kind: state.kind,
             generation: state.generation,
@@ -491,6 +648,12 @@ impl Launcher {
         });
     }
     fn open_resource(&mut self, id: String) {
+        let dependency_hit = self
+            .resource_browser
+            .dependency_projects
+            .values()
+            .find(|project| project.project_id == id)
+            .cloned();
         let Some((tx, cancel)) = self.start_job("正在获取版本列表") else {
             return;
         };
@@ -504,7 +667,8 @@ impl Launcher {
                 .page
                 .as_ref()
                 .and_then(|page| page.hits.iter().find(|h| h.project_id == id))
-                .cloned();
+                .cloned()
+                .or(dependency_hit);
         }
         state.loading = true;
         state.loading_indicator.start();
@@ -549,6 +713,68 @@ impl Launcher {
             }
         });
     }
+    fn load_resource_dependencies(&mut self, retry: bool) {
+        let state = &mut self.resource_browser;
+        if state.dependency_pending.is_some() {
+            return;
+        }
+        let references = if retry {
+            state.dependency_failed.iter().cloned().collect()
+        } else {
+            required_dependencies(state.kind, state.versions.iter())
+        };
+        if references.is_empty() {
+            return;
+        }
+        let key = RequestKey {
+            kind: state.kind,
+            generation: state.generation,
+            root: self.settings.game_root.clone(),
+            epoch: state.epoch.clone(),
+        };
+        let cancel = if retry {
+            let cancel = Arc::new(AtomicBool::new(false));
+            if let Some(previous) = state.cancel.replace(cancel.clone()) {
+                previous.store(true, Ordering::Relaxed);
+            }
+            cancel
+        } else {
+            state.cancel.clone().unwrap_or_default()
+        };
+        state.dependency_pending = Some(key.clone());
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let batch = resolve_dependency_projects(
+                &references,
+                &cancel,
+                resources::get_project,
+                resources::get_version,
+            );
+            let icons: BTreeMap<_, _> = batch
+                .projects
+                .values()
+                .filter_map(|project| {
+                    project
+                        .icon_url
+                        .as_ref()
+                        .map(|url| (project.project_id.clone(), url.clone()))
+                })
+                .collect();
+            let _ = tx.send(Event::Resource(ResourceEvent::Dependencies(
+                key.clone(),
+                batch,
+            )));
+            for (id, url) in icons {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Ok(bytes) = resources::fetch_project_icon(&url, &cancel) {
+                    let _ = tx.send(Event::Resource(ResourceEvent::Icon(key.clone(), id, bytes)));
+                }
+            }
+        });
+    }
+
     fn install_resource(&mut self, version: String) {
         let kind = self.resource_browser.kind;
         let Some(project) = self.resource_browser.project.as_ref().map(|p| p.id.clone()) else {
@@ -827,12 +1053,15 @@ impl Launcher {
                         }
                     });
             });
-            ui.add_space(10.0);
-            let previous = (self.settings.resource_sort, self.settings.resource_naming);
+            ui.add_space(9.0);
+            let previous = self.settings.resource_sort;
             ui.horizontal(|ui| {
-                ui.label("排序");
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let (label, _) =
+                    ui.allocate_exact_size(Vec2::new(44.0, 28.0), egui::Sense::hover());
+                crate::ui_style::place_left(ui, label, egui::Label::new("排序"));
                 crate::ui_style::PclComboBox::from_id_salt("resource-sort")
-                    .width(130.0)
+                    .width(field_width)
                     .selected_text(self.settings.resource_sort.label())
                     .show_ui(ui, |ui| {
                         for value in [
@@ -848,24 +1077,8 @@ impl Launcher {
                             );
                         }
                     });
-                ui.label("文件命名");
-                crate::ui_style::PclComboBox::from_id_salt("resource-naming")
-                    .width(150.0)
-                    .selected_text(self.settings.resource_naming.label())
-                    .show_ui(ui, |ui| {
-                        for value in [
-                            resources::ResourceNaming::Original,
-                            resources::ResourceNaming::ProjectVersion,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.settings.resource_naming,
-                                value,
-                                value.label(),
-                            );
-                        }
-                    });
             });
-            if previous != (self.settings.resource_sort, self.settings.resource_naming) {
+            if previous != self.settings.resource_sort {
                 self.persist();
             }
             search |= self.busy.is_none()
@@ -955,6 +1168,11 @@ impl Launcher {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let request = self.resource_browser.last_search.as_ref();
+                let show_mc = request.is_none_or(|request| request.minecraft.is_none());
+                let show_loader = kind == ResourceKind::Mod
+                    && request.is_none_or(|request| request.loader.is_none());
+                let metadata_widths =
+                    resource_metadata_widths(ui, &page.hits, show_mc, show_loader);
                 for hit in &page.hits {
                     let (rect, response) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), 64.0),
@@ -967,9 +1185,6 @@ impl Launcher {
                         ui.painter()
                             .rect_filled(rect, 6, theme::palette(ui.ctx()).light);
                     }
-                    let show_mc = request.is_none_or(|r| r.minecraft.is_none());
-                    let show_loader =
-                        kind == ResourceKind::Mod && request.is_none_or(|r| r.loader.is_none());
                     resource_item(
                         ui,
                         rect,
@@ -979,6 +1194,7 @@ impl Launcher {
                         hit,
                         show_mc,
                         show_loader,
+                        metadata_widths,
                     );
                     if response.clicked() && self.busy.is_none() {
                         selected = Some(hit.project_id.clone());
@@ -1097,6 +1313,12 @@ impl Launcher {
                         slot.min - Vec2::splat(7.0),
                         Vec2::new(slot.width() + 7.0, 64.0),
                     );
+                    let metadata_widths = resource_metadata_widths(
+                        ui,
+                        std::slice::from_ref(hit),
+                        true,
+                        kind == ResourceKind::Mod,
+                    );
                     resource_item(
                         ui,
                         rect,
@@ -1106,6 +1328,7 @@ impl Launcher {
                         hit,
                         true,
                         kind == ResourceKind::Mod,
+                        metadata_widths,
                     );
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 20.0;
@@ -1125,7 +1348,10 @@ impl Launcher {
                         }
                         if let Some(entry) = wiki_entry(hit) {
                             if ui
-                                .add_sized(Vec2::new(120.0, 35.0), egui::Button::new("MC 百科"))
+                                .add_sized(
+                                    Vec2::new(140.0, 35.0),
+                                    egui::Button::new("转到 MC 百科"),
+                                )
                                 .clicked()
                             {
                                 ui.ctx().open_url(egui::OpenUrl::new_tab(entry.url()));
@@ -1237,6 +1463,9 @@ impl Launcher {
         }
         let groups = version_groups(&self.resource_browser);
         let mut chosen = None;
+        let mut save_as = None;
+        let mut dependency_chosen = None;
+        let mut retry_dependencies = false;
         for group in &groups {
             let open = self.resource_browser.open_groups.contains(&group.title);
             let mut toggle = false;
@@ -1249,8 +1478,8 @@ impl Launcher {
                 crate::ui_style::place_left(
                     ui,
                     Rect::from_min_size(
-                        header.min + Vec2::new(15.0, 12.0),
-                        Vec2::new(header.width() - 55.0, 18.0),
+                        header.min + Vec2::new(15.0, 10.0),
+                        Vec2::new(header.width() - 55.0, 20.0),
                     ),
                     egui::Label::new(crate::ui_style::card_title(&group.title)).truncate(),
                 );
@@ -1258,8 +1487,55 @@ impl Launcher {
                 chevron(ui, center, open, theme::palette(ui.ctx()).text);
                 toggle = response.clicked();
                 if open {
+                    let references = required_dependencies(
+                        kind,
+                        group
+                            .versions
+                            .iter()
+                            .map(|index| &self.resource_browser.versions[*index]),
+                    );
+                    let mut projects = BTreeMap::new();
+                    for reference in &references {
+                        if let Some(project) =
+                            self.resource_browser.dependency_projects.get(reference)
+                        {
+                            if Some(&project.project_id)
+                                != self
+                                    .resource_browser
+                                    .project
+                                    .as_ref()
+                                    .map(|project| &project.id)
+                            {
+                                projects.insert(project.project_id.clone(), project.clone());
+                            }
+                        }
+                    }
+                    let failed = references.iter().any(|reference| {
+                        self.resource_browser.dependency_failed.contains(reference)
+                    });
+                    let loading = !references.is_empty()
+                        && self.resource_browser.dependency_pending.is_some();
+                    let (selected, retry) = dependency_rows(
+                        ui,
+                        &self.assets,
+                        &self.resource_browser.icons,
+                        kind,
+                        &projects.into_values().collect::<Vec<_>>(),
+                        loading,
+                        failed,
+                        self.busy.is_none(),
+                    );
+                    if selected.is_some() {
+                        dependency_chosen = selected;
+                    }
+                    retry_dependencies |= retry;
+                    let duplicate_names =
+                        group_has_duplicate_names(group, &self.resource_browser.versions);
                     let (rect, _) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), 42.0 * group.versions.len() as f32),
+                        Vec2::new(
+                            ui.available_width(),
+                            42.0 * group.versions.len() as f32 + 18.0,
+                        ),
                         egui::Sense::hover(),
                     );
                     for (row, index) in group.versions.iter().enumerate() {
@@ -1268,15 +1544,21 @@ impl Launcher {
                             rect.min + Vec2::new(20.0, 42.0 * row as f32),
                             Vec2::new(rect.width() - 38.0, 42.0),
                         );
-                        if version_row(
+                        if !ui.is_rect_visible(row_rect) {
+                            continue;
+                        }
+                        let (row_response, save_clicked) = version_row(
                             ui,
                             row_rect,
                             &self.assets,
                             version,
                             self.busy.is_none() && self.game_pid.is_none(),
-                        )
-                        .clicked()
-                        {
+                            duplicate_names,
+                            kind == ResourceKind::Modpack,
+                        );
+                        if save_clicked {
+                            save_as = Some(version.id.clone());
+                        } else if row_response.clicked() {
                             chosen = Some(version.id.clone());
                         }
                     }
@@ -1304,6 +1586,13 @@ impl Launcher {
                 }
             });
         }
+        if retry_dependencies {
+            self.load_resource_dependencies(true);
+        }
+        if let Some(project) = dependency_chosen {
+            self.open_resource(project);
+            return;
+        }
         if let Some(version) = chosen {
             if kind == ResourceKind::Modpack && self.resource_browser.pack_name.is_empty() {
                 self.resource_browser.pack_name = self
@@ -1323,221 +1612,193 @@ impl Launcher {
             }
             self.resource_browser.install_selection = Some(version);
         }
+        if let Some(version) = save_as {
+            self.save_resource_file(&version);
+        }
         self.resource_install_dialog(ui.ctx());
+    }
+
+    fn default_resource_save_directory(&self, version: &resources::ModrinthVersion) -> PathBuf {
+        let kind = self.resource_browser.kind;
+        if let Some((_, folder)) = self
+            .resource_browser
+            .saved_folders
+            .iter()
+            .find(|(saved, folder)| *saved == kind && folder.is_dir())
+        {
+            return folder.clone();
+        }
+        if kind == ResourceKind::Modpack {
+            return self.settings.game_root.clone();
+        }
+        let mut candidates: Vec<_> = self
+            .versions
+            .iter()
+            .filter_map(|installed| {
+                let (minecraft, loader) = self.resource_target(&installed.id)?;
+                if !resources::resource_compatible(kind, version, &minecraft, &loader) {
+                    return None;
+                }
+                let instance =
+                    config::instance_game_dir(&self.settings.game_root, &installed.id).ok()?;
+                let folder = resource_save_subdirectory(kind, version, &instance);
+                let selected = self.settings.selected_version.as_ref() == Some(&installed.id);
+                let modified = std::fs::metadata(&folder)
+                    .and_then(|metadata| metadata.modified())
+                    .ok();
+                Some((selected, modified, folder))
+            })
+            .collect();
+        candidates.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        candidates
+            .into_iter()
+            .next()
+            .map_or_else(|| self.settings.game_root.clone(), |(_, _, folder)| folder)
+    }
+
+    fn save_resource_file(&mut self, id: &str) {
+        let Some(version) = self
+            .resource_browser
+            .versions
+            .iter()
+            .find(|version| version.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(file) = version
+            .files
+            .iter()
+            .find(|file| file.primary)
+            .or_else(|| version.files.first())
+        else {
+            self.error = Some("此版本没有可下载的文件。".into());
+            return;
+        };
+        if let Err(error) = metadata::validate_id(&file.filename) {
+            self.error = Some(format!("资源文件名无效：{error:#}"));
+            return;
+        }
+        let kind = self.resource_browser.kind;
+        let mut directory = self.default_resource_save_directory(&version);
+        // Native pickers need an existing directory; no folder is created before the user chooses.
+        while !directory.is_dir() && directory.pop() {}
+        let extension = std::path::Path::new(&file.filename)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("zip");
+        let Some(destination) = rfd::FileDialog::new()
+            .set_title("选择保存位置")
+            .set_directory(&directory)
+            .set_file_name(&file.filename)
+            .add_filter(format!("{}文件", kind.label()), &[extension])
+            .save_file()
+        else {
+            return;
+        };
+        self.start_resource_save_at(kind, version, destination);
+    }
+
+    fn start_resource_save_at(
+        &mut self,
+        kind: ResourceKind,
+        version: resources::ModrinthVersion,
+        destination: PathBuf,
+    ) {
+        let Some(parent) = destination
+            .parent()
+            .filter(|parent| parent.is_dir())
+            .map(std::path::Path::to_path_buf)
+        else {
+            self.error = Some("保存文件夹不存在，请重新选择。".into());
+            return;
+        };
+        if std::fs::symlink_metadata(&destination).is_ok() {
+            self.error = Some("文件已存在，请选择其他文件名；原文件未更改。".into());
+            return;
+        }
+        let filename = destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let Some((tx, _)) = self.start_download_job_at(
+            &format!("{}下载：{filename}", kind.label()),
+            parent.clone(),
+            Some(filename.clone()),
+        ) else {
+            return;
+        };
+        self.resource_browser
+            .saved_folders
+            .retain(|(saved, _)| *saved != kind);
+        self.resource_browser.saved_folders.push((kind, parent));
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
+            let result = resources::save_resource_version(
+                kind,
+                &version,
+                &destination,
+                &cancel,
+                |progress| {
+                    let _ = tx.send(Event::Progress(progress));
+                },
+            );
+            let _ = tx.send(match result {
+                Ok(()) => Event::Done(format!("已保存 {}", destination.display())),
+                Err(error) => Event::download_failed("资源下载未完成", error),
+            });
+        });
     }
 
     fn resource_install_dialog(&mut self, ctx: &egui::Context) {
         let Some(id) = self.resource_browser.install_selection.clone() else {
             return;
         };
-        let Some(version) = self
+        if self.resource_browser.kind != ResourceKind::Modpack {
+            self.resource_browser.install_selection = None;
+            self.save_resource_file(&id);
+            return;
+        }
+        if !self
             .resource_browser
             .versions
             .iter()
-            .find(|v| v.id == id)
-            .cloned()
-        else {
+            .any(|version| version.id == id)
+        {
             self.resource_browser.install_selection = None;
             return;
-        };
-        let kind = self.resource_browser.kind;
-        let targets: Vec<_> = self
-            .versions
-            .iter()
-            .filter_map(|v| {
-                self.resource_target(&v.id)
-                    .map(|(mc, loader)| (v.id.clone(), mc, loader))
-            })
-            .filter(|(_, mc, loader)| resources::resource_compatible(kind, &version, mc, loader))
-            .collect();
-        if kind != ResourceKind::Modpack
-            && !targets
-                .iter()
-                .any(|(id, _, _)| Some(id) == self.resource_browser.target.as_ref())
-        {
-            self.resource_browser.target = None;
-            self.resource_browser.world = None;
-        }
-        let worlds = if kind == ResourceKind::DataPack {
-            self.resource_browser
-                .target
-                .as_ref()
-                .map(|id| {
-                    config::instance_game_dir(&self.settings.game_root, id).and_then(|path| {
-                        if path.exists() {
-                            resources::list_worlds(&path)
-                        } else {
-                            Ok(Vec::new())
-                        }
-                    })
-                })
-                .transpose()
-        } else {
-            Ok(None)
-        };
-        if let Ok(Some(worlds)) = &worlds {
-            if self
-                .resource_browser
-                .world
-                .as_ref()
-                .is_some_and(|path| !worlds.contains(path))
-            {
-                self.resource_browser.world = None;
-            }
         }
         let valid = self.busy.is_none()
             && self.game_pid.is_none()
-            && if kind == ResourceKind::Modpack {
-                metadata::validate_id(self.resource_browser.pack_name.trim()).is_ok()
-            } else {
-                self.resource_browser.target.is_some()
-                    && (kind != ResourceKind::DataPack || self.resource_browser.world.is_some())
-            };
-        let old_target = self.resource_browser.target.clone();
+            && metadata::validate_id(self.resource_browser.pack_name.trim()).is_ok();
         let buttons: &[&str] = if valid {
             &["安装", "取消"]
         } else {
             &["关闭"]
         };
-        let height = if kind == ResourceKind::DataPack {
-            230.0
-        } else {
-            174.0
-        };
         let action = super::account_ui::modal_frame(
             ctx,
             "resource-install",
-            &format!("安装{}", kind.label()),
-            570.0,
-            height,
+            "输入版本名称",
+            508.0,
+            62.0,
             buttons,
             |ui| {
-                ui.label(RichText::new(&version.name).color(theme::palette(ui.ctx()).text));
-                ui.label(
-                    RichText::new(format!(
-                        "{} · {}",
-                        version.game_versions.join(" / "),
-                        version.loaders.join(" / ")
-                    ))
-                    .size(12.0)
-                    .color(MUTED),
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.add_sized(
+                    Vec2::new(ui.available_width(), 28.0),
+                    egui::TextEdit::singleline(&mut self.resource_browser.pack_name)
+                        .char_limit(100),
                 );
-                ui.add_space(8.0);
-                if kind == ResourceKind::Modpack {
-                    ui.label("新游戏版本名称");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.resource_browser.pack_name)
-                            .desired_width(ui.available_width()),
-                    );
-                    ui.checkbox(
-                        &mut self.resource_browser.pack_optional,
-                        "安装可选客户端文件",
-                    );
-                    ui.label(
-                        RichText::new("整合包安装到独立的新实例；已有文件不会被覆盖。")
-                            .size(12.0)
-                            .color(MUTED),
-                    );
-                } else {
-                    ui.label("安装到游戏版本");
-                    crate::ui_style::PclComboBox::from_id_salt("resource-install-instance")
-                        .width(ui.available_width() - 12.0)
-                        .selected_text(
-                            self.resource_browser
-                                .target
-                                .as_deref()
-                                .unwrap_or("请选择兼容的已安装游戏版本"),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, mc, loader) in &targets {
-                                ui.selectable_value(
-                                    &mut self.resource_browser.target,
-                                    Some(id.clone()),
-                                    format!(
-                                        "{id} · {mc}{}",
-                                        if loader.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!(" / {}", loader_label(loader))
-                                        }
-                                    ),
-                                );
-                            }
-                        });
-                    if targets.is_empty() {
-                        ui.label(
-                            RichText::new("没有兼容的已安装游戏版本，请先安装对应版本及加载器。")
-                                .color(MUTED),
-                        );
-                    }
-                    if kind == ResourceKind::DataPack {
-                        ui.add_space(6.0);
-                        ui.label("目标世界");
-                        match &worlds {
-                            Ok(Some(worlds)) => {
-                                crate::ui_style::PclComboBox::from_id_salt(
-                                    "resource-install-world",
-                                )
-                                .width(ui.available_width() - 12.0)
-                                .selected_text(
-                                    self.resource_browser
-                                        .world
-                                        .as_ref()
-                                        .and_then(|p| p.file_name())
-                                        .map(|p| p.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "请明确选择世界".into()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for world in worlds {
-                                        ui.selectable_value(
-                                            &mut self.resource_browser.world,
-                                            Some(world.clone()),
-                                            world.file_name().unwrap_or_default().to_string_lossy(),
-                                        );
-                                    }
-                                });
-                                if worlds.is_empty() {
-                                    ui.label("此实例没有含 level.dat 的本地世界。");
-                                }
-                            }
-                            Ok(None) => {
-                                ui.label("请先选择游戏版本。");
-                            }
-                            Err(error) => {
-                                ui.colored_label(
-                                    Color32::DARK_RED,
-                                    format!("无法读取世界：{error:#}"),
-                                );
-                            }
-                        }
-                        ui.label(
-                            RichText::new("请关闭目标世界后安装，仅写入所选世界的 datapacks。")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                    } else if kind == ResourceKind::Shader {
-                        ui.label(
-                            RichText::new(
-                                "光影需在游戏中用对应的 Iris / OptiFine 或资源包入口启用。",
-                            )
-                            .size(12.0)
-                            .color(MUTED),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new(
-                                "将解析必需依赖；安装明细可在任务页查看，已有文件不会被覆盖。",
-                            )
-                            .size(12.0)
-                            .color(MUTED),
-                        );
-                    }
-                }
+                crate::ui_style::checkbox(
+                    ui,
+                    &mut self.resource_browser.pack_optional,
+                    "安装可选客户端文件",
+                    "",
+                );
             },
         );
-        if old_target != self.resource_browser.target {
-            self.resource_browser.world = None;
-        }
         if let Some(button) = action {
             self.resource_browser.install_selection = None;
             if valid && button == 0 {
@@ -1679,6 +1940,147 @@ fn relative_date(value: &str) -> String {
         "今天".into()
     }
 }
+fn resource_version_text(hit: &resources::ProjectHit, show_mc: bool, show_loader: bool) -> String {
+    let mut parts = Vec::new();
+    if show_loader {
+        let loaders: Vec<_> = hit
+            .categories
+            .iter()
+            .filter(|s| matches!(s.as_str(), "forge" | "neoforge" | "fabric" | "quilt"))
+            .map(|s| loader_label(s))
+            .collect();
+        if !loaders.is_empty() {
+            parts.push(loaders.join(" / "));
+        }
+    }
+    if show_mc {
+        parts.push(version_summary(&hit.versions));
+    }
+    parts.join(" ")
+}
+#[allow(clippy::too_many_arguments)]
+fn dependency_rows(
+    ui: &mut egui::Ui,
+    assets: &crate::ui_style::Assets,
+    icons: &HashMap<String, egui::TextureHandle>,
+    kind: ResourceKind,
+    projects: &[resources::ProjectHit],
+    loading: bool,
+    failed: bool,
+    enabled: bool,
+) -> (Option<String>, bool) {
+    if projects.is_empty() && !loading && !failed {
+        return (None, false);
+    }
+    let mut selected = None;
+    let mut retry = false;
+    let status_height = if loading || failed { 28.0 } else { 0.0 };
+    // StackInstall left/right 20/18; headings add 6 left, 2/12 top, 5 bottom.
+    let height = 25.0 + projects.len() as f32 * 64.0 + status_height + 35.0;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let heading = |ui: &mut egui::Ui, y: f32, text: &str| {
+        crate::ui_style::place_left(
+            ui,
+            Rect::from_min_size(
+                Pos2::new(rect.left() + 26.0, y),
+                Vec2::new(rect.width() - 44.0, 18.0),
+            ),
+            egui::Label::new(RichText::new(text).size(14.0)),
+        );
+    };
+    heading(ui, rect.top() + 2.0, "前置资源");
+    let metadata_widths = resource_metadata_widths(ui, projects, false, false);
+    for (index, project) in projects.iter().enumerate() {
+        let row = Rect::from_min_size(
+            rect.min + Vec2::new(20.0, 25.0 + index as f32 * 64.0),
+            Vec2::new(rect.width() - 38.0, 64.0),
+        );
+        if !ui.is_rect_visible(row) {
+            continue;
+        }
+        let response = ui.interact(
+            row,
+            ui.id().with((
+                "dependency-project",
+                rect.top().to_bits(),
+                &project.project_id,
+            )),
+            if enabled {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            },
+        );
+        if response.hovered() || response.has_focus() {
+            ui.painter()
+                .rect_filled(row, 6, theme::palette(ui.ctx()).light);
+        }
+        resource_item(
+            ui,
+            row,
+            assets,
+            icons,
+            kind,
+            project,
+            false,
+            false,
+            metadata_widths,
+        );
+        if response.clicked() {
+            selected = Some(project.project_id.clone());
+        }
+    }
+    let status_y = rect.top() + 25.0 + projects.len() as f32 * 64.0;
+    if loading || failed {
+        let status = Rect::from_min_size(
+            Pos2::new(rect.left() + 26.0, status_y),
+            Vec2::new(rect.width() - 44.0, 28.0),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(status), |ui| {
+            if loading {
+                loading_ui::inline(ui, "正在获取前置资源");
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("前置资源获取失败").color(MUTED));
+                    retry = ui.link("重试").clicked();
+                });
+            }
+        });
+    }
+    heading(ui, status_y + status_height + 12.0, "版本列表");
+    (selected, retry)
+}
+
+fn resource_metadata_widths(
+    ui: &egui::Ui,
+    hits: &[resources::ProjectHit],
+    show_mc: bool,
+    show_loader: bool,
+) -> [f32; 3] {
+    let measure = |text: String| {
+        ui.painter()
+            .layout_no_wrap(text, egui::FontId::proportional(12.0), MUTED)
+            .size()
+            .x
+    };
+    let mut widths = [0.0_f32, 57.0_f32, 0.0_f32];
+    for hit in hits {
+        widths[0] = widths[0].max(measure(resource_version_text(hit, show_mc, show_loader)));
+        widths[1] = widths[1].max(measure(relative_date(&hit.date_modified)));
+        widths[2] = widths[2].max(measure(
+            if hit.project_id.starts_with("cf:") {
+                "CurseForge"
+            } else {
+                "Modrinth"
+            }
+            .into(),
+        ));
+    }
+    widths
+}
 #[allow(clippy::too_many_arguments)]
 fn resource_item(
     ui: &mut egui::Ui,
@@ -1689,6 +2091,7 @@ fn resource_item(
     hit: &resources::ProjectHit,
     show_mc: bool,
     show_loader: bool,
+    metadata_widths: [f32; 3],
 ) {
     let icon = Rect::from_min_size(rect.min + Vec2::new(7.0, 6.7), Vec2::splat(50.0));
     if let Some(texture) = icons.get(&hit.project_id) {
@@ -1701,18 +2104,35 @@ fn resource_item(
     } else {
         assets.icon(ui, resource_icon(kind), icon.shrink(10.0), MUTED);
     }
+    let title = display_title(hit);
+    let mut title_job = egui::text::LayoutJob::default();
+    title_job.append(
+        title,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(14.0),
+            color: theme::palette(ui.ctx()).text,
+            ..Default::default()
+        },
+    );
+    if title != hit.title && !title.contains(hit.title.as_str()) {
+        title_job.append(
+            &format!(" ({})", hit.title),
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(12.0),
+                color: theme::palette(ui.ctx()).text.gamma_multiply(0.4),
+                ..Default::default()
+            },
+        );
+    }
     crate::ui_style::place_left(
         ui,
         Rect::from_min_size(
             rect.min + Vec2::new(65.0, 6.2),
             Vec2::new(rect.width() - 72.0, 17.0),
         ),
-        egui::Label::new(
-            RichText::new(display_title(hit))
-                .size(14.0)
-                .color(theme::palette(ui.ctx()).text),
-        )
-        .truncate(),
+        egui::Label::new(title_job).truncate(),
     );
     let mut x = rect.left() + 64.0;
     for label in hit
@@ -1766,41 +2186,19 @@ fn resource_item(
         .truncate(),
     )
     .on_hover_text(&hit.description);
-    let mut parts = Vec::new();
-    if show_loader {
-        let loaders: Vec<_> = hit
-            .categories
-            .iter()
-            .filter(|s| matches!(s.as_str(), "forge" | "neoforge" | "fabric" | "quilt"))
-            .map(|s| loader_label(s))
-            .collect();
-        if !loaders.is_empty() {
-            parts.push(loaders.join(" / "));
-        }
-    }
-    if show_mc {
-        parts.push(version_summary(&hit.versions));
-    }
-    let version_text = parts.join(" ");
+    let version_text = resource_version_text(hit, show_mc, show_loader);
     // MyResourceItem's metadata grid uses Auto / .7* / 55 / 1* / min57 / 1* / Auto / 1.7*.
     let origin = rect.min + Vec2::new(65.0, 41.2);
-    let version_width = if version_text.is_empty() {
+    let version_width = if !show_mc && !show_loader {
         0.0
     } else {
-        ui.painter()
-            .layout_no_wrap(
-                version_text.clone(),
-                egui::FontId::proportional(12.0),
-                MUTED,
-            )
-            .size()
-            .x
-            .min((rect.width() - 72.0) * 0.42)
-            + 17.0
+        metadata_widths[0].min((rect.width() - 72.0) * 0.42) + 17.0
     };
-    let fixed =
-        version_width + 10.5 + 5.0 + 55.0 + 2.0 + 11.5 + 5.0 + 57.0 + 2.0 + 11.5 + 5.0 + 53.0 + 2.0;
-    let star = ((rect.width() - 72.0 - fixed) / 4.4).max(0.0);
+    let time_width = metadata_widths[1];
+    let source_width = metadata_widths[2];
+    let fixed = version_width + 72.5 + 18.5 + time_width + 18.5 + source_width;
+    let star =
+        ((rect.width() - 72.0 - fixed) / if version_width > 0.0 { 4.4 } else { 3.7 }).max(0.0);
     let mut px = origin.x;
     if version_width > 0.0 {
         assets.icon(
@@ -1844,10 +2242,10 @@ fn resource_item(
     metadata_text(
         ui,
         Pos2::new(px + 16.5, origin.y),
-        57.0,
+        time_width,
         &relative_date(&hit.date_modified),
     );
-    px += 75.5 + star;
+    px += 18.5 + time_width + star;
     let c = Pos2::new(px + 5.75, origin.y + 8.0);
     ui.painter()
         .circle_stroke(c, 5.0, egui::Stroke::new(1.0_f32, MUTED));
@@ -1863,7 +2261,7 @@ fn resource_item(
     metadata_text(
         ui,
         Pos2::new(px + 16.5, origin.y),
-        57.0,
+        source_width,
         if hit.project_id.starts_with("cf:") {
             "CurseForge"
         } else {
@@ -2061,13 +2459,76 @@ fn version_groups(state: &ResourceBrowser) -> Vec<VersionGroup> {
     }
     output
 }
+fn save_as_icon(ui: &egui::Ui, rect: Rect, color: Color32) {
+    // Fixed upstream Modules/Base/ModBase.vb, Logo.IconButtonSave.
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><path fill="white" d="M819.392 0L1024 202.752v652.16a168.96 168.96 0 0 1-168.832 168.768h-104.192a47.296 47.296 0 0 1-10.752 0H283.776a47.232 47.232 0 0 1-10.752 0H168.832A168.96 168.96 0 0 1 0 854.912V168.768A168.96 168.96 0 0 1 168.832 0h650.56z m110.208 854.912V242.112l-149.12-147.776H168.896c-41.088 0-74.432 33.408-74.432 74.432v686.144c0 41.024 33.344 74.432 74.432 74.432h62.4v-190.528c0-33.408 27.136-60.544 60.544-60.544h440.448c33.408 0 60.544 27.136 60.544 60.544v190.528h62.4c41.088 0 74.432-33.408 74.432-74.432z m-604.032 74.432h372.864v-156.736H325.568v156.736z m403.52-596.48a47.168 47.168 0 1 1 0 94.336H287.872a47.168 47.168 0 1 1 0-94.336h441.216z m0-153.728a47.168 47.168 0 1 1 0 94.4H287.872a47.168 47.168 0 1 1 0-94.4h441.216z"/></svg>"#;
+    let key = egui::Id::new("resource-source-save-icon");
+    let texture = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<egui::TextureHandle>(key))
+        .unwrap_or_else(|| {
+            let tree = resvg::usvg::Tree::from_str(SVG, &resvg::usvg::Options::default())
+                .expect("fixed source icon");
+            let mut bitmap = resvg::tiny_skia::Pixmap::new(60, 60).expect("small icon allocation");
+            resvg::render(
+                &tree,
+                resvg::tiny_skia::Transform::from_scale(60.0 / 1024.0, 60.0 / 1024.0),
+                &mut bitmap.as_mut(),
+            );
+            let texture = ui.ctx().load_texture(
+                "resource-save-as",
+                egui::ColorImage::from_rgba_premultiplied([60, 60], bitmap.data()),
+                egui::TextureOptions::LINEAR,
+            );
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(key, texture.clone()));
+            texture
+        });
+    ui.painter().image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        color,
+    );
+}
+
+fn group_has_duplicate_names(
+    group: &VersionGroup,
+    versions: &[resources::ModrinthVersion],
+) -> bool {
+    let mut names = HashSet::new();
+    group
+        .versions
+        .iter()
+        .any(|index| !names.insert(versions[*index].name.as_str()))
+}
+
+fn version_file(version: &resources::ModrinthVersion) -> Option<&resources::VersionFile> {
+    version
+        .files
+        .iter()
+        .find(|file| file.primary)
+        .or_else(|| version.files.first())
+}
+
+fn version_title(version: &resources::ModrinthVersion, duplicate_name: bool) -> &str {
+    trim_extension(if duplicate_name {
+        version_file(version).map_or(version.name.as_str(), |file| file.filename.as_str())
+    } else {
+        &version.name
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn version_row(
     ui: &mut egui::Ui,
     rect: Rect,
     assets: &crate::ui_style::Assets,
     version: &resources::ModrinthVersion,
     enabled: bool,
-) -> egui::Response {
+    duplicate_name: bool,
+    allow_save_as: bool,
+) -> (egui::Response, bool) {
     let response = ui.interact(
         rect,
         ui.id().with((&version.id, rect.top().to_bits())),
@@ -2095,13 +2556,45 @@ fn version_row(
         Rect::from_min_size(rect.min + Vec2::new(6.0, 5.0), Vec2::new(31.0, 32.0)),
         Color32::WHITE,
     );
-    let title = trim_extension(&version.name);
+    let title = version_title(version, duplicate_name);
+    let save_rect = Rect::from_min_size(
+        egui::pos2(rect.right() - 30.0, rect.center().y - 12.5),
+        Vec2::splat(25.0),
+    );
+    let save = allow_save_as.then(|| {
+        ui.interact(
+            save_rect,
+            response.id.with("save-as"),
+            if enabled {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            },
+        )
+        .on_hover_text("另存为")
+    });
+    let show_save = save.as_ref().is_some_and(|save| {
+        response.hovered() || response.has_focus() || save.hovered() || save.has_focus()
+    });
+    if show_save {
+        if save.as_ref().is_some_and(|save| save.hovered()) {
+            ui.painter()
+                .rect_filled(save_rect, 3, theme::palette(ui.ctx()).pale);
+        }
+        save_as_icon(
+            ui,
+            save_rect.shrink(5.0),
+            if enabled {
+                theme::palette(ui.ctx()).accent
+            } else {
+                MUTED
+            },
+        );
+    }
+    let text_width = (rect.width() - 48.0 - if show_save { 31.0 } else { 0.0 }).max(0.0);
     crate::ui_style::place_left(
         ui,
-        Rect::from_min_size(
-            rect.min + Vec2::new(44.0, 4.0),
-            Vec2::new(rect.width() - 48.0, 18.0),
-        ),
+        Rect::from_min_size(rect.min + Vec2::new(44.0, 3.0), Vec2::new(text_width, 18.0)),
         egui::Label::new(
             RichText::new(title)
                 .size(14.0)
@@ -2120,12 +2613,7 @@ fn version_row(
                 .join("、"),
         );
     }
-    if let Some(file) = version
-        .files
-        .iter()
-        .find(|f| f.primary)
-        .or_else(|| version.files.first())
-    {
+    if let Some(file) = version_file(version) {
         let filename = trim_extension(&file.filename);
         if filename != title {
             info.push(filename.into());
@@ -2133,6 +2621,15 @@ fn version_row(
     }
     if !version.dependencies.is_empty() {
         info.push(format!("{} 项前置", version.dependencies.len()));
+    }
+    if version.game_versions.iter().all(|game| {
+        !game.contains('.')
+            || ["w", "snapshot", "rc", "pre", "experimental", "-"]
+                .iter()
+                .any(|part| game.to_ascii_lowercase().contains(part))
+    }) && !version.game_versions.is_empty()
+    {
+        info.push(format!("游戏版本 {}", version.game_versions.join("、")));
     }
     info.push(format!("更新于 {}", relative_date(&version.date_published)));
     if version.version_type != "release" {
@@ -2149,13 +2646,13 @@ fn version_row(
     crate::ui_style::place_left(
         ui,
         Rect::from_min_size(
-            rect.min + Vec2::new(44.0, 22.0),
-            Vec2::new(rect.width() - 48.0, 16.0),
+            rect.min + Vec2::new(44.0, 23.0),
+            Vec2::new(text_width, 16.0),
         ),
         egui::Label::new(RichText::new(&text).size(12.0).color(MUTED)).truncate(),
     )
     .on_hover_text(text);
-    response
+    (response, save.is_some_and(|save| save.clicked()))
 }
 fn trim_extension(value: &str) -> &str {
     for suffix in [".zip", ".jar", ".mrpack", ".litemod"] {
@@ -2500,6 +2997,403 @@ fn display_title(hit: &resources::ProjectHit) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ui_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let regular = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), regular);
+        ctx.set_fonts(fonts);
+        ctx
+    }
+
+    fn project(id: &str) -> resources::ModrinthProject {
+        serde_json::from_value(serde_json::json!({
+            "id":id, "slug":id, "title":format!("Real project {id}"), "description":"Project summary", "body":"",
+            "project_type":"mod", "icon_url":null, "downloads":42, "updated":"2026-10-04T00:00:00Z", "source_url":null
+        })).unwrap()
+    }
+    #[test]
+    fn dependency_projects_follow_required_source_rules_and_deduplicate_reads() {
+        let mut file = version("main", &["1.21.1"], &["fabric"]);
+        for (id, kind) in [
+            ("a", "required"),
+            ("a", "required"),
+            ("b", "optional"),
+            ("c", "incompatible"),
+            ("project", "required"),
+            ("P7dR8mSH", "required"),
+            ("qvIfYCYJ", "required"),
+            ("cf:306612", "required"),
+            ("cf:634179", "required"),
+        ] {
+            file.dependencies.push(resources::Dependency {
+                project_id: Some(id.into()),
+                version_id: None,
+                file_name: None,
+                dependency_type: kind.into(),
+            });
+        }
+        file.dependencies.push(resources::Dependency {
+            project_id: None,
+            version_id: Some("a-version".into()),
+            file_name: None,
+            dependency_type: "required".into(),
+        });
+        let refs = required_dependencies(ResourceKind::Mod, [&file]);
+        assert_eq!(
+            refs,
+            vec![
+                DependencyRef::Project("a".into()),
+                DependencyRef::Version("a-version".into())
+            ]
+        );
+        assert!(required_dependencies(ResourceKind::Modpack, [&file]).is_empty());
+        let mut calls = Vec::new();
+        let batch = resolve_dependency_projects(
+            &refs,
+            &AtomicBool::new(false),
+            |id, _| {
+                calls.push(id.to_owned());
+                Ok(project(id))
+            },
+            |id, _| {
+                assert_eq!(id, "a-version");
+                let mut file = version(id, &[], &[]);
+                file.project_id = "a".into();
+                Ok(file)
+            },
+        );
+        assert_eq!(calls, ["a"]);
+        assert_eq!(batch.projects.len(), 2);
+        assert!(batch.failed.is_empty());
+        assert!(batch
+            .projects
+            .values()
+            .all(|project| project.title == "Real project a"));
+        let cancelled = resolve_dependency_projects(
+            &refs,
+            &AtomicBool::new(true),
+            |_, _| panic!("cancelled project read"),
+            |_, _| panic!("cancelled version read"),
+        );
+        assert!(cancelled.projects.is_empty());
+    }
+    #[test]
+    fn dependency_failure_retry_and_late_events_keep_the_current_detail() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(folder.path());
+        let reference = DependencyRef::Project("a".into());
+        let key = app.resource_request(Some(Arc::new(AtomicBool::new(false))));
+        app.resource_browser.dependency_pending = Some(key.clone());
+        let failed = resolve_dependency_projects(
+            std::slice::from_ref(&reference),
+            &AtomicBool::new(false),
+            |_, _| anyhow::bail!("HTTP 503"),
+            |_, _| unreachable!(),
+        );
+        app.handle_resource_event(ResourceEvent::Dependencies(key.clone(), failed));
+        assert!(app.resource_browser.dependency_failed.contains(&reference));
+        assert!(app.resource_browser.dependency_projects.is_empty());
+        app.resource_browser.dependency_pending = Some(key.clone());
+        let recovered = resolve_dependency_projects(
+            std::slice::from_ref(&reference),
+            &AtomicBool::new(false),
+            |id, _| Ok(project(id)),
+            |_, _| unreachable!(),
+        );
+        app.handle_resource_event(ResourceEvent::Dependencies(key.clone(), recovered));
+        assert!(app.resource_browser.dependency_failed.is_empty());
+        assert_eq!(
+            app.resource_browser.dependency_projects[&reference].title,
+            "Real project a"
+        );
+        let current = app.resource_request(Some(Arc::new(AtomicBool::new(false))));
+        app.resource_browser.dependency_pending = Some(current.clone());
+        let old = resolve_dependency_projects(
+            &[reference],
+            &AtomicBool::new(false),
+            |id, _| Ok(project(id)),
+            |_, _| unreachable!(),
+        );
+        app.handle_resource_event(ResourceEvent::Dependencies(key, old));
+        assert!(app.resource_browser.dependency_projects.is_empty());
+        assert!(app
+            .resource_browser
+            .dependency_pending
+            .as_ref()
+            .unwrap()
+            .same(&current));
+    }
+    #[test]
+    fn dependency_project_row_retains_source_spacing_and_opens_actual_id() {
+        let ctx = ui_context();
+        let assets = crate::ui_style::Assets::new(&ctx);
+        let projects = [dependency_hit(project("dependency-a"))];
+        let icons = HashMap::new();
+        let draw = |events| {
+            let mut action = None;
+            let mut height = 0.0;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let start = ui.next_widget_position().y;
+                        action = dependency_rows(
+                            ui,
+                            &assets,
+                            &icons,
+                            ResourceKind::Mod,
+                            &projects,
+                            false,
+                            false,
+                            true,
+                        )
+                        .0;
+                        height = ui.next_widget_position().y - start;
+                    });
+                },
+            );
+            (action, height, output)
+        };
+        let (_, height, output) = draw(vec![]);
+        assert!(
+            (height - 124.0).abs() < 1.0,
+            "source heading + 64-DIP row + heading: {height}"
+        );
+        let text: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains(&"前置资源"));
+        assert!(text.contains(&"版本列表"));
+        assert!(text.contains(&"Real project dependency-a"));
+        let point = Pos2::new(500.0, 55.0);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert!(draw(vec![egui::Event::PointerMoved(point), click(true)])
+            .0
+            .is_none());
+        assert_eq!(draw(vec![click(false)]).0.as_deref(), Some("dependency-a"));
+    }
+    #[test]
+    fn vanilla_shader_save_directory_matches_archive_install_rules() {
+        let root = std::path::Path::new("/instance");
+        for (loaders, folder) in [
+            (&["vanilla"][..], "resourcepacks"),
+            (&["vanilla", "iris"][..], "shaderpacks"),
+            (&["vanilla", "optifine"][..], "shaderpacks"),
+            (&["iris"][..], "shaderpacks"),
+        ] {
+            assert_eq!(
+                resource_save_subdirectory(
+                    ResourceKind::Shader,
+                    &version("shader", &["1.21.1"], loaders),
+                    root
+                ),
+                root.join(folder)
+            );
+        }
+    }
+    #[test]
+    fn saving_distinct_files_in_one_directory_has_distinct_queue_targets() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(folder.path());
+        let first = app.settings.game_root.join("first.jar");
+        let second = app.settings.game_root.join("second.jar");
+        // Missing file metadata fails before network; terminal events stay queued here.
+        app.start_resource_save_at(ResourceKind::Mod, version("a", &[], &[]), first.clone());
+        let first_id = app.task_hub.selected.unwrap();
+        app.start_resource_save_at(ResourceKind::Mod, version("b", &[], &[]), second.clone());
+        let second_id = app.task_hub.selected.unwrap();
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            app.jobs.get(first_id).unwrap().context.target.as_deref(),
+            Some("first.jar")
+        );
+        assert_eq!(
+            app.jobs.get(second_id).unwrap().context.target.as_deref(),
+            Some("second.jar")
+        );
+        app.start_resource_save_at(ResourceKind::Mod, version("a", &[], &[]), first.clone());
+        assert!(app
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("此目标已有待完成的任务"));
+        assert!(!first.exists() && !second.exists());
+        app.jobs.cancel_all();
+    }
+
+    #[test]
+    fn save_file_without_an_installed_target_has_a_directory_and_preserves_existing_files() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        let version = version("download", &["1.21.1"], &["fabric"]);
+        assert!(app.versions.is_empty());
+        assert_eq!(
+            app.default_resource_save_directory(&version),
+            app.settings.game_root
+        );
+        let target = app.settings.game_root.join("existing.jar");
+        std::fs::write(&target, b"existing user data").unwrap();
+        app.settings.resource_naming = resources::ResourceNaming::ProjectVersion;
+        app.start_resource_save_at(ResourceKind::Mod, version, target.clone());
+        assert_eq!(std::fs::read(&target).unwrap(), b"existing user data");
+        assert!(app.error.as_deref().unwrap().contains("文件已存在"));
+        assert!(app.task.is_none());
+        assert_eq!(
+            app.settings.resource_naming,
+            resources::ResourceNaming::ProjectVersion
+        );
+    }
+
+    #[test]
+    fn duplicate_version_names_show_distinct_file_titles() {
+        let mut first = version("first", &["1.21.1"], &["fabric"]);
+        let mut second = version("second", &["1.21.1"], &["fabric"]);
+        for (version, file) in [(&mut first, "first.jar"), (&mut second, "second.jar")] {
+            version.name = "Same release".into();
+            version.files.push(resources::VersionFile {
+                filename: file.into(),
+                primary: true,
+                url: String::new(),
+                size: 1,
+                file_type: None,
+                hashes: BTreeMap::new(),
+            });
+        }
+        let versions = vec![first, second];
+        let group = VersionGroup {
+            title: "1.21.1".into(),
+            versions: vec![0, 1],
+            selected: false,
+        };
+        assert!(group_has_duplicate_names(&group, &versions));
+        assert_eq!(version_title(&versions[0], true), "first");
+        assert_eq!(version_title(&versions[1], true), "second");
+        assert_eq!(version_title(&versions[0], false), "Same release");
+    }
+
+    #[test]
+    fn file_row_body_and_source_save_button_have_separate_pointer_actions() {
+        let ctx = ui_context();
+        let assets = crate::ui_style::Assets::new(&ctx);
+        let version = version("pack", &["1.21.1"], &["fabric"]);
+        let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(500.0, 42.0));
+        let draw = |events| {
+            let mut action = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (row, save) =
+                            version_row(ui, rect, &assets, &version, true, false, true);
+                        action = if save {
+                            Some("save")
+                        } else if row.clicked() {
+                            Some("install")
+                        } else {
+                            None
+                        };
+                    });
+                },
+            );
+            action
+        };
+        assert!(draw(vec![]).is_none());
+        for (point, expected) in [
+            (Pos2::new(480.0, 41.0), "install"),
+            (Pos2::new(502.5, 41.0), "save"),
+        ] {
+            let click = |pressed| egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            assert!(draw(vec![egui::Event::PointerMoved(point), click(true)]).is_none());
+            assert_eq!(draw(vec![click(false)]), Some(expected));
+        }
+    }
+
+    #[test]
+    fn search_sort_lines_up_with_name_and_version_and_does_not_edit_naming() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.download_tab = 1;
+        app.resource_browser.auto_searched = true;
+        app.settings.resource_naming = resources::ResourceNaming::ProjectVersion;
+        let ctx = ui_context();
+        theme::apply(&ctx, &app.settings);
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(818.0, 500.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.resource_page(ui));
+            },
+        );
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some((text.galley.text(), text.pos)),
+                _ => None,
+            })
+            .collect();
+        let position = |label: &str| labels.iter().find(|(text, _)| *text == label).unwrap().1;
+        assert_eq!(position("名称").x, position("版本").x);
+        assert_eq!(position("名称").x, position("排序").x);
+        let inputs: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(shape)
+                    if shape.rect.width() > 200.0
+                        && (18.0..=32.0).contains(&shape.rect.height())
+                        && shape.stroke.width > 0.0 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            inputs.len() >= 3,
+            "expected name/version/sort frames: {inputs:?}"
+        );
+        let input_left = position("名称").x + 44.0;
+        assert!(
+            inputs
+                .iter()
+                .all(|rect| (rect.left() - input_left).abs() < 0.1),
+            "name/version/sort input frames must share a left edge: {inputs:?}"
+        );
+        assert!(!labels.iter().any(|(text, _)| text.contains("文件命名")));
+        assert_eq!(
+            app.settings.resource_naming,
+            resources::ResourceNaming::ProjectVersion
+        );
+    }
     #[test]
     fn resource_versions_follow_official_dates_without_a_fixed_ceiling() {
         let manifest = serde_json::json!([

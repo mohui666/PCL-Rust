@@ -1759,6 +1759,78 @@ fn download_resource_file(
             .map_err(|_| anyhow::anyhow!("资源下载线程异常退出"))?
     })
 }
+
+/// Save a single selected file, as in PCL's resource browser. This does not
+/// install dependencies or require an installed Minecraft instance.
+pub fn save_resource_version(
+    kind: ResourceKind,
+    version: &ModrinthVersion,
+    destination: &Path,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress),
+) -> Result<()> {
+    save_resource_with(
+        kind,
+        version,
+        destination,
+        cancel,
+        &progress,
+        |file, path| download_resource_file(file, path, cancel, &progress),
+    )
+}
+
+fn save_resource_with(
+    kind: ResourceKind,
+    version: &ModrinthVersion,
+    destination: &Path,
+    cancel: &AtomicBool,
+    progress: &impl Fn(Progress),
+    fetch: impl FnOnce(&VersionFile, &Path) -> Result<()>,
+) -> Result<()> {
+    cancelled(cancel)?;
+    let file = resource_file(kind, version)?;
+    ensure!(destination.is_absolute(), "请选择完整的保存路径");
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("保存文件名无效")?;
+    validate_id(name)?;
+    let extension = Path::new(&file.filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .context("资源文件缺少扩展名")?;
+    ensure!(
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension)),
+        "请保留文件的 .{extension} 扩展名"
+    );
+    let parent = destination.parent().context("保存位置缺少文件夹")?;
+    let directory = ordinary_directory(parent)?;
+    no_conflict(&directory, name)?;
+    let temporary = tempfile::NamedTempFile::new_in(&directory)?.into_temp_path();
+    fetch(file, &temporary)?;
+    cancelled(cancel)?;
+    ensure!(
+        ordinary_directory(parent)? == directory,
+        "保存文件夹在下载过程中发生变化，请重新选择"
+    );
+    no_conflict(&directory, name)?;
+    cancelled(cancel)?;
+    temporary
+        .persist_noclobber(directory.join(name))
+        .map_err(|error| error.error)
+        .context("文件已存在或无法保存，未覆盖原文件")?;
+    progress(Progress {
+        message: format!("已保存 {name}"),
+        completed: file.size,
+        total: file.size,
+        ..Default::default()
+    });
+    Ok(())
+}
+
 pub fn execute_install_plan(
     plan: &InstallPlan,
     cancel: &AtomicBool,
@@ -1904,6 +1976,120 @@ pub fn download_modpack(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn save_resource_without_instance_verifies_bytes_and_keeps_selected_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("chosen-name.jar");
+        let bytes = jar();
+        let version = version(&bytes);
+        let cancel = AtomicBool::new(false);
+        save_resource_with(
+            ResourceKind::Mod,
+            &version,
+            &destination,
+            &cancel,
+            &|_| {},
+            |file, path| verified_download(Cursor::new(&bytes), path, file, &cancel, &|_| {}),
+        )
+        .unwrap();
+        assert_eq!(fs::read(destination).unwrap(), bytes);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn save_resource_preserves_existing_and_concurrently_created_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("chosen.jar");
+        let bytes = jar();
+        let version = version(&bytes);
+        let cancel = AtomicBool::new(false);
+        fs::write(&destination, b"existing").unwrap();
+        let result = save_resource_with(
+            ResourceKind::Mod,
+            &version,
+            &destination,
+            &cancel,
+            &|_| {},
+            |_, _| panic!("an existing file must fail before downloading"),
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing");
+        fs::remove_file(&destination).unwrap();
+        let result = save_resource_with(
+            ResourceKind::Mod,
+            &version,
+            &destination,
+            &cancel,
+            &|_| {},
+            |file, path| {
+                verified_download(Cursor::new(&bytes), path, file, &cancel, &|_| {})?;
+                fs::write(&destination, b"created while downloading")?;
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"created while downloading");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn save_resource_cancel_or_bad_checksum_never_publishes_partial_file() {
+        for stop in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("chosen.jar");
+            let bytes = jar();
+            let version = version(&bytes);
+            let cancel = AtomicBool::new(false);
+            let result = save_resource_with(
+                ResourceKind::Mod,
+                &version,
+                &destination,
+                &cancel,
+                &|_| {},
+                |file, path| {
+                    if stop {
+                        verified_download(Cursor::new(&bytes), path, file, &cancel, &|_| {})?;
+                        cancel.store(true, Ordering::Relaxed);
+                        Ok(())
+                    } else {
+                        verified_download(
+                            Cursor::new(vec![0; bytes.len()]),
+                            path,
+                            file,
+                            &cancel,
+                            &|_| {},
+                        )
+                    }
+                },
+            );
+            assert!(result.is_err());
+            assert!(!destination.exists());
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn save_resource_rejects_changed_extension_and_untrusted_source_before_fetching() {
+        let directory = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut version = version(&jar());
+        for (name, untrusted) in [("chosen.exe", false), ("chosen.jar", true)] {
+            if untrusted {
+                version.files[0].url = "https://example.com/untrusted.jar".into();
+            }
+            assert!(save_resource_with(
+                ResourceKind::Mod,
+                &version,
+                &directory.path().join(name),
+                &cancel,
+                &|_| {},
+                |_, _| panic!("invalid save requests must fail before fetching"),
+            )
+            .is_err());
+        }
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
 
     fn resource_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));

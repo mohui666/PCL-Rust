@@ -1202,34 +1202,27 @@ fn appearance_radio(
 fn hidden_section(ui: &mut egui::Ui, hidden_pages: &mut Vec<String>) -> bool {
     const NOTE: &str =
         "你可以隐藏不需要的页面或关闭特定功能。在任意界面按 F12 可以暂时显示被隐藏的功能。";
-    type HiddenChoice = (&'static str, &'static str, usize);
+    type HiddenChoice = (&'static str, &'static str);
     const GROUPS: [(&str, &[HiddenChoice]); 4] = [
         (
             "主页面",
-            &[
-                ("download", "下载", 0),
-                ("setup", "设置", 2),
-                ("more", "更多", 3),
-            ],
+            &[("download", "下载"), ("setup", "设置"), ("more", "更多")],
         ),
         (
             "设置 子页面",
             &[
-                ("setup_launch", "启动", 0),
-                ("setup_ui", "个性化", 2),
-                ("setup_system", "其他", 3),
+                ("setup_launch", "启动"),
+                ("setup_ui", "个性化"),
+                ("setup_system", "其他"),
             ],
         ),
-        (
-            "更多 子页面",
-            &[("help", "帮助", 0), ("about", "关于与鸣谢", 1)],
-        ),
+        ("更多 子页面", &[("help", "帮助"), ("about", "关于与鸣谢")]),
         (
             "特定功能",
             &[
-                ("version", "版本管理", 1),
-                ("mod_update", "Mod 更新", 2),
-                ("hidden", "功能隐藏", 3),
+                ("version", "版本管理"),
+                ("mod_update", "Mod 更新"),
+                ("hidden", "功能隐藏"),
             ],
         ),
     ];
@@ -1255,22 +1248,20 @@ fn hidden_section(ui: &mut egui::Ui, hidden_pages: &mut Vec<String>) -> bool {
     section(ui, "功能隐藏", grid_top + 120.0 + 15.0, |ui, card| {
         ui.painter()
             .galley(card.min + Vec2::new(25.0, 39.0), note, text_color);
-        // Preserve the upstream 0.8*,0.9*,0.8*,0.8*,1.0* grid. Removed features
-        // leave their original cells empty, rather than stretching the remaining controls.
+        // Keep the original row spacing, packing the remaining controls after
+        // the user-requested feature removals instead of reserving empty cells.
         let grid_left = 25.0 + label_width + 18.0;
-        let unit = (card.width() - grid_left - 15.0) / 4.3;
-        let column_starts = [0.0, 0.8, 1.7, 2.5, 3.3];
-        let column_widths = [0.8, 0.9, 0.8, 0.8, 1.0];
+        let column_width = (card.width() - grid_left - 15.0) / 3.0;
         for (row, (group, choices)) in GROUPS.into_iter().enumerate() {
             let y = grid_top + row as f32 * 30.0 + 4.0;
             label(ui, card.min + Vec2::new(25.0, y), label_width, group, 13.0);
-            for &(key, title, column) in choices {
+            for (column, &(key, title)) in choices.iter().enumerate() {
                 let mut hidden = hidden_pages.iter().any(|saved| saved == key);
                 if appearance_checkbox(
                     ui,
                     Rect::from_min_size(
-                        card.min + Vec2::new(grid_left + column_starts[column] * unit, y),
-                        Vec2::new(column_widths[column] * unit, 22.0),
+                        card.min + Vec2::new(grid_left + column as f32 * column_width, y),
+                        Vec2::new(column_width, 22.0),
                     ),
                     &mut hidden,
                     title,
@@ -1759,6 +1750,17 @@ mod tests {
         }
         assert_eq!(group.x, 25.0);
         let download = text_position("下载");
+        for title in ["启动", "帮助", "版本管理"] {
+            assert_eq!(text_position(title).x, download.x);
+        }
+        let second_column = text_position("设置").x;
+        for title in ["个性化", "关于与鸣谢", "Mod 更新"] {
+            assert_eq!(text_position(title).x, second_column);
+        }
+        let third_column = text_position("更多").x;
+        assert_eq!(text_position("其他").x, third_column);
+        // Text origins are rounded to physical pixels by egui.
+        assert!((second_column - download.x - (third_column - second_column)).abs() <= 1.0);
         let point = download + Vec2::new(5.0, 7.0);
         let pointer = |pressed| egui::Event::PointerButton {
             pos: point,
