@@ -1714,23 +1714,27 @@ impl Launcher {
     fn busy_status_controls(&mut self, ui: &mut egui::Ui) {
         // Bound the row's height so a following progress rail keeps its space.
         // Allocate actions before the truncating status label.
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.busy.is_some() && ui.small_button("取消").clicked() {
-                    self.cancel.store(true, Ordering::Relaxed);
-                    self.status = "正在取消…".into();
-                }
-                if ui.small_button("日志").clicked() {
-                    self.show_logs = true;
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if self.busy.is_some() {
-                        loading_ui::inline(ui, "");
+        ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y =
+                ui.spacing().interact_size.y.min(ui.available_height());
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.busy.is_some() && ui.small_button("取消").clicked() {
+                        self.cancel.store(true, Ordering::Relaxed);
+                        self.status = "正在取消…".into();
                     }
-                    ui.add(
-                        egui::Label::new(RichText::new(&self.status).size(12.0).color(MUTED))
-                            .truncate(),
-                    );
+                    if ui.small_button("日志").clicked() {
+                        self.show_logs = true;
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if self.busy.is_some() {
+                            loading_ui::inline(ui, "");
+                        }
+                        ui.add(
+                            egui::Label::new(RichText::new(&self.status).size(12.0).color(MUTED))
+                                .truncate(),
+                        );
+                    });
                 });
             });
         });
@@ -1982,8 +1986,46 @@ mod event_tests {
         let directory = tempfile::tempdir().unwrap();
         let mut app = fixture(directory.path());
         app.busy = Some("fixture".into());
-        let long = "Reading a very long resource or folder name ".repeat(40);
+        let long = "正在读取资源与游戏目录 Reading a very long resource or folder name ".repeat(40);
         let ctx = egui::Context::default();
+        let mut style = (*ctx.style()).clone();
+        style.spacing.item_spacing = Vec2::new(10.0, 8.0);
+        style.spacing.interact_size.y = 28.0;
+        style.spacing.button_padding = Vec2::new(12.0, 6.0);
+        for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style
+                .text_styles
+                .insert(text_style, egui::FontId::proportional(13.0));
+        }
+        ctx.set_style(style);
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "PCL English".into(),
+            egui::FontData::from_static(include_bytes!("../assets/upstream/Resources/Font.ttf"))
+                .into(),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "PCL English".into());
+        // Exercise the packaged CJK font when its local export is available.
+        let cjk_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-output/fonts/PingFang-Regular.otf"
+        );
+        if let Ok(data) = std::fs::read(cjk_path) {
+            fonts
+                .font_data
+                .insert("Status CJK".into(), egui::FontData::from_owned(data).into());
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Proportional)
+                .unwrap()
+                .insert(1, "Status CJK".into());
+            eprintln!("status geometry uses CJK font: {cjk_path}");
+        }
+        ctx.set_fonts(fonts);
         for width in [810.0, 989.0] {
             for show_progress in [false, true] {
                 app.status = long.clone();
