@@ -59,6 +59,8 @@ cargo run --locked -p pcl-desktop
 
 ## 文档
 
+**无头模式**：`cargo build --locked --release -p pcl-cli`，然后运行 `pcl-cli --help`。支持游戏与加载器安装、Java 下载、Mod／资源搜索安装、整合包导入导出、登录和游戏启动；独立 CLI 不依赖显示服务。用法见[命令行文档](docs/headless.md)。
+
 | 内容 | 链接 |
 | --- | --- |
 | 运行、打包与配置 | [开发说明](docs/development.md) |

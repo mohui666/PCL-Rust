@@ -998,6 +998,7 @@ impl Launcher {
                     launch::LaunchOverrides {
                         launcher_size,
                         server: home_server.as_deref(),
+                        memory_mb: None,
                     },
                 )?;
                 plan.behavior.offline_skin = prepared_skin.map(|prepared| prepared.update);

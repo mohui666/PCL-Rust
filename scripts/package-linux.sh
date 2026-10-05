@@ -10,9 +10,10 @@ PCL_PYTHON_BIN="${PYTHON_BIN:-python3}"
 PCL_PACKAGE="$PWD/dist/PCL-Rust-Linux-x86_64"
 PCL_TARGET='x86_64-unknown-linux-gnu'
 "$PCL_PYTHON_BIN" scripts/prepare-linux-fonts.py
-"$PCL_CARGO_BIN" build --release --locked -p pcl-desktop --target "$PCL_TARGET"
+"$PCL_CARGO_BIN" build --release --locked -p pcl-desktop -p pcl-cli --target "$PCL_TARGET"
 mkdir -p "$PCL_PACKAGE/resources"
 cp "target/$PCL_TARGET/release/pcl-desktop" "$PCL_PACKAGE/PCL-Rust"
+cp "target/$PCL_TARGET/release/pcl-cli" "$PCL_PACKAGE/pcl-cli"
 chmod +x "$PCL_PACKAGE/PCL-Rust"
 cp test-output/fonts/linux/NotoSansSC-Regular.ttf test-output/fonts/linux/NotoSansSC-Semibold.ttf \
    test-output/fonts/linux/OFL.txt test-output/fonts/linux/FONT-SOURCES.json "$PCL_PACKAGE/resources/"
@@ -30,12 +31,15 @@ if grep -q 'not found' "$PCL_PACKAGE/ELF-DEPENDENCIES.txt"; then
   cat "$PCL_PACKAGE/ELF-DEPENDENCIES.txt" >&2
   exit 1
 fi
-"$PCL_PACKAGE/PCL-Rust" --help > "$PCL_PACKAGE/CLI-HELP.txt"
+"$PCL_PACKAGE/pcl-cli" --help > "$PCL_PACKAGE/CLI-HELP.txt"
 cat > "$PCL_PACKAGE/README.txt" <<'TXT'
 PCL Rust — Linux x86_64
 
 Run ./PCL-Rust from a Linux desktop session (X11 or Wayland).
 Keep the resources directory next to the executable for Chinese text.
+Run ./pcl-cli --help for downloads and installation without a display.
+The CLI does not need the GUI libraries or fonts; launching Minecraft
+still needs a working graphics environment for the game itself.
 
 Runtime: glibc, libX11, libXcursor, libXrandr, libXi, libxkbcommon,
 libEGL/libGL and an X11 or Wayland display. File dialogs use the
@@ -51,7 +55,7 @@ font outlines. It does not verify a Linux GUI session or a running game.
 TXT
 (
   cd "$PCL_PACKAGE"
-  sha256sum PCL-Rust resources/NotoSansSC-Regular.ttf resources/NotoSansSC-Semibold.ttf \
+  sha256sum PCL-Rust pcl-cli resources/NotoSansSC-Regular.ttf resources/NotoSansSC-Semibold.ttf \
     resources/OFL.txt resources/FONT-SOURCES.json > SHA256SUMS
 )
 tar -C dist -czf dist/PCL-Rust-Linux-x86_64.tar.gz PCL-Rust-Linux-x86_64

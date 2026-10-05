@@ -1,7 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
-mod cli;
 mod native_window;
 mod process;
 mod startup_splash;
@@ -18,7 +17,7 @@ fn main() -> anyhow::Result<()> {
             }
             AttachConsole(u32::MAX);
         }
-        return cli::run();
+        std::process::exit(pcl_cli::main_entry());
     }
     let icon = image::load_from_memory(include_bytes!("../assets/icon.png"))?.to_rgba8();
     let icon = eframe::egui::IconData {
