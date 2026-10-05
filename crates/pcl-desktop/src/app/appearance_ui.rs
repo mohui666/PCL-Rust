@@ -4,6 +4,7 @@ mod background_effect;
 #[path = "music.rs"]
 mod music;
 use super::Launcher;
+use crate::theme;
 use crate::ui_style;
 use anyhow::{bail, Context, Result};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
@@ -30,6 +31,8 @@ pub(super) struct AppearanceState {
     music: music::MusicState,
     music_poll: Option<std::time::Instant>,
     clear_music: bool,
+    title_logo_key: Option<PathBuf>,
+    title_logo: Option<egui::TextureHandle>,
 }
 
 struct PendingBlur {
@@ -49,7 +52,7 @@ struct BackgroundAnimation {
     frames: Vec<Arc<egui::ColorImage>>,
     ends_ms: Vec<u64>,
     loops: Option<u32>,
-    started: std::time::Instant,
+    started: Option<f64>,
     index: usize,
 }
 
@@ -73,7 +76,75 @@ impl BackgroundAnimation {
     }
 }
 
+/// Hiding is presentation only; F12 temporarily reveals controls without writing
+/// the saved preferences, including the settings page needed to restore them.
+pub(super) fn feature_visible(ctx: &egui::Context, settings: &Settings, key: &str) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(egui::Id::new("pcl-reveal-hidden")))
+        .unwrap_or(false)
+        || !settings.ui_hidden_pages.iter().any(|hidden| hidden == key)
+}
+
 impl AppearanceState {
+    /// Returns false only for the original logo, which the shell already draws.
+    pub(super) fn paint_custom_title(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        settings: &Settings,
+    ) -> Result<bool> {
+        if settings.ui_title_mode == 1 {
+            return Ok(false);
+        }
+        if settings.ui_title_mode == 0 {
+            return Ok(true);
+        }
+        let painter = ui.painter().with_clip_rect(rect);
+        if settings.ui_title_mode == 2 {
+            painter.text(
+                rect.left_center(),
+                egui::Align2::LEFT_CENTER,
+                &settings.ui_title_text,
+                egui::FontId::proportional(17.0),
+                Color32::WHITE,
+            );
+        } else if settings.ui_title_mode == 3 {
+            if self.title_logo_key != settings.ui_title_logo {
+                self.title_logo_key = settings.ui_title_logo.clone();
+                self.title_logo = None;
+                if let Some(path) = &settings.ui_title_logo {
+                    let mut bytes = Vec::new();
+                    fs::File::open(path)?
+                        .take(8 * 1024 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    if bytes.len() > 8 * 1024 * 1024 {
+                        bail!("标题栏图片超过 8 MiB");
+                    }
+                    let image = decode_background(&bytes).context("标题栏图片无法读取")?;
+                    self.title_logo = Some(ui.ctx().load_texture(
+                        "pcl-title-logo",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            }
+            if let Some(texture) = &self.title_logo {
+                let original = texture.size_vec2();
+                let scale = (rect.width() / original.x)
+                    .min(rect.height() / original.y)
+                    .min(1.0);
+                let size = original * scale;
+                let center = Pos2::new(rect.left() + size.x / 2.0, rect.center().y);
+                painter.image(
+                    texture.id(),
+                    Rect::from_center_size(center, size),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+        Ok(true)
+    }
+
     /// Poll one background worker, then schedule only the newest requested effect.
     /// Image/fit/size changes cannot apply the previous image's result.
     pub(super) fn ensure_loaded(
@@ -100,12 +171,9 @@ impl AppearanceState {
         }
         if let Some(background) = &mut self.background {
             if let Some(animation) = &mut background.animation {
-                let (index, next) = animation.at(animation
-                    .started
-                    .elapsed()
-                    .as_millis()
-                    .min(u128::from(u64::MAX))
-                    as u64);
+                let now = theme::animation_time(ctx);
+                let started = *animation.started.get_or_insert(now);
+                let (index, next) = animation.at(((now - started).max(0.0) * 1000.0) as u64);
                 if index != animation.index {
                     animation.index = index;
                     background.original = Arc::clone(&animation.frames[index]);
@@ -116,8 +184,8 @@ impl AppearanceState {
                         egui::TextureOptions::LINEAR_REPEAT,
                     );
                 }
-                if let Some(next) = next {
-                    ctx.request_repaint_after(next);
+                if let Some(next) = next.filter(|_| theme::animations_enabled(ctx)) {
+                    ctx.request_repaint_after(next.div_f32(theme::animation_speed(ctx)));
                 }
             }
         }
@@ -284,7 +352,10 @@ impl AppearanceState {
     /// existing icon fades once after the Rust window opens; this painter neither
     /// registers hit regions nor delays launch, cancellation, or modal actions.
     pub(super) fn paint_startup_logo(&mut self, ctx: &egui::Context, settings: &Settings) {
-        let now = ctx.input(|input| input.time);
+        if crate::startup_splash::was_shown() {
+            return;
+        }
+        let now = theme::animation_time(ctx);
         if !self.startup_initialized {
             self.startup_initialized = true;
             if settings.ui_launcher_logo {
@@ -300,7 +371,11 @@ impl AppearanceState {
         let Some((started, texture)) = &self.startup else {
             return;
         };
-        let opacity = startup_opacity(now - started);
+        let opacity = if theme::animations_enabled(ctx) {
+            startup_opacity(now - started)
+        } else {
+            0.0
+        };
         if opacity <= 0.0 {
             self.startup = None;
             return;
@@ -352,6 +427,7 @@ impl Launcher {
         let mut tutorial_home = false;
         let mut generate_home = false;
         let mut open_music = false;
+        let mut choose_title_logo = false;
         let mut refresh_music = false;
         let mut theme_settings = self.settings.clone();
         let mut theme_changed = false;
@@ -664,6 +740,88 @@ impl Launcher {
             },
         );
 
+        let title_mode = theme_settings.ui_title_mode;
+        section(
+            ui,
+            "标题栏",
+            if title_mode == 0 {
+                111.0
+            } else if title_mode >= 2 {
+                140.0
+            } else {
+                89.0
+            },
+            |ui, rect| {
+                let column = (rect.width() - 50.0) / 4.0;
+                for (index, (id, title)) in [(0, "无"), (1, "默认"), (2, "文本"), (3, "图片")]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if ui
+                        .place(
+                            Rect::from_min_size(
+                                rect.min + Vec2::new(25.0 + index as f32 * column, 40.0),
+                                Vec2::new(column, 22.0),
+                            ),
+                            egui::RadioButton::new(title_mode == id, title),
+                        )
+                        .clicked()
+                    {
+                        theme_settings.ui_title_mode = id;
+                        theme_changed = true;
+                    }
+                }
+                if title_mode == 0 {
+                    theme_changed |= appearance_checkbox(
+                        ui,
+                        Rect::from_min_size(
+                            rect.min + Vec2::new(24.0, 70.0),
+                            Vec2::new(rect.width() - 49.0, 22.0),
+                        ),
+                        &mut theme_settings.ui_title_left,
+                        "标题栏居左",
+                    )
+                    .changed();
+                }
+                if title_mode >= 2 {
+                    if title_mode == 2 {
+                        label(
+                            ui,
+                            rect.min + Vec2::new(25.0, 87.0),
+                            90.0,
+                            "标题栏文本",
+                            13.0,
+                        );
+                        theme_changed |= ui
+                            .place(
+                                Rect::from_min_size(
+                                    rect.min + Vec2::new(115.0, 78.0),
+                                    Vec2::new(rect.width() - 140.0, 28.0),
+                                ),
+                                egui::TextEdit::singleline(&mut theme_settings.ui_title_text)
+                                    .char_limit(100),
+                            )
+                            .changed();
+                    } else {
+                        choose_title_logo =
+                            action_button(ui, rect.min + Vec2::new(25.0, 78.0), "更改图片", true)
+                                .clicked();
+                        if action_button(
+                            ui,
+                            rect.min + Vec2::new(185.0, 78.0),
+                            "清空图片",
+                            theme_settings.ui_title_logo.is_some(),
+                        )
+                        .clicked()
+                        {
+                            theme_settings.ui_title_logo = None;
+                            theme_changed = true;
+                        }
+                    }
+                }
+            },
+        );
+
         let home_mode = theme_settings.ui_custom_type;
         section(
             ui,
@@ -787,6 +945,93 @@ impl Launcher {
                 }
             },
         );
+
+        if feature_visible(ui.ctx(), &self.settings, "hidden") {
+            section(ui, "功能隐藏", 235.0, |ui, rect| {
+                let mut body = ui
+                    .new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(25.0, 0.0))));
+                body.add_space(40.0);
+                body.label("你可以隐藏不需要的页面或关闭特定功能。在任意界面按 F12 可以暂时显示被隐藏的功能。");
+                body.add_space(8.0);
+                for (group, choices) in [
+                    (
+                        "主页面",
+                        vec![("download", "下载"), ("setup", "设置"), ("more", "更多")],
+                    ),
+                    (
+                        "设置 子页面",
+                        vec![
+                            ("setup_launch", "启动"),
+                            ("setup_ui", "个性化"),
+                            ("setup_system", "其他"),
+                        ],
+                    ),
+                    (
+                        "更多 子页面",
+                        vec![("help", "帮助"), ("about", "关于与鸣谢")],
+                    ),
+                    (
+                        "特定功能",
+                        vec![
+                            ("version", "版本管理"),
+                            ("mod_update", "Mod 更新"),
+                            ("hidden", "功能隐藏"),
+                        ],
+                    ),
+                ] {
+                    body.horizontal(|ui| {
+                        ui.add_sized([100.0, 28.0], egui::Label::new(group));
+                        let width = ((ui.available_width() - 24.0) / 4.0).max(82.0);
+                        for (key, title) in choices {
+                            let mut hidden = theme_settings
+                                .ui_hidden_pages
+                                .iter()
+                                .any(|saved| saved == key);
+                            let changed = ui
+                                .allocate_ui(Vec2::new(width, 28.0), |ui| {
+                                    ui_style::checkbox(ui, &mut hidden, title, "").changed()
+                                })
+                                .inner;
+                            if changed {
+                                theme_settings.ui_hidden_pages.retain(|saved| saved != key);
+                                if hidden {
+                                    theme_settings.ui_hidden_pages.push(key.into());
+                                }
+                                theme_changed = true;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+        if choose_title_logo {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("选择标题栏图片")
+                .add_filter("图片", &["png", "jpg", "jpeg", "webp", "gif"])
+                .pick_file()
+            {
+                let result = (|| {
+                    let mut bytes = Vec::new();
+                    fs::File::open(&path)?
+                        .take(8 * 1024 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    if bytes.len() > 8 * 1024 * 1024 {
+                        bail!("标题栏图片超过 8 MiB");
+                    }
+                    decode_background(&bytes)?;
+                    anyhow::Ok(())
+                })();
+                match result {
+                    Ok(()) => {
+                        theme_settings.ui_title_logo = Some(path);
+                        self.appearance.title_logo_key = None;
+                        self.appearance.title_logo = None;
+                        theme_changed = true;
+                    }
+                    Err(error) => self.error = Some(format!("标题栏图片无法读取：{error:#}")),
+                }
+            }
+        }
 
         if theme_changed {
             match config::save_settings(&self.settings_path, &theme_settings) {
@@ -1241,7 +1486,7 @@ fn decode_animation(bytes: &[u8]) -> Result<Option<BackgroundAnimation>> {
         frames,
         ends_ms,
         loops,
-        started: std::time::Instant::now(),
+        started: None,
         index: 0,
     }))
 }
@@ -1361,6 +1606,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn custom_title_modes_load_a_real_local_image_and_release_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.png");
+        image::RgbaImage::from_pixel(24, 12, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        let ctx = egui::Context::default();
+        let mut state = AppearanceState::default();
+        let mut settings = Settings {
+            ui_title_mode: 3,
+            ui_title_logo: Some(path),
+            ..Default::default()
+        };
+        let mut handled = false;
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                handled = state
+                    .paint_custom_title(
+                        ui,
+                        Rect::from_min_size(Pos2::new(18.0, 0.0), Vec2::new(200.0, 48.0)),
+                        &settings,
+                    )
+                    .unwrap();
+            });
+        });
+        assert!(handled);
+        let id = state.title_logo.as_ref().unwrap().id();
+        assert!(output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape,egui::Shape::Mesh(mesh) if mesh.texture_id==id)));
+        settings.ui_title_logo = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                state
+                    .paint_custom_title(ui, ui.max_rect(), &settings)
+                    .unwrap();
+            });
+        });
+        assert!(state.title_logo.is_none());
+        assert!(directory.path().join("logo.png").exists());
+        settings.ui_title_mode = 1;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                handled = state
+                    .paint_custom_title(ui, ui.max_rect(), &settings)
+                    .unwrap();
+            });
+        });
+        assert!(!handled);
+    }
+    #[test]
+    fn temporary_visibility_override_does_not_change_saved_choices() {
+        let ctx = egui::Context::default();
+        let settings = Settings {
+            ui_hidden_pages: vec!["setup".into(), "hidden".into()],
+            ..Default::default()
+        };
+        assert!(!feature_visible(&ctx, &settings, "setup"));
+        assert!(feature_visible(&ctx, &settings, "download"));
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcl-reveal-hidden"), true));
+        assert!(feature_visible(&ctx, &settings, "setup"));
+        assert!(feature_visible(&ctx, &settings, "hidden"));
+        assert_eq!(settings.ui_hidden_pages, vec!["setup", "hidden"]);
+    }
     #[test]
     fn gif_uses_actual_frames_delays_and_finite_loop_instead_of_first_frame() {
         let mut bytes = Vec::new();

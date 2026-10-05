@@ -40,8 +40,22 @@ struct CheckError {
 }
 impl Launcher {
     pub(super) fn open_mod_updates(&mut self, id: &str, instance: &Path) {
-        if self.busy.is_some() || self.game_pid.is_some() || self.jobs.is_active() {
+        if self.busy.is_some()
+            || self.game_pid.is_some()
+            || self.jobs.conflicts_with(&self.settings.game_root)
+        {
             return;
+        }
+        match pcl_core::config::load_instance_settings(&self.settings.game_root, id) {
+            Ok(s) if !s.disable_mod_updates => (),
+            Ok(_) => {
+                self.error = Some("该版本已禁用 Mod 更新".into());
+                return;
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+                return;
+            }
         }
         if let Some(old) = self.mod_update.request.take() {
             old.cancel.store(true, Ordering::Relaxed);
@@ -127,12 +141,12 @@ impl Launcher {
             return;
         }
         let id = self.mod_update.target.clone();
-        let Some((tx, cancel)) = self.start_download_job("正在更新 Mod", Some(id.clone()))
-        else {
+        let Some((tx, _)) = self.start_download_job("正在更新 Mod", Some(id.clone())) else {
             return;
         };
         self.close_mod_updates();
-        std::thread::spawn(move || {
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
             let result = mod_updates::apply_updates(&plan, &selected, &cancel, |p| {
                 let _ = tx.send(Event::Progress(p));
             });
@@ -209,7 +223,7 @@ impl Launcher {
             ModalOptions::default(),
             |ui| {
                 if checking {
-                    ui.label("正在检查 Mod 更新……");
+                    super::loading_ui::inline(ui, "正在检查 Mod 更新……");
                     return;
                 }
                 if let Some(error) = &self.mod_update.error {
@@ -310,6 +324,27 @@ fn target_info(version: &serde_json::Value) -> anyhow::Result<(String, String)> 
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disabled_instance_updates_do_not_start_network_request() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(d.path());
+        let root = app.settings.game_root.clone();
+        std::fs::create_dir_all(root.join("versions/v")).unwrap();
+        std::fs::write(root.join("versions/v/v.json"), b"{}").unwrap();
+        pcl_core::config::save_instance_settings(
+            &root,
+            "v",
+            &pcl_core::config::InstanceSettings {
+                disable_mod_updates: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        app.open_mod_updates("v", &root);
+        assert!(app.mod_update.request.is_none());
+        assert!(app.error.as_ref().unwrap().contains("禁用"));
+    }
+
     use super::*;
     #[test]
     fn stale_check_is_cancelled_without_clearing_another_job() {

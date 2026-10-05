@@ -387,8 +387,8 @@ pub fn redact(text: &str, secrets: &[String]) -> String {
         .get_or_init(|| regex::Regex::new(r"(?i)\bBearer[ \t]+[A-Za-z0-9._~+/=-]+").unwrap())
         .replace_all(&text, "Bearer <redacted>")
         .into_owned();
-    text = QUOTED.get_or_init(|| regex::Regex::new(r#"(?i)((?:--)?(?:access[_-]?token|refresh[_-]?token|client[_-]?token|client[_-]?secret|xsts[_-]?token|identitytoken|password|passwd|session)["']?\s*(?:[:=]\s*|\s+))(?:(?:"(?:\\.|[^"\\])*?")|(?:'(?:\\.|[^'\\])*?'))"#).unwrap()).replace_all(&text,"${1}<redacted>").into_owned();
-    KEYS.get_or_init(||regex::Regex::new(r#"(?i)((?:--)?(?:access[_-]?token|refresh[_-]?token|client[_-]?token|client[_-]?secret|xsts[_-]?token|identitytoken|password|passwd|session)["']?\s*(?:[:=]\s*|\s+)["']?)([^\s"',;\]}]+)"#).unwrap()).replace_all(&text,"${1}<redacted>").into_owned()
+    text = QUOTED.get_or_init(|| regex::Regex::new(r#"(?i)((?:--)?(?:access[_-]?token|refresh[_-]?token|client[_-]?token|client[_-]?secret|xsts[_-]?token|identitytoken|api[_-]?key|x-api-key|password|passwd|session)["']?\s*(?:[:=]\s*|\s+))(?:(?:"(?:\\.|[^"\\])*?")|(?:'(?:\\.|[^'\\])*?'))"#).unwrap()).replace_all(&text,"${1}<redacted>").into_owned();
+    KEYS.get_or_init(||regex::Regex::new(r#"(?i)((?:--)?(?:access[_-]?token|refresh[_-]?token|client[_-]?token|client[_-]?secret|xsts[_-]?token|identitytoken|api[_-]?key|x-api-key|password|passwd|session)["']?\s*(?:[:=]\s*|\s+)["']?)([^\s"',;\]}]+)"#).unwrap()).replace_all(&text,"${1}<redacted>").into_owned()
 }
 
 struct Rule {
@@ -485,6 +485,8 @@ mod tests {
     fn tokens_are_redacted_in_embedded_flags_json_and_authorization() {
         let text = r#"--accessToken=actual-secret-token {"refresh_token":"refresh-secret","clientSecret":"oauth-secret"} Authorization: Bearer jwt.secret.value embedded(actual-secret-token) --session another-session"#;
         let clean = redact(text, &["actual-secret-token".into()]);
+        let api = redact("x-api-key: fixture-cf-key api_key=fixture-key", &[]);
+        assert!(!api.contains("fixture-cf-key") && !api.contains("fixture-key"));
         let quoted = redact(
             r#"--password "multiple words secret" {"client_secret":"embedded \" quote value"}"#,
             &[],

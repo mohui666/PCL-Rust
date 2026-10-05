@@ -12,16 +12,23 @@ use reqwest::{
     Url,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+#[cfg(test)]
 use sha1::Sha1;
 use sha2::{Digest, Sha512};
+#[cfg(test)]
+use std::io::Write;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
+
+#[path = "resource_preferences.rs"]
+mod preferences;
+pub use preferences::{ResourceNaming, SearchSort};
 
 const API: &str = "https://api.modrinth.com/v2/";
 const JSON_LIMIT: u64 = 16 * 1024 * 1024;
@@ -83,6 +90,8 @@ impl ResourceProvider {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchOptions {
+    #[serde(default)]
+    pub sort: SearchSort,
     #[serde(default)]
     pub provider: ResourceProvider,
     pub query: String,
@@ -349,7 +358,7 @@ fn resource_search_url(kind: ResourceKind, options: &SearchOptions, category: &s
             &crate::wiki::search_query(ResourceProvider::Modrinth, &options.query),
         )
         .append_pair("facets", &serde_json::to_string(&facets)?)
-        .append_pair("index", "relevance")
+        .append_pair("index", options.sort.index())
         .append_pair("offset", &options.offset.to_string())
         .append_pair("limit", &options.limit.to_string());
     Ok(url)
@@ -366,6 +375,21 @@ pub fn search_resources(
     category: &str,
     cancel: &AtomicBool,
 ) -> Result<SearchPage> {
+    preferences::cached(
+        &format!(
+            "search:{kind:?}:{}:{category}",
+            serde_json::to_string(options)?
+        ),
+        cancel,
+        || search_resources_uncached(kind, options, category, cancel),
+    )
+}
+fn search_resources_uncached(
+    kind: ResourceKind,
+    options: &SearchOptions,
+    category: &str,
+    cancel: &AtomicBool,
+) -> Result<SearchPage> {
     if options.provider == ResourceProvider::CurseForge {
         return crate::curseforge::search(kind, options, category, cancel);
     }
@@ -376,6 +400,11 @@ pub fn search_resources(
 }
 
 pub fn get_project(id: &str, cancel: &AtomicBool) -> Result<ModrinthProject> {
+    preferences::cached(&format!("project:{id}"), cancel, || {
+        get_project_uncached(id, cancel)
+    })
+}
+fn get_project_uncached(id: &str, cancel: &AtomicBool) -> Result<ModrinthProject> {
     if id.starts_with("cf:") {
         return crate::curseforge::get_project(crate::curseforge::project_id(id)?, cancel);
     }
@@ -395,6 +424,19 @@ pub fn list_versions(
 }
 
 pub fn list_resource_versions(
+    kind: ResourceKind,
+    project: &str,
+    minecraft: &str,
+    loader: &str,
+    cancel: &AtomicBool,
+) -> Result<Vec<ModrinthVersion>> {
+    preferences::cached(
+        &format!("versions:{kind:?}:{project}:{minecraft}:{loader}"),
+        cancel,
+        || list_resource_versions_uncached(kind, project, minecraft, loader, cancel),
+    )
+}
+fn list_resource_versions_uncached(
     kind: ResourceKind,
     project: &str,
     minecraft: &str,
@@ -663,6 +705,7 @@ fn dependency_issues(
     issues
 }
 
+#[cfg(test)]
 fn verified_download(
     mut reader: impl Read,
     target: &Path,
@@ -1126,6 +1169,11 @@ trait DependencySource {
     fn project(&mut self, id: &str) -> Result<ModrinthProject>;
 }
 pub fn get_version(id: &str, cancel: &AtomicBool) -> Result<ModrinthVersion> {
+    preferences::cached(&format!("version:{id}"), cancel, || {
+        get_version_uncached(id, cancel)
+    })
+}
+fn get_version_uncached(id: &str, cancel: &AtomicBool) -> Result<ModrinthVersion> {
     if id.starts_with("cf:") {
         let (p, f) = crate::curseforge::version_id(id)?;
         return crate::curseforge::get_file(p, f, cancel);
@@ -1643,30 +1691,81 @@ fn rollback_new_files(files: &[(PathBuf, String)], created_directory: Option<&Pa
 
 /// Download everything first, then commit exclusive files. On failure, rollback
 /// only tracked new files whose hashes still match what this operation wrote.
-fn download_response(file: &VersionFile, cancel: &AtomicBool) -> Result<Response> {
+fn download_response(
+    file: &VersionFile,
+    cancel: &AtomicBool,
+    range: Option<(u64, u64)>,
+) -> Result<Response> {
     let url = Url::parse(&file.url)?;
     if crate::curseforge::trusted_file(&url) {
-        crate::curseforge::download_file(file, cancel)
+        crate::curseforge::download_file_range(file, cancel, range)
     } else {
         ensure!(trusted(&url, "cdn.modrinth.com"), "资源下载地址不可信");
-        send(client("cdn.modrinth.com")?.get(url), cancel)
+        let mut request = client("cdn.modrinth.com")?
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity");
+        if let Some((first, last)) = range {
+            request = request.header(reqwest::header::RANGE, format!("bytes={first}-{last}"));
+        }
+        send(request, cancel)
     }
 }
 
+fn download_resource_file(
+    file: &VersionFile,
+    target: &Path,
+    cancel: &AtomicBool,
+    progress: &impl Fn(Progress),
+) -> Result<()> {
+    use crate::resumable::{Checksum, TransferEvent};
+    let checksum = Checksum {
+        size: file.size,
+        sha1: file.hashes.get("sha1").cloned(),
+        sha256: None,
+        sha512: file.hashes.get("sha512").cloned(),
+    };
+    let cache = dirs::cache_dir()
+        .context("无法确定资源分片缓存目录")?
+        .join("pcl-rust/resource-downloads-v1");
+    // Receive transfer telemetry on the caller thread; public Fn callbacks need not be Sync.
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = scope.spawn(move || {
+            crate::resumable::download(
+                target,
+                &cache,
+                &checksum,
+                cancel,
+                |range| download_response(file, cancel, range),
+                move |event| {
+                    let _ = tx.send(event);
+                },
+            )
+        });
+        let mut received = 0u64;
+        for event in rx {
+            if let TransferEvent::Bytes(n) = event {
+                received = received.saturating_add(n as u64);
+                progress(Progress {
+                    message: format!("下载 {}（支持断点续传）", file.filename),
+                    completed: received.min(file.size),
+                    total: file.size,
+                    ..Default::default()
+                });
+            }
+        }
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("资源下载线程异常退出"))?
+    })
+}
 pub fn execute_install_plan(
     plan: &InstallPlan,
     cancel: &AtomicBool,
     progress: impl Fn(Progress),
 ) -> Result<Vec<PathBuf>> {
     execute_plan_with(plan, cancel, &progress, |file, source| {
-        let response = download_response(file, cancel)?;
-        ensure!(
-            response
-                .content_length()
-                .is_none_or(|length| length == file.size),
-            "资源 Content-Length 不匹配"
-        );
-        verified_download(response, source, file, cancel, &progress)
+        download_resource_file(file, source, cancel, &progress)
     })
 }
 fn execute_plan_with(
@@ -1788,13 +1887,6 @@ pub fn download_modpack(
         "此整合包不支持客户端环境"
     );
     let file = resource_file(ResourceKind::Modpack, &version)?;
-    let response = download_response(file, cancel)?;
-    ensure!(
-        response
-            .content_length()
-            .is_none_or(|length| length == file.size),
-        "整合包 Content-Length 不匹配"
-    );
     let temporary = tempfile::Builder::new()
         .suffix(if version.id.starts_with("cf:") {
             ".zip"
@@ -1802,7 +1894,7 @@ pub fn download_modpack(
             ".mrpack"
         })
         .tempfile()?;
-    verified_download(response, temporary.path(), file, cancel, &progress)?;
+    download_resource_file(file, temporary.path(), cancel, &progress)?;
     inspect_archive(ResourceKind::Modpack, temporary.path(), false, cancel)?;
     crate::modpack::inspect_mrpack(temporary.path())?;
     Ok(temporary)
@@ -1920,6 +2012,7 @@ mod tests {
     #[test]
     fn resource_classes_filter_datapacks_and_preserve_primary_file_type() {
         let options = SearchOptions {
+            sort: Default::default(),
             provider: ResourceProvider::Modrinth,
             query: "x & y".into(),
             minecraft: Some("1.21.1".into()),
@@ -2499,6 +2592,7 @@ mod tests {
     #[test]
     fn search_encodes_query_and_ands_filters_with_pagination() {
         let options = SearchOptions {
+            sort: Default::default(),
             provider: ResourceProvider::Modrinth,
             query: "sodium & other?token=x".into(),
             minecraft: Some("1.21.1".into()),

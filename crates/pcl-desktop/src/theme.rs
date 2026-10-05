@@ -54,8 +54,51 @@ pub fn palette(ctx: &Context) -> Palette {
         .unwrap_or_else(|| from_settings(&Settings::default(), 0.0))
 }
 
+#[derive(Clone, Copy)]
+struct AnimationClock {
+    real: f64,
+    scaled: f64,
+}
+
+pub fn animation_speed(ctx: &Context) -> f32 {
+    ctx.data(|data| data.get_temp::<f32>(Id::new("pcl-animation-speed")))
+        .unwrap_or(1.0)
+}
+pub fn animations_enabled(ctx: &Context) -> bool {
+    animation_speed(ctx) < 200.0
+}
+/// Presentation time only. Changing speed does not alter network or task deadlines.
+pub fn animation_time(ctx: &Context) -> f64 {
+    ctx.data(|data| data.get_temp::<AnimationClock>(Id::new("pcl-animation-clock")))
+        .map_or_else(|| ctx.input(|input| input.time), |clock| clock.scaled)
+}
+pub fn animation_age(ctx: &Context, real_age: f64) -> f64 {
+    if animations_enabled(ctx) {
+        real_age * f64::from(animation_speed(ctx))
+    } else {
+        60.0
+    }
+}
+
 pub fn apply(ctx: &Context, settings: &Settings) {
-    let colors = from_settings(settings, ctx.input(|input| input.time));
+    let now = ctx.input(|input| input.time);
+    let speed = pcl_core::system::animation_speed(settings.system.debug_animation);
+    ctx.data_mut(|data| {
+        let key = Id::new("pcl-animation-clock");
+        let mut clock = data
+            .get_temp::<AnimationClock>(key)
+            .unwrap_or(AnimationClock {
+                real: now,
+                scaled: now,
+            });
+        if speed < 200.0 {
+            clock.scaled += (now - clock.real).max(0.0) * f64::from(speed);
+        }
+        clock.real = now;
+        data.insert_temp(key, clock);
+        data.insert_temp(Id::new("pcl-animation-speed"), speed);
+    });
+    let colors = from_settings(settings, animation_time(ctx));
     let changed =
         ctx.data(|data| data.get_temp::<Palette>(Id::new("pcl-theme-palette"))) != Some(colors);
     ctx.data_mut(|data| data.insert_temp(Id::new("pcl-theme-palette"), colors));
@@ -88,7 +131,7 @@ pub fn apply(ctx: &Context, settings: &Settings) {
             visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, colors.border);
         });
     }
-    if settings.ui_theme == 12 {
+    if settings.ui_theme == 12 && animations_enabled(ctx) {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
@@ -220,6 +263,32 @@ fn hsl2_raw(h: f64, s: f64, l: f64) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn debug_animation_clock_scales_and_freezes_without_changing_real_time() {
+        let ctx = Context::default();
+        let mut settings = Settings::default();
+        let frame = |time, settings: &Settings| {
+            let _ = ctx.run(
+                eframe::egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| apply(ctx, settings),
+            );
+        };
+        frame(0.0, &settings);
+        settings.system.debug_animation = 19;
+        frame(1.0, &settings);
+        assert_eq!(animation_time(&ctx), 2.0);
+        settings.system.debug_animation = 30;
+        frame(2.0, &settings);
+        assert_eq!(animation_time(&ctx), 2.0);
+        assert!(!animations_enabled(&ctx));
+        assert_eq!(ctx.input(|input| input.time), 2.0);
+        settings.system.debug_animation = 9;
+        frame(3.0, &settings);
+        assert_eq!(animation_time(&ctx), 3.0);
+    }
 
     #[test]
     fn default_blue_keeps_the_source_palette_and_gradient_geometry() {

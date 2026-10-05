@@ -137,6 +137,7 @@ impl Launcher {
                 }
             }
         }
+        let writable = self.game_pid.is_none() && !self.jobs.conflicts_with(&root);
         let state = &mut self.instance_setup;
         if state
             .memory_updated
@@ -170,7 +171,7 @@ impl Launcher {
                 );
             });
         ui.add_space(15.0);
-        ui.add_enabled_ui(self.busy.is_none() && self.game_pid.is_none() && !state.load_failed, |ui| {
+        ui.add_enabled_ui(self.busy.is_none() && writable && !state.load_failed, |ui| {
             titled_card(ui, "启动选项", |ui| {
                 row(ui, "版本隔离", |ui| {
                     ui_style::PclComboBox::from_id_salt("instance-isolation").width(ui.available_width())
@@ -334,6 +335,7 @@ impl Launcher {
                         row(ui, "", |ui| { ui.checkbox(&mut state.value.pre_launch_wait, "等待命令执行完成后再继续启动"); });
                     }
                     ui.add_space(9.0);
+                    ui.checkbox(&mut state.value.disable_mod_updates,"禁用此版本的 Mod 更新");
                     ui.checkbox(&mut state.value.disable_java_wrapper,"禁用 Java Launch Wrapper").on_hover_text(super::setup_launch_ui::JLW_HELP);
                     ui.checkbox(&mut state.value.disable_lwjgl_unsafe_agent,"禁用 LWJGL Unsafe Agent").on_hover_text(super::setup_launch_ui::LUA_HELP);
                     ui.add_space(9.0);
@@ -354,7 +356,7 @@ impl Launcher {
                 });
             }
         });
-        if state.value != previous && !state.load_failed {
+        if state.value != previous && !state.load_failed && writable {
             match config::save_instance_settings(&root, &id, &state.value) {
                 Ok(()) => {
                     state.error = None;
@@ -368,6 +370,20 @@ impl Launcher {
             ui.colored_label(Color32::from_rgb(205, 65, 65), error);
         }
         ui.add_space(15.0);
+        let (reset_rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
+        if ui_style::outline_button(ui, reset_rect, "初始化版本设置", None, false, writable)
+            .clicked()
+        {
+            self.confirm_instance_reset(ui.ctx(), &id);
+        }
+        let (restore_rect, _) =
+            ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
+        if ui_style::outline_button(ui, restore_rect, "恢复版本设置", None, false, writable)
+            .clicked()
+        {
+            self.restore_instance_preferences(&id);
+        }
+        self.version_management_dialog(ui.ctx());
         let (rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
         if ui_style::outline_button(ui, rect, "全局设置", None, false, true).clicked() {
             self.page = super::Page::Settings;

@@ -28,6 +28,7 @@ fn main() -> anyhow::Result<()> {
         &mut failed,
     );
     let request = resources::SearchOptions {
+        sort: Default::default(),
         provider: resources::ResourceProvider::Modrinth,
         query: "钠".into(),
         minecraft: Some("1.21.1".into()),

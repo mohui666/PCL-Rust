@@ -538,7 +538,7 @@ impl Launcher {
         else {
             return;
         };
-        let Some((tx, cancel)) =
+        let Some((tx, _cancel)) =
             self.start_download_job_at("正在导出整合包", path.clone(), Some(id.clone()))
         else {
             return;
@@ -546,7 +546,8 @@ impl Launcher {
         self.pack_export.error = None;
         let root = self.settings.game_root.clone();
         let launcher = current_launcher().ok();
-        std::thread::spawn(move || {
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
             let event = pack_export_event(pack_export::export_pack_with_launcher(
                 &root,
                 &id,

@@ -18,7 +18,7 @@
 
 实读 TTF name/head/maxp 表：family=`PCL English`，style=`Regular`，PostScript name=`PCLEnglish`，unitsPerEm=1000，glyph 数=154。字体文件 20,188 字节。它是原版西文资源，不能解决中文字体缺失。
 
-本机按文件名检查了用户文档目录、用户与系统字体目录，以及常见 Microsoft Office 应用字体资源路径，未发现 `msyh*.ttc/ttf/otf`、`*YaHei*.ttc/ttf/otf` 或 `*微软雅黑*.ttc/ttf/otf`。本机没有可用的 Wine、CrossOver、Whisky 或 Office 字体副本；未下载第三方字体站文件。
+本机检查了用户文档目录、用户与系统字体目录和常见 Microsoft Office 字体资源，未发现可用微软雅黑字体；未下载第三方字体站文件。
 
 **用户已接受 macOS 使用苹方（PingFang）呈现中文，允许其字形、字宽和栅格化与 Windows Microsoft YaHei UI 存在差异。** 因此本机缺少微软雅黑不再作为 macOS 交付阻断，也不把苹方截图当作 Windows 同字体像素验证的证据。Windows 仍应优先使用用户系统已安装的 Microsoft YaHei UI（`Windows/Fonts/msyh.ttc`），同一 TTC 的 UI face 需按字体族正确选择；其余布局、配色和交互仍按原版基准核对。
 

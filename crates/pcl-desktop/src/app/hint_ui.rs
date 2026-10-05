@@ -31,6 +31,7 @@ fn hold(text: &str) -> Duration {
     // VB String.Length counts UTF-16 code units.
     Duration::from_millis(800 + text.encode_utf16().count().clamp(5, 23) as u64 * 180)
 }
+#[cfg(test)]
 fn duration(text: &str) -> Duration {
     hold(text) + Duration::from_millis(300) // 200 ms slide, then 100 ms collapse.
 }
@@ -48,12 +49,25 @@ impl Hint {
     fn epoch(&self) -> Instant {
         self.refreshed.unwrap_or(self.entered)
     }
+    #[cfg(test)]
     fn layout(&self, now: Instant) -> HintLayout {
-        let elapsed = now.saturating_duration_since(self.entered).as_secs_f32();
+        self.layout_with_speed(now, 1.0)
+    }
+    fn layout_with_speed(&self, now: Instant, speed: f32) -> HintLayout {
+        let elapsed = now.saturating_duration_since(self.entered).as_secs_f32() * speed;
         let age = now.saturating_duration_since(self.epoch()).as_secs_f32();
         let delay = hold(&self.text).as_secs_f32();
-        let leaving = ((age - delay) / 0.2).clamp(0.0, 1.0);
-        let opacity = (elapsed / 0.1).min(1.0) * (1.0 - ((age - delay) / 0.15).clamp(0.0, 1.0));
+        if speed >= 200.0 {
+            return HintLayout {
+                x: -20.0,
+                height: if age < delay { 26.0 } else { 0.0 },
+                opacity: if age < delay { 1.0 } else { 0.0 },
+                color_weight: 1.0,
+            };
+        }
+        let exit_age = (age - delay) * speed;
+        let leaving = (exit_age / 0.2).clamp(0.0, 1.0);
+        let opacity = (elapsed / 0.1).min(1.0) * (1.0 - (exit_age / 0.15).clamp(0.0, 1.0));
         let out = |t: f32| 1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3);
         let elastic = |t: f32| {
             let t = 1.0 - t.clamp(0.0, 1.0);
@@ -62,8 +76,8 @@ impl Hint {
         let mut x = -70.0 + 30.0 * elastic(elapsed / 0.4) + 20.0 * out(elapsed / 0.2);
         let flash = if self.refreshed.is_some() {
             // Four 50 ms source-bound duplicate-message nudges, settling at -20.
-            let k = (age / 0.05).floor() as usize;
-            let p = (age / 0.05).fract();
+            let k = (age * speed / 0.05).floor() as usize;
+            let p = (age * speed / 0.05).fract();
             let points = [self.shake_start_x, -12.0, -20.0, -12.0, -20.0];
             if k < 4 {
                 let eased = if k.is_multiple_of(2) {
@@ -73,14 +87,14 @@ impl Hint {
                 };
                 x = points[k] + (points[k + 1] - points[k]) * eased;
             }
-            (age / 0.25).clamp(0.0, 1.0)
+            (age * speed / 0.25).clamp(0.0, 1.0)
         } else {
             ((elapsed - 0.1) / 0.25).clamp(0.0, 1.0)
         };
         let growth = if self.grow { out(elapsed / 0.15) } else { 1.0 };
         HintLayout {
             x: x - 50.0 * leaving.powi(3),
-            height: 26.0 * growth * (1.0 - out((age - delay - 0.2) / 0.1)),
+            height: 26.0 * growth * (1.0 - out((exit_age - 0.2) / 0.1)),
             opacity,
             color_weight: 0.3 + 0.7 * flash,
         }
@@ -96,6 +110,7 @@ struct HintLayout {
 pub(super) struct HintQueue {
     active: Vec<Hint>,
     next_id: u64,
+    speed: Option<f32>,
 }
 impl HintQueue {
     #[cfg(test)]
@@ -109,8 +124,11 @@ impl HintQueue {
         self.push_at(kind, text.into(), Instant::now());
     }
     fn expire(&mut self, now: Instant) {
-        self.active
-            .retain(|hint| now.saturating_duration_since(hint.epoch()) < duration(&hint.text));
+        let speed = self.speed.unwrap_or(1.0);
+        self.active.retain(|hint| {
+            now.saturating_duration_since(hint.epoch())
+                < hold(&hint.text) + Duration::from_secs_f64(0.3 / f64::from(speed))
+        });
     }
     fn push_at(&mut self, kind: HintKind, text: String, now: Instant) {
         self.expire(now);
@@ -126,7 +144,7 @@ impl HintQueue {
             hint.text == text && now.saturating_duration_since(hint.epoch()) < hold(&hint.text)
         }) {
             if now.saturating_duration_since(hint.entered) >= Duration::from_millis(400) {
-                hint.shake_start_x = hint.layout(now).x;
+                hint.shake_start_x = hint.layout_with_speed(now, self.speed.unwrap_or(1.0)).x;
                 hint.kind = kind;
                 hint.refreshed = Some(now);
             }
@@ -147,6 +165,8 @@ impl HintQueue {
         self.show_at(ctx, Instant::now());
     }
     fn show_at(&mut self, ctx: &egui::Context, now: Instant) {
+        let speed = crate::theme::animation_speed(ctx);
+        self.speed = Some(speed);
         self.expire(now);
         let screen = ctx.content_rect();
         let mut y = screen.bottom()
@@ -154,15 +174,15 @@ impl HintQueue {
             - self
                 .active
                 .iter()
-                .map(|h| h.layout(now).height)
+                .map(|h| h.layout_with_speed(now, speed).height)
                 .sum::<f32>();
         for hint in &self.active {
-            let layout = hint.layout(now);
+            let layout = hint.layout_with_speed(now, speed);
             draw_hint(ctx, screen, hint, &layout, y);
             y += layout.height;
         }
         if !self.active.is_empty() {
-            ctx.request_repaint_after(Duration::from_millis(16));
+            ctx.request_repaint_after(Duration::from_millis(if speed >= 200.0 { 100 } else { 16 }));
         }
     }
 }
@@ -274,6 +294,24 @@ pub(super) fn inline(ui: &mut egui::Ui, text: &str, yellow: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn debug_animation_off_keeps_real_reading_time_and_no_motion() {
+        let now = Instant::now();
+        let mut hints = HintQueue::default();
+        hints.push_at(HintKind::Info, "read this message".into(), now);
+        let hint = &hints.active[0];
+        for age in [Duration::from_millis(1), Duration::from_millis(500)] {
+            let layout = hint.layout_with_speed(now + age, 200.0);
+            assert_eq!(
+                (layout.x, layout.height, layout.opacity),
+                (-20.0, 26.0, 1.0)
+            );
+        }
+        assert_eq!(
+            hint.layout_with_speed(now + hold(&hint.text), 200.0).height,
+            0.0
+        );
+    }
     #[test]
     fn queued_results_keep_their_severity_and_text_after_later_progress() {
         let now = Instant::now();

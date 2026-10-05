@@ -35,3 +35,5 @@ pub mod wiki;
 pub mod crash;
 
 pub mod mod_updates;
+
+pub mod resumable;

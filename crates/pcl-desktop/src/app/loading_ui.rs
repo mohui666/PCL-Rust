@@ -8,6 +8,175 @@ const PICKAXE: &str = "M 963.6 858.2 410.816 305.504 C 508.116 213.304 609.204 1
 const CYCLE: f64 = 1.5;
 const WAIT: f64 = 0.4;
 
+/// Compact MyLoading for toolbars and dialogs. It shares the exact pickaxe path,
+/// motion and chip timing with the full loader; elapsed time is never progress.
+pub(super) fn inline(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(30.0, 25.0), egui::Sense::hover());
+        let texture_id = egui::Id::new("pcl-shared-inline-pickaxe");
+        let texture = ui
+            .ctx()
+            .data_mut(|data| data.get_temp::<egui::TextureHandle>(texture_id))
+            .unwrap_or_else(|| {
+                let texture = pickaxe_texture(ui.ctx());
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(texture_id, texture.clone()));
+                texture
+            });
+        let pose = motion(theme::animation_time(ui.ctx()));
+        let color = theme::palette(ui.ctx()).accent;
+        let origin = rect.min;
+        rotated_image(
+            ui,
+            &texture,
+            Rect::from_min_size(origin + Vec2::new(5.0, 3.0), Vec2::splat(17.5)),
+            origin + Vec2::new(20.0, 18.0),
+            pose.angle.to_radians(),
+            color,
+        );
+        ui.painter().rect_filled(
+            Rect::from_min_size(origin + Vec2::new(0.0, 22.5), Vec2::new(12.5, 1.0)),
+            0,
+            color,
+        );
+        if pose.chip_opacity > 0.0 {
+            for (x, direction) in [(3.5, -1.0), (7.0, 1.0)] {
+                let center = origin
+                    + Vec2::new(
+                        x + 0.75 + direction * pose.chip_offset.x * 0.5,
+                        21.75 + pose.chip_offset.y * 0.5,
+                    );
+                let points = [
+                    Vec2::new(-0.75, -1.25),
+                    Vec2::new(0.75, -1.25),
+                    Vec2::new(0.0, 1.25),
+                ]
+                .map(|p| center + rotate(p, direction * std::f32::consts::FRAC_PI_4));
+                ui.painter().add(egui::Shape::convex_polygon(
+                    points.to_vec(),
+                    color.gamma_multiply(pose.chip_opacity),
+                    egui::Stroke::NONE,
+                ));
+            }
+        }
+        if !label.is_empty() {
+            ui.label(egui::RichText::new(label).color(color));
+        }
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+        if theme::animations_enabled(ui.ctx()) {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
+        response
+    })
+    .inner
+}
+
+/// The standalone MyLoading XAML control: 60×47 icon, then a 10 DIP gap and
+/// centered 16 DIP text. Compact toolbar helpers deliberately use half scale.
+pub(super) fn control(ui: &mut egui::Ui, label: &str, size: Vec2) -> egui::Response {
+    let color = theme::palette(ui.ctx()).accent;
+    let width = size.x.min(ui.available_width()).max(50.0);
+    let text = ui
+        .painter()
+        .layout(label.into(), FontId::proportional(16.0), color, width);
+    let content_height = 47.0 + 10.0 + text.size().y;
+    let height = size.y.max(content_height).max(50.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let origin = Pos2::new(
+        rect.center().x - 30.0,
+        rect.top() + (height - content_height) / 2.0,
+    );
+    let id = egui::Id::new("pcl-shared-inline-pickaxe");
+    let texture = ui
+        .ctx()
+        .data(|data| data.get_temp::<egui::TextureHandle>(id))
+        .unwrap_or_else(|| {
+            let texture = pickaxe_texture(ui.ctx());
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(id, texture.clone()));
+            texture
+        });
+    let pose = motion(theme::animation_time(ui.ctx()));
+    rotated_image(
+        ui,
+        &texture,
+        Rect::from_min_size(origin + Vec2::new(10.0, 6.0), Vec2::splat(35.0)),
+        origin + Vec2::new(40.0, 36.0),
+        pose.angle.to_radians(),
+        color,
+    );
+    ui.painter().rect_filled(
+        Rect::from_min_size(origin + Vec2::new(0.0, 45.0), Vec2::new(25.0, 2.0)),
+        0,
+        color,
+    );
+    if pose.chip_opacity > 0.0 {
+        for (x, direction) in [(7.0, -1.0), (14.0, 1.0)] {
+            let center = origin
+                + Vec2::new(
+                    x + 1.5 + direction * pose.chip_offset.x,
+                    43.5 + pose.chip_offset.y,
+                );
+            let points = [
+                Vec2::new(-1.5, -2.5),
+                Vec2::new(1.5, -2.5),
+                Vec2::new(0.0, 2.5),
+            ]
+            .map(|p| center + rotate(p, direction * std::f32::consts::FRAC_PI_4));
+            ui.painter().add(egui::Shape::convex_polygon(
+                points.to_vec(),
+                color.gamma_multiply(pose.chip_opacity),
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    ui.painter().galley(
+        Pos2::new(rect.center().x - text.size().x / 2.0, origin.y + 57.0),
+        text,
+        color,
+    );
+    if theme::animations_enabled(ui.ctx()) {
+        ui.ctx().request_repaint_after(Duration::from_millis(16));
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+    response
+}
+
+/// PCL's thin theme-colored progress rail. None leaves an unfilled rail rather
+/// than fabricating a percentage; callers can show MyLoading alongside it.
+pub(super) fn progress(ui: &mut egui::Ui, fraction: Option<f32>, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(
+            ui.available_width(),
+            if label.is_empty() { 6.0 } else { 27.0 },
+        ),
+        egui::Sense::hover(),
+    );
+    let colors = theme::palette(ui.ctx());
+    let rail = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0));
+    ui.painter().rect_filled(rail, 1.5, colors.light);
+    if let Some(value) = fraction.filter(|value| value.is_finite()) {
+        let fill = Rect::from_min_size(
+            rail.min,
+            Vec2::new(rail.width() * value.clamp(0.0, 1.0), 3.0),
+        );
+        ui.painter().rect_filled(fill, 1.5, colors.accent);
+    }
+    if !label.is_empty() {
+        ui.painter().text(
+            rect.min + Vec2::new(0.0, 9.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            FontId::proportional(12.0),
+            colors.text,
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, true, label)
+    });
+    response
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Placement {
     List,
@@ -124,7 +293,7 @@ impl Indicator {
         }
         let now = elapsed - self.visible_at.unwrap_or(elapsed);
         let failed_at = self.failed_at.map(|at| at - self.visible_at.unwrap_or(at));
-        let error_elapsed = failed_at.map(|at| (now - at).max(0.0));
+        let error_elapsed = failed_at.map(|at| theme::animation_age(ui.ctx(), (now - at).max(0.0)));
         let color = match error_elapsed {
             Some(age) => theme::palette(ui.ctx())
                 .accent
@@ -227,10 +396,11 @@ impl Indicator {
                 .rect_filled(card, 5, Color32::from_rgba_unmultiplied(255, 255, 255, 245));
         }
         let origin = Pos2::new(card.center().x - 30.0, card.top() + 20.0);
-        let pose_time = if cancelled {
+        let pose_time = if cancelled || !theme::animations_enabled(ui.ctx()) {
             0.0
         } else {
             failed_at.map_or(now, |at| now.min((at / CYCLE).floor() * CYCLE + CYCLE))
+                * f64::from(theme::animation_speed(ui.ctx()))
         };
         let pose = motion(pose_time);
         if self.texture.is_none() {
@@ -331,9 +501,10 @@ impl Indicator {
         } else {
             false
         };
-        if running
-            || error_elapsed.is_some_and(|age| age < CYCLE)
-            || (!cancelled && error.is_none())
+        if theme::animations_enabled(ui.ctx())
+            && (running
+                || error_elapsed.is_some_and(|age| age < CYCLE)
+                || (!cancelled && error.is_none()))
         {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
@@ -444,6 +615,30 @@ fn pickaxe_texture(ctx: &egui::Context) -> egui::TextureHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_controls_render_finite_geometry_for_unknown_and_invalid_progress() {
+        let ctx = egui::Context::default();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                inline(ui, "loading");
+                control(ui, "loading", Vec2::new(200.0, 100.0));
+                for value in [
+                    None,
+                    Some(f32::NAN),
+                    Some(f32::INFINITY),
+                    Some(-1.0),
+                    Some(0.5),
+                    Some(2.0),
+                ] {
+                    progress(ui, value, "progress");
+                }
+            });
+        });
+        for shape in output.shapes {
+            let rect = shape.shape.visual_bounding_rect();
+            assert!(rect.is_finite(), "{rect:?}");
+        }
+    }
     #[test]
     fn cancelled_control_retries_and_modal_does_not_duplicate_its_cancel_button() {
         let ctx = egui::Context::default();

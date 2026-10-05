@@ -363,7 +363,11 @@ fn modal_frame_inner(
             .map(|active| active.mask)
             .or_else(|| {
                 state.retiring.as_ref().map(|retiring| {
-                    let t = unit(now - retiring.since, 0.030, 0.200);
+                    let t = unit(
+                        theme::animation_age(ctx, now - retiring.since),
+                        0.030,
+                        0.200,
+                    );
                     retiring.active.mask.gamma_multiply((1.0 - t).powi(2))
                 })
             })
@@ -401,9 +405,16 @@ fn modal_frame_inner(
     let active = state.active.as_mut().expect("created above");
     active.seen = frame;
     let age = (now - active.since).max(0.0);
-    let pose = entering(age);
-    let pointer_ready = age >= 0.360;
-    let mask = mix_color(active.mask_from, options.mask(), unit(age, 0.0, 0.200));
+    let visual_age = theme::animation_age(ctx, age);
+    let pose = entering(visual_age);
+    // Debug speed must never shorten the real-time guard against the click
+    // which opened this modal. Slow motion also waits for its visual entry.
+    let pointer_ready = age >= 0.360 && visual_age >= 0.360;
+    let mask = mix_color(
+        active.mask_from,
+        options.mask(),
+        unit(visual_age, 0.0, 0.200),
+    );
     let focus = pointer_ready && !active.focused;
     let mut action = keyboard(ctx, buttons.len(), options);
     let screen = ctx.content_rect();
@@ -539,7 +550,7 @@ fn modal_frame_inner(
     active.pose = pose;
     active.mask = mask;
     active.focused |= focus;
-    if age < 0.360 {
+    if age < 0.360 || visual_age < 0.360 {
         ctx.request_repaint();
     }
     if action.is_some() && state.action_frame == Some(frame) {
@@ -643,7 +654,8 @@ pub(super) fn finish_frame(ctx: &egui::Context) {
     }
     if let Some(retiring) = &state.retiring {
         let age = (now - retiring.since).max(0.0);
-        if age >= 0.230 {
+        let visual_age = theme::animation_age(ctx, age);
+        if age >= 0.230 && visual_age >= 0.230 {
             state.retiring = None;
         } else {
             ctx.request_repaint();
@@ -660,16 +672,16 @@ pub(super) fn finish_frame(ctx: &egui::Context) {
                     .fade_in(false)
                     .show(ctx, |ui| {
                         ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
-                        let t = unit(age, 0.030, 0.200);
+                        let t = unit(visual_age, 0.030, 0.200);
                         ui.painter().rect_filled(
                             screen,
                             0,
                             retiring.active.mask.gamma_multiply((1.0 - t).powi(2)),
                         );
                     });
-                if age < 0.150 {
+                if visual_age < 0.150 {
                     if let Some(picture) = &retiring.active.picture {
-                        paint_picture(ctx, picture, leaving(retiring.active.pose, age));
+                        paint_picture(ctx, picture, leaving(retiring.active.pose, visual_age));
                     }
                 }
             }
@@ -829,6 +841,26 @@ mod tests {
             &["Accept", "Cancel"],
             options,
         )
+    }
+    #[test]
+    fn debug_animation_off_settles_picture_but_preserves_real_input_guard() {
+        let ctx = egui::Context::default();
+        let mut settings = pcl_core::config::Settings::default();
+        settings.system.debug_animation = 30;
+        for time in [0.0, 0.1] {
+            run(&ctx, time, vec![], |ctx| {
+                theme::apply(ctx, &settings);
+                text(ctx, ModalOptions::default());
+            });
+            let active = load(&ctx).active.unwrap();
+            assert_eq!((active.pose.angle, active.pose.opacity), (0.0, 1.0));
+            assert!(!active.focused);
+        }
+        run(&ctx, 0.4, vec![], |ctx| {
+            theme::apply(ctx, &settings);
+            text(ctx, ModalOptions::default());
+        });
+        assert!(load(&ctx).active.unwrap().focused);
     }
     #[test]
     fn original_easing_and_separate_mask_tail() {

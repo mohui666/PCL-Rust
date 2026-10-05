@@ -7,6 +7,7 @@ use crate::ui_style;
 use anyhow::Context;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 use pcl_core::loaders::optifine::{self, OptiFineVersion};
+use pcl_core::resources::{self, ModrinthVersion};
 use pcl_core::{
     config,
     forge::{self, ForgeKind},
@@ -25,11 +26,33 @@ pub(super) struct OptiFineState {
     indicator: loading_ui::Indicator,
     generation: u64,
     expanded: bool,
+    api: CompanionState,
+    bridge: CompanionState,
+    lite: Option<String>,
 }
-pub(crate) struct OptiFineListEvent {
+#[derive(Default)]
+struct CompanionState {
+    target: Option<(String, String)>,
+    selected: Option<ModrinthVersion>,
+    versions: Vec<ModrinthVersion>,
+    phase: Phase,
+    indicator: loading_ui::Indicator,
     generation: u64,
-    minecraft: String,
-    result: Result<Vec<OptiFineVersion>, (String, bool)>,
+    expanded: bool,
+}
+pub(crate) enum OptiFineListEvent {
+    OptiFine {
+        generation: u64,
+        minecraft: String,
+        result: Result<Vec<OptiFineVersion>, (String, bool)>,
+    },
+    Companion {
+        generation: u64,
+        minecraft: String,
+        loader: String,
+        bridge: bool,
+        result: Result<Vec<ModrinthVersion>, (String, bool)>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38,6 +61,7 @@ pub(crate) enum InstallKind {
     NeoForge,
     Fabric,
     Quilt,
+    LiteLoader,
 }
 impl InstallKind {
     fn label(self) -> &'static str {
@@ -46,6 +70,7 @@ impl InstallKind {
             Self::NeoForge => "NeoForge",
             Self::Fabric => "Fabric",
             Self::Quilt => "Quilt",
+            Self::LiteLoader => "LiteLoader",
         }
     }
     fn meta_kind(self) -> Option<LoaderKind> {
@@ -68,6 +93,7 @@ impl InstallKind {
             Self::NeoForge => format!("neoforge-{loader}"),
             Self::Fabric => format!("fabric-loader-{loader}-{minecraft}"),
             Self::Quilt => format!("quilt-loader-{loader}-{minecraft}"),
+            Self::LiteLoader => format!("liteloader-{loader}-{minecraft}"),
         }
     }
     fn icon(self) -> &'static str {
@@ -75,29 +101,250 @@ impl InstallKind {
             Self::Forge => "block-forge",
             Self::NeoForge => "block-neoforge",
             Self::Fabric => "block-fabric",
-            Self::Quilt => "mod",
+            Self::Quilt | Self::LiteLoader => "mod",
         }
     }
 }
 impl Launcher {
     pub(super) fn optifine_request_active(&self) -> bool {
         matches!(self.optifine.phase, Phase::Loading)
+            || matches!(self.optifine.api.phase, Phase::Loading)
+            || matches!(self.optifine.bridge.phase, Phase::Loading)
     }
     pub(super) fn handle_optifine_list(&mut self, event: OptiFineListEvent) {
-        if event.generation != self.optifine.generation
-            || self.optifine.minecraft.as_deref() != Some(&event.minecraft)
-            || !matches!(self.optifine.phase, Phase::Loading)
-        {
+        match event {
+            OptiFineListEvent::OptiFine {
+                generation,
+                minecraft,
+                result,
+            } => {
+                if generation != self.optifine.generation
+                    || self.optifine.minecraft.as_deref() != Some(&minecraft)
+                    || !matches!(self.optifine.phase, Phase::Loading)
+                {
+                    return;
+                }
+                self.busy = None;
+                match result {
+                    Ok(versions) => {
+                        self.optifine.versions = versions;
+                        self.optifine.phase = Phase::Ready;
+                    }
+                    Err((_, true)) => self.optifine.phase = Phase::Cancelled,
+                    Err((error, false)) => self.optifine.phase = Phase::Failed(error),
+                }
+            }
+            OptiFineListEvent::Companion {
+                generation,
+                minecraft,
+                loader,
+                bridge,
+                result,
+            } => {
+                let state = if bridge {
+                    &mut self.optifine.bridge
+                } else {
+                    &mut self.optifine.api
+                };
+                if generation != state.generation
+                    || state.target.as_ref() != Some(&(minecraft, loader))
+                    || !matches!(state.phase, Phase::Loading)
+                {
+                    return;
+                }
+                self.busy = None;
+                match result {
+                    Ok(versions) => {
+                        state.versions = versions;
+                        state.phase = Phase::Ready;
+                    }
+                    Err((_, true)) => state.phase = Phase::Cancelled,
+                    Err((error, false)) => state.phase = Phase::Failed(error),
+                }
+            }
+        }
+    }
+    fn companion_card(&mut self, ui: &mut egui::Ui, minecraft: &str, bridge: bool) {
+        let Some(kind) = self
+            .loader_kind
+            .filter(|kind| matches!(kind, InstallKind::Fabric | InstallKind::Quilt))
+        else {
+            return;
+        };
+        if bridge && kind != InstallKind::Fabric {
             return;
         }
-        self.busy = None;
-        match event.result {
-            Ok(versions) => {
-                self.optifine.versions = versions;
-                self.optifine.phase = Phase::Ready;
+        let loader = if kind == InstallKind::Fabric {
+            "fabric"
+        } else {
+            "quilt"
+        };
+        let title = if bridge {
+            "OptiFabric"
+        } else if kind == InstallKind::Fabric {
+            "Fabric API"
+        } else {
+            "Quilt API"
+        };
+        let project = if bridge {
+            "cf:322385"
+        } else if kind == InstallKind::Fabric {
+            "P7dR8mSH"
+        } else {
+            "qvIfYCYJ"
+        };
+        let state = if bridge {
+            &mut self.optifine.bridge
+        } else {
+            &mut self.optifine.api
+        };
+        let target = (minecraft.to_owned(), loader.to_owned());
+        if state.target.as_ref() != Some(&target) {
+            *state = CompanionState {
+                target: Some(target),
+                generation: state.generation.wrapping_add(1),
+                ..Default::default()
+            };
+        }
+        let mut fetch = false;
+        component_frame().show(ui, |ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::click());
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+            ui_style::place_left(
+                ui,
+                Rect::from_min_size(rect.min + Vec2::new(15.0, 12.0), Vec2::new(110.0, 18.0)),
+                egui::Label::new(ui_style::card_title(title)),
+            );
+            let text = state
+                .selected
+                .as_ref()
+                .map(|v| v.version_number.as_str())
+                .unwrap_or("可以添加");
+            ui_style::place_left(
+                ui,
+                Rect::from_min_size(
+                    rect.min + Vec2::new(132.0, 11.0),
+                    Vec2::new((rect.width() - 210.0).max(40.0), 18.0),
+                ),
+                egui::Label::new(text),
+            );
+            let clear = state.selected.is_some()
+                && ui
+                    .place(
+                        Rect::from_min_size(
+                            rect.right_top() + Vec2::new(-61.0, 5.0),
+                            Vec2::splat(30.0),
+                        ),
+                        egui::Button::new("×").frame(false),
+                    )
+                    .clicked();
+            if clear {
+                state.selected = None;
             }
-            Err((_, true)) => self.optifine.phase = Phase::Cancelled,
-            Err((error, false)) => self.optifine.phase = Phase::Failed(error),
+            let center = rect.right_center() + Vec2::new(-20.0, 0.0);
+            let dy = if state.expanded { -3.0 } else { 3.0 };
+            ui.painter().add(egui::Shape::line(
+                vec![
+                    center + Vec2::new(-5.0, -dy),
+                    center + Vec2::new(0.0, dy),
+                    center + Vec2::new(5.0, -dy),
+                ],
+                egui::Stroke::new(1.0_f32, theme::palette(ui.ctx()).text),
+            ));
+            if response.clicked() && !clear {
+                state.expanded = !state.expanded;
+                fetch = state.expanded && !matches!(state.phase, Phase::Ready | Phase::Loading);
+            }
+            if state.expanded {
+                let status = match &state.phase {
+                    Phase::Loading => loading_ui::Status::Running {
+                        cancelling: self.cancel.load(std::sync::atomic::Ordering::Relaxed),
+                    },
+                    Phase::Failed(error) => loading_ui::Status::Failed(error),
+                    Phase::Cancelled => loading_ui::Status::Cancelled,
+                    _ => loading_ui::Status::Ready,
+                };
+                match state.indicator.show_status(
+                    ui,
+                    "正在获取版本列表",
+                    status,
+                    loading_ui::Placement::Component,
+                ) {
+                    Some(loading_ui::Action::Retry) => fetch = true,
+                    Some(loading_ui::Action::Cancel) => self
+                        .cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed),
+                    _ => (),
+                }
+                if matches!(state.phase, Phase::Ready) {
+                    if state.versions.is_empty() {
+                        ui.label("此 Minecraft 版本没有发行方声明兼容的版本");
+                    }
+                    for (index, entry) in state.versions.iter().enumerate() {
+                        let label = format!(
+                            "{}{}",
+                            entry.version_number,
+                            if index == 0 { "  · 推荐" } else { "" }
+                        );
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), 30.0],
+                                egui::Button::selectable(
+                                    state.selected.as_ref().is_some_and(|v| v.id == entry.id),
+                                    label,
+                                ),
+                            )
+                            .clicked()
+                        {
+                            state.selected = Some(entry.clone());
+                            state.expanded = false;
+                        }
+                    }
+                }
+            }
+        });
+        ui.add_space(12.0);
+        if fetch {
+            let Some((tx, cancel)) = self.start_job("正在获取组件版本") else {
+                return;
+            };
+            let state = if bridge {
+                &mut self.optifine.bridge
+            } else {
+                &mut self.optifine.api
+            };
+            state.phase = Phase::Loading;
+            state.indicator.start();
+            state.generation = state.generation.wrapping_add(1);
+            let generation = state.generation;
+            let minecraft = minecraft.to_owned();
+            let loader = loader.to_owned();
+            std::thread::spawn(move || {
+                let result = resources::list_versions(project, &minecraft, &loader, &cancel)
+                    .map(|mut versions| {
+                        versions.sort_by(|a, b| {
+                            (b.version_type == "release")
+                                .cmp(&(a.version_type == "release"))
+                                .then(b.date_published.cmp(&a.date_published))
+                        });
+                        versions
+                    })
+                    .map_err(|error| {
+                        let cancelled = error
+                            .chain()
+                            .any(|cause| cause.is::<pcl_core::model::OperationCancelled>());
+                        (format!("获取组件列表失败：{error:#}"), cancelled)
+                    });
+                let _ = tx.send(Event::OptiFineList(OptiFineListEvent::Companion {
+                    generation,
+                    minecraft,
+                    loader,
+                    bridge,
+                    result,
+                }));
+            });
         }
     }
     fn load_optifine(&mut self, minecraft: String) {
@@ -118,7 +365,7 @@ impl Launcher {
                         .any(|cause| cause.is::<pcl_core::model::OperationCancelled>());
                 (format!("获取 OptiFine 列表失败：{error:#}"), cancelled)
             });
-            let _ = tx.send(Event::OptiFineList(OptiFineListEvent {
+            let _ = tx.send(Event::OptiFineList(OptiFineListEvent::OptiFine {
                 generation,
                 minecraft,
                 result,
@@ -164,10 +411,10 @@ impl Launcher {
                 if matches!(self.optifine.phase,Phase::Ready) {
                     if self.optifine.versions.is_empty(){ui.label("官方暂无此 Minecraft 版本的 OptiFine");}
                     for entry in &self.optifine.versions {
-                        let compatible=match self.loader_kind {None=>true,Some(InstallKind::Forge)=>self.loader_version.as_deref().is_some_and(|forge|entry.compatible_forge(minecraft,forge)),_=>false};
+                        let compatible=match self.loader_kind {None=>true,Some(InstallKind::Forge)=>self.loader_version.as_deref().is_some_and(|forge|entry.compatible_forge(minecraft,forge)),Some(InstallKind::Fabric)=>true,_=>false};
                         let label=format!("{}{}",entry.version,if entry.preview{" · 预览版"}else{""});
                         let response=ui.add_enabled(compatible && self.busy.is_none(),egui::Button::selectable(self.optifine.selected.as_ref()==Some(entry),label));
-                        if !compatible {response.clone().on_hover_text("此组合不在 OptiFine 官方 Forge 兼容列表中；Fabric 还需要单独的 OptiFabric 桥接，当前不自动组合。");}
+                        if !compatible {response.clone().on_hover_text("此组合不在 OptiFine 官方 Forge 兼容列表中；Fabric 组合还需要选中兼容的 OptiFabric 桥接。");}
                         if response.clicked(){self.optifine.selected=Some(entry.clone());self.optifine.expanded=false;
                             if !self.install_name_edited {self.install_name=if let (Some(kind),Some(loader))=(self.loader_kind,self.loader_version.as_deref()){format!("{}-OptiFine_{}",kind.default_id(minecraft,loader),entry.version)}else{entry.id()};}}
                     }
@@ -187,7 +434,9 @@ impl Launcher {
         let request = self.version_lists.loader.start();
         self.version_lists.loader_target = Some((minecraft.clone(), kind));
         std::thread::spawn(move || {
-            let result = if let Some(kind) = kind.meta_kind() {
+            let result = if kind == InstallKind::LiteLoader {
+                loaders::liteloader::list_versions(&minecraft, &cancel)
+            } else if let Some(kind) = kind.meta_kind() {
                 loaders::list_loader_versions(kind, &minecraft, &cancel)
             } else {
                 forge::list_versions(kind.forge_kind().unwrap(), &minecraft, &cancel).map(
@@ -218,6 +467,18 @@ impl Launcher {
         instance_id: String,
     ) {
         let optifine = self.optifine.selected.clone();
+        let extra_lite = self.optifine.lite.clone();
+        let companions = [&self.optifine.api, &self.optifine.bridge]
+            .into_iter()
+            .filter(|state| {
+                state.target.as_ref().is_some_and(|(mc, loader)| {
+                    mc == &minecraft
+                        && ((kind == InstallKind::Fabric && loader == "fabric")
+                            || (kind == InstallKind::Quilt && loader == "quilt"))
+                })
+            })
+            .filter_map(|state| state.selected.clone())
+            .collect::<Vec<_>>();
         let java = self.settings.java_path.clone().or_else(|| {
             let version = metadata::resolve_version(&self.settings.game_root, &minecraft).ok()?;
             let major = version["javaVersion"]["majorVersion"].as_u64().unwrap_or(8);
@@ -242,7 +503,7 @@ impl Launcher {
             self.page = super::Page::Settings;
             return;
         }
-        let Some((tx, cancel)) = self.start_download_job(
+        let Some((tx, _cancel)) = self.start_download_job(
             &format!("正在安装 {} {loader}", kind.label()),
             Some(instance_id.clone()),
         ) else {
@@ -255,11 +516,66 @@ impl Launcher {
             .join(&instance_id)
             .join(format!("{instance_id}.json"))
             .exists();
-        std::thread::spawn(move || {
+        let registration = loaders::RetryRegistration::default();
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
             let progress = |p| {
                 let _ = tx.send(Event::Progress(p));
             };
-            let result = if let Some(kind) = kind.meta_kind() {
+            let mut parts = if kind == InstallKind::LiteLoader && optifine.is_some() {
+                vec![
+                    "安装 OptiFine 与 Minecraft".into(),
+                    "安装 LiteLoader".into(),
+                ]
+            } else {
+                vec![format!("安装 {} 与 Minecraft", kind.label())]
+            };
+            if extra_lite.is_some() && kind != InstallKind::LiteLoader {
+                parts.push("安装 LiteLoader".into());
+            }
+            parts.push("登记实例与启动设置".into());
+            parts.extend(
+                companions
+                    .iter()
+                    .map(|entry| format!("安装 {}", entry.name)),
+            );
+            if optifine.is_some() && kind != InstallKind::LiteLoader {
+                parts.push("安装 OptiFine".into());
+            }
+            let _ = tx.send(Event::TaskPlan(parts));
+            let mut part = 0usize;
+            let _ = tx.send(Event::TaskPart(part));
+            let result = if kind == InstallKind::LiteLoader {
+                let parent = optifine
+                    .as_ref()
+                    .map(|entry| {
+                        optifine::ensure_optifine(
+                            &root,
+                            entry,
+                            java.as_deref().unwrap_or(std::path::Path::new("java")),
+                            &Platform::current(),
+                            &cancel,
+                            progress,
+                        )
+                    })
+                    .transpose();
+                parent.and_then(|parent| {
+                    if parent.is_some() {
+                        let _ = tx.send(Event::TaskPartDone(part));
+                        part += 1;
+                        let _ = tx.send(Event::TaskPart(part));
+                    }
+                    loaders::liteloader::install_liteloader(
+                        &root,
+                        &minecraft,
+                        &loader,
+                        parent.as_deref(),
+                        &Platform::current(),
+                        &cancel,
+                        progress,
+                    )
+                })
+            } else if let Some(kind) = kind.meta_kind() {
                 loaders::install_loader(
                     &root,
                     kind,
@@ -282,22 +598,72 @@ impl Launcher {
                 )
             };
             let result = result.and_then(|id| {
-                install::register_instance_id(
-                    &root,
-                    &id,
-                    &instance_id,
-                    &Platform::current(),
-                    &cancel,
-                )
+                let _ = tx.send(Event::TaskPartDone(part));
+                part += 1;
+                if kind != InstallKind::LiteLoader {
+                    if let Some(lite) = &extra_lite {
+                        let _ = tx.send(Event::TaskPart(part));
+                        let installed = loaders::liteloader::install_liteloader(
+                            &root,
+                            &minecraft,
+                            lite,
+                            Some(&id),
+                            &Platform::current(),
+                            &cancel,
+                            progress,
+                        )?;
+                        let _ = tx.send(Event::TaskPartDone(part));
+                        part += 1;
+                        return Ok(installed);
+                    }
+                }
+                Ok(id)
+            });
+            let result = result.and_then(|id| {
+                let _ = tx.send(Event::TaskPart(part));
+                registration.register(&root, &id, &instance_id, &Platform::current(), &cancel)
             });
             let result = result.and_then(|id| {
                 if !existed {
                     config::initialize_instance_settings(&root, &id, policy)
                         .context("新版本已登记，但默认隔离设置未保存")?;
                 }
+                let _ = tx.send(Event::TaskPartDone(part));
+                part += 1;
+                let mod_loader = match kind {
+                    InstallKind::Fabric => "fabric",
+                    InstallKind::Quilt => "quilt",
+                    _ => "",
+                };
+                let game = config::instance_game_dir(&root, &id)?;
+                for entry in &companions {
+                    let _ = tx.send(Event::TaskPart(part));
+                    anyhow::ensure!(
+                        entry.game_versions.iter().any(|v| v == &minecraft)
+                            && entry.loaders.iter().any(|v| v == mod_loader),
+                        "组件不属于当前游戏和加载器版本"
+                    );
+                    let plan = resources::plan_mod_install(
+                        &game, &entry.id, &minecraft, mod_loader, &cancel,
+                    )?;
+                    resources::execute_install_plan(&plan, &cancel, progress)
+                        .context("加载器已建立，但组件 Mod 安装未完成")?;
+                    let _ = tx.send(Event::TaskPartDone(part));
+                    part += 1;
+                }
                 if let Some(entry) = &optifine {
-                    optifine::install_forge_mod(&root, &id, entry, &loader, &cancel)
-                        .context("加载器实例已建立，但 OptiFine Mod 安装未完成")?;
+                    if kind != InstallKind::LiteLoader {
+                        let _ = tx.send(Event::TaskPart(part));
+                    }
+                    if kind == InstallKind::Fabric {
+                        optifine::install_fabric_mod(&root, &id, entry, &cancel)?;
+                    } else if kind != InstallKind::LiteLoader {
+                        optifine::install_forge_mod(&root, &id, entry, &loader, &cancel)
+                            .context("加载器实例已建立，但 OptiFine Mod 安装未完成")?;
+                    }
+                    if kind != InstallKind::LiteLoader {
+                        let _ = tx.send(Event::TaskPartDone(part));
+                    }
                 }
                 Ok(id)
             });
@@ -308,7 +674,7 @@ impl Launcher {
         });
     }
     fn install_named_vanilla(&mut self, minecraft: String, instance_id: String) {
-        let Some((tx, cancel)) = self.start_download_job(
+        let Some((tx, _cancel)) = self.start_download_job(
             &format!("正在安装 {instance_id}"),
             Some(instance_id.clone()),
         ) else {
@@ -331,7 +697,15 @@ impl Launcher {
             .join(&instance_id)
             .join(format!("{instance_id}.json"))
             .exists();
-        std::thread::spawn(move || {
+        let registration = loaders::RetryRegistration::default();
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
+            let _ = tx.send(Event::TaskPlan(if existed {
+                vec!["安装 Minecraft 与实例".into()]
+            } else {
+                vec!["安装 Minecraft 与实例".into(), "初始化启动设置".into()]
+            }));
+            let _ = tx.send(Event::TaskPart(0));
             let progress = |p| {
                 let _ = tx.send(Event::Progress(p));
             };
@@ -339,7 +713,7 @@ impl Launcher {
                 install::install_version(&root, &minecraft, &Platform::current(), &cancel, progress)
                     .map(|()| minecraft)
             } else {
-                install::install_vanilla_instance(
+                registration.vanilla(
                     &root,
                     &minecraft,
                     &instance_id,
@@ -349,9 +723,12 @@ impl Launcher {
                 )
             };
             let result = result.and_then(|id| {
+                let _ = tx.send(Event::TaskPartDone(0));
                 if !existed {
+                    let _ = tx.send(Event::TaskPart(1));
                     config::initialize_instance_settings(&root, &id, policy)
                         .context("新版本已登记，但默认隔离设置未保存")?;
+                    let _ = tx.send(Event::TaskPartDone(1));
                 }
                 Ok(id)
             });
@@ -373,7 +750,7 @@ impl Launcher {
             self.page = super::Page::Settings;
             return;
         };
-        let Some((tx, cancel)) = self.start_download_job(
+        let Some((tx, _cancel)) = self.start_download_job(
             &format!("正在安装 {instance_id}"),
             Some(instance_id.clone()),
         ) else {
@@ -385,8 +762,15 @@ impl Launcher {
         }
         let root = self.settings.game_root.clone();
         let policy = self.settings.default_isolation;
-        std::thread::spawn(move || {
-            let result = optifine::install_optifine(
+        let registration = loaders::RetryRegistration::default();
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
+            let _ = tx.send(Event::TaskPlan(vec![
+                "安装 OptiFine 与 Minecraft".into(),
+                "登记实例与启动设置".into(),
+            ]));
+            let _ = tx.send(Event::TaskPart(0));
+            let result = optifine::ensure_optifine(
                 &root,
                 &entry,
                 &java,
@@ -397,16 +781,13 @@ impl Launcher {
                 },
             )
             .and_then(|parent| {
-                install::register_instance_id(
-                    &root,
-                    &parent,
-                    &instance_id,
-                    &Platform::current(),
-                    &cancel,
-                )
+                let _ = tx.send(Event::TaskPartDone(0));
+                let _ = tx.send(Event::TaskPart(1));
+                registration.register(&root, &parent, &instance_id, &Platform::current(), &cancel)
             })
             .and_then(|id| {
                 config::initialize_instance_settings(&root, &id, policy)?;
+                let _ = tx.send(Event::TaskPartDone(1));
                 Ok(id)
             });
             let _ = tx.send(match result {
@@ -468,7 +849,7 @@ impl Launcher {
                     Vec2::new(rect.width() - 109.0, 30.0),
                 );
                 ui.scope(|ui| {
-                    ui.add_enabled_ui(self.busy.is_none(), |ui| {
+                    ui.add_enabled_ui(self.game_pid.is_none(), |ui| {
                         if ui
                             .place(
                                 field,
@@ -496,11 +877,19 @@ impl Launcher {
             }
             self.optifine_card(ui, &minecraft);
             ui.add_space(12.0);
-            egui::CollapsingHeader::new(RichText::new("更多组件（Quilt）").size(12.0).color(MUTED))
-                .id_salt("additional-install-components")
-                .show(ui, |ui| {
-                    self.install_component_card(ui, InstallKind::Quilt, &minecraft, &mut open);
-                });
+            self.companion_card(ui, &minecraft, false);
+            self.companion_card(ui, &minecraft, true);
+            egui::CollapsingHeader::new(
+                RichText::new("更多组件（Quilt、LiteLoader）")
+                    .size(12.0)
+                    .color(MUTED),
+            )
+            .id_salt("additional-install-components")
+            .show(ui, |ui| {
+                self.install_component_card(ui, InstallKind::Quilt, &minecraft, &mut open);
+                ui.add_space(12.0);
+                self.install_component_card(ui, InstallKind::LiteLoader, &minecraft, &mut open);
+            });
             let validation = self.install_selection_validation(&minecraft);
             if let Err(error) = &validation {
                 ui.add_space(8.0);
@@ -541,31 +930,63 @@ impl Launcher {
                         .is_some_and(|forge| entry.compatible_forge(minecraft, forge)),
                     "OptiFine 仅兼容官方列表指定的 Forge 版本"
                 ),
+                Some(InstallKind::Fabric) => anyhow::ensure!(
+                    self.optifine
+                        .bridge
+                        .selected
+                        .as_ref()
+                        .is_some_and(|v| v.game_versions.iter().any(|mc| mc == minecraft)),
+                    "OptiFine 与 Fabric 组合需要选择对应版本的 OptiFabric"
+                ),
                 _ => anyhow::bail!("当前选择的加载器不能与 OptiFine 自动组合，请取消其中一项"),
             }
         }
-        let source_id = if let (Some(kind), Some(version)) =
-            (self.loader_kind, self.loader_version.as_deref())
-        {
-            kind.default_id(minecraft, version)
-        } else if let Some(entry) = &self.optifine.selected {
-            entry.id()
-        } else {
-            minecraft.to_owned()
-        };
+        if self.optifine.lite.is_some() {
+            anyhow::ensure!(
+                self.loader_kind
+                    .is_none_or(|kind| kind == InstallKind::Forge),
+                "LiteLoader 仅能与原版、Forge 或旧版 OptiFine 组合"
+            );
+            anyhow::ensure!(
+                minecraft.starts_with("1.")
+                    && minecraft
+                        .split('.')
+                        .nth(1)
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .is_some_and(|minor| minor <= 12),
+                "此 Minecraft 版本没有 LiteLoader"
+            );
+        }
+        let source_id = self.selected_install_parent_id(minecraft);
         if self.loader_kind.is_some() && self.install_name == minecraft {
             anyhow::bail!("名称与原版相同，请为加载器实例使用独立名称");
         }
         install::validate_instance_id(&self.settings.game_root, &source_id, &self.install_name)
     }
 
+    fn selected_install_parent_id(&self, minecraft: &str) -> String {
+        let parent = if let (Some(kind), Some(version)) =
+            (self.loader_kind, self.loader_version.as_deref())
+        {
+            kind.default_id(minecraft, version)
+        } else if let Some(entry) = &self.optifine.selected {
+            entry.id()
+        } else {
+            minecraft.into()
+        };
+        if let Some(lite) = &self.optifine.lite {
+            format!("liteloader-{lite}-{parent}")
+        } else {
+            parent
+        }
+    }
+
     pub(super) fn install_footer(&mut self, ctx: &egui::Context) {
         let Some(minecraft) = self.download_selection.clone() else {
             return;
         };
-        let ready = self.busy.is_none()
-            && self.game_pid.is_none()
-            && self.install_selection_validation(&minecraft).is_ok();
+        let ready =
+            self.game_pid.is_none() && self.install_selection_validation(&minecraft).is_ok();
         let screen = ctx.content_rect();
         let center_x = (screen.left() + 135.0 + screen.right()) / 2.0;
         let size = Vec2::new(135.0, 42.0);
@@ -614,6 +1035,13 @@ impl Launcher {
         if clicked {
             if let (Some(kind), Some(version)) = (self.loader_kind, self.loader_version.clone()) {
                 self.install_selected_loader(kind, minecraft, version, self.install_name.clone());
+            } else if let Some(version) = self.optifine.lite.clone() {
+                self.install_selected_loader(
+                    InstallKind::LiteLoader,
+                    minecraft,
+                    version,
+                    self.install_name.clone(),
+                );
             } else if let Some(entry) = self.optifine.selected.clone() {
                 self.install_selected_optifine(entry, self.install_name.clone());
             } else {
@@ -630,7 +1058,11 @@ impl Launcher {
         open: &mut Option<InstallKind>,
     ) {
         let expanded = self.loader_expanded == Some(kind);
-        let selected = self.loader_kind == Some(kind);
+        let selected = if kind == InstallKind::LiteLoader {
+            self.optifine.lite.is_some()
+        } else {
+            self.loader_kind == Some(kind)
+        };
         component_frame().show(ui, |ui| {
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::click());
@@ -669,7 +1101,11 @@ impl Launcher {
                 132.0
             };
             let status = if selected {
-                self.loader_version.as_deref().unwrap_or("可以添加")
+                if kind == InstallKind::LiteLoader {
+                    self.optifine.lite.as_deref().unwrap_or("可以添加")
+                } else {
+                    self.loader_version.as_deref().unwrap_or("可以添加")
+                }
             } else if self
                 .version_lists
                 .loader_target
@@ -734,8 +1170,12 @@ impl Launcher {
                     .clicked()
                     && self.busy.is_none()
                 {
-                    self.loader_kind = None;
-                    self.loader_version = None;
+                    if kind == InstallKind::LiteLoader {
+                        self.optifine.lite = None;
+                    } else {
+                        self.loader_kind = None;
+                        self.loader_version = None;
+                    }
                     cleared = true;
                     if !self.install_name_edited {
                         self.install_name = minecraft.to_owned();
@@ -800,19 +1240,26 @@ impl Launcher {
                                     if ui
                                         .selectable_label(
                                             selected
-                                                && self.loader_version.as_deref()
-                                                    == Some(&version.version),
+                                                && (if kind == InstallKind::LiteLoader {
+                                                    self.optifine.lite.as_deref()
+                                                } else {
+                                                    self.loader_version.as_deref()
+                                                }) == Some(&version.version),
                                             label,
                                         )
                                         .clicked()
                                         && self.busy.is_none()
                                     {
-                                        self.loader_kind = Some(kind);
-                                        self.loader_version = Some(version.version.clone());
+                                        if kind == InstallKind::LiteLoader {
+                                            self.optifine.lite = Some(version.version.clone());
+                                        } else {
+                                            self.loader_kind = Some(kind);
+                                            self.loader_version = Some(version.version.clone());
+                                        }
                                         self.loader_expanded = None;
                                         if !self.install_name_edited {
                                             self.install_name =
-                                                kind.default_id(minecraft, &version.version);
+                                                self.selected_install_parent_id(minecraft);
                                         }
                                     }
                                 }
@@ -838,6 +1285,54 @@ fn component_frame() -> egui::Frame {
 mod optifine_ui_tests {
     use super::*;
     #[test]
+    fn companion_response_cannot_replace_another_game_or_cancelled_request() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.busy = Some("current".into());
+        app.optifine.api.generation = 4;
+        app.optifine.api.target = Some(("1.21.1".into(), "fabric".into()));
+        app.optifine.api.phase = Phase::Loading;
+        app.handle_optifine_list(OptiFineListEvent::Companion {
+            generation: 3,
+            minecraft: "1.21.1".into(),
+            loader: "fabric".into(),
+            bridge: false,
+            result: Err(("stale".into(), false)),
+        });
+        assert!(app.busy.is_some());
+        assert!(matches!(app.optifine.api.phase, Phase::Loading));
+        app.handle_optifine_list(OptiFineListEvent::Companion {
+            generation: 4,
+            minecraft: "1.21.1".into(),
+            loader: "fabric".into(),
+            bridge: false,
+            result: Err(("cancelled".into(), true)),
+        });
+        assert!(app.busy.is_none());
+        assert!(matches!(app.optifine.api.phase, Phase::Cancelled));
+    }
+    #[test]
+    fn liteloader_is_independent_of_forge_and_invalid_primary_combinations_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.loader_kind = Some(InstallKind::Forge);
+        app.loader_version = Some("14.23.5.2860".into());
+        app.optifine.lite = Some("1.12.2-SNAPSHOT".into());
+        app.install_name = "Combined".into();
+        assert_eq!(
+            app.selected_install_parent_id("1.12.2"),
+            "liteloader-1.12.2-SNAPSHOT-1.12.2-forge-14.23.5.2860"
+        );
+        assert!(app.install_selection_validation("1.12.2").is_ok());
+        app.loader_kind = Some(InstallKind::Fabric);
+        assert!(app.install_selection_validation("1.12.2").is_err());
+        app.loader_kind = None;
+        assert_eq!(
+            app.selected_install_parent_id("1.12.2"),
+            "liteloader-1.12.2-SNAPSHOT-1.12.2"
+        );
+    }
+    #[test]
     fn optifine_list_late_duplicate_and_cancel_results_keep_their_request_identity() {
         let root = tempfile::tempdir().unwrap();
         let mut app = super::super::event_tests::fixture(root.path());
@@ -845,7 +1340,7 @@ mod optifine_ui_tests {
         app.optifine.generation = 2;
         app.optifine.minecraft = Some("1.21.1".into());
         app.optifine.phase = Phase::Loading;
-        app.handle_optifine_list(OptiFineListEvent {
+        app.handle_optifine_list(OptiFineListEvent::OptiFine {
             generation: 1,
             minecraft: "1.21.1".into(),
             result: Err(("old failure".into(), false)),
@@ -853,7 +1348,7 @@ mod optifine_ui_tests {
         assert!(app.busy.is_some());
         assert!(matches!(app.optifine.phase, Phase::Loading));
         app.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        app.handle_optifine_list(OptiFineListEvent {
+        app.handle_optifine_list(OptiFineListEvent::OptiFine {
             generation: 2,
             minecraft: "1.21.1".into(),
             result: Err(("real network error".into(), false)),
@@ -863,7 +1358,7 @@ mod optifine_ui_tests {
             matches!(&app.optifine.phase,Phase::Failed(message) if message=="real network error")
         );
         app.busy = Some("different task".into());
-        app.handle_optifine_list(OptiFineListEvent {
+        app.handle_optifine_list(OptiFineListEvent::OptiFine {
             generation: 2,
             minecraft: "1.21.1".into(),
             result: Ok(Vec::new()),
@@ -871,7 +1366,7 @@ mod optifine_ui_tests {
         assert!(app.busy.is_some());
         app.optifine.generation = 3;
         app.optifine.phase = Phase::Loading;
-        app.handle_optifine_list(OptiFineListEvent {
+        app.handle_optifine_list(OptiFineListEvent::OptiFine {
             generation: 3,
             minecraft: "1.21.1".into(),
             result: Err(("cancelled".into(), true)),

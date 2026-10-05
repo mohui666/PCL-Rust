@@ -282,8 +282,38 @@ pub fn build_plan_with_settings_and_viewport(
     java_major: u32,
     launcher_size: Option<(u32, u32)>,
 ) -> Result<LaunchPlan> {
+    build_plan_with_overrides(
+        options,
+        session,
+        platform,
+        settings,
+        java_major,
+        LaunchOverrides {
+            launcher_size,
+            server: None,
+        },
+    )
+}
+#[derive(Default)]
+pub struct LaunchOverrides<'a> {
+    pub launcher_size: Option<(u32, u32)>,
+    pub server: Option<&'a str>,
+}
+pub fn build_plan_with_overrides(
+    options: &LaunchOptions,
+    session: &Session,
+    platform: &Platform,
+    settings: &crate::config::Settings,
+    java_major: u32,
+    overrides: LaunchOverrides<'_>,
+) -> Result<LaunchPlan> {
+    let launcher_size = overrides.launcher_size;
     crate::config::validate_settings(settings)?;
     let mut instance = crate::config::load_instance_settings(&options.root, &options.version_id)?;
+    if let Some(server) = overrides.server {
+        crate::config::parse_server_address(server)?;
+        instance.server = server.into();
+    }
     // Selection already resolved the instance's Java mode. Do not replace the
     // inspected executable if the saved path changed while selection was running.
     instance.java_path = None;
@@ -1603,5 +1633,42 @@ mod tests {
             Some((0, 1))
         )
         .is_err());
+    }
+    #[test]
+    fn homepage_server_override_is_ephemeral_for_legacy_and_quick_play() {
+        for modern in [false, true] {
+            let metadata = if modern {
+                json!({"mainClass":"Main","arguments":{"game":[{"rules":[{"action":"allow","features":{"is_quick_play_multiplayer":true}}],"value":["--quickPlayMultiplayer","${quickPlayMultiplayer}"]}]}})
+            } else {
+                json!({"mainClass":"Main","minecraftArguments":"--username ${auth_player_name}"})
+            };
+            let (_root, options, session, platform) = fixture(metadata);
+            let instance = crate::config::InstanceSettings {
+                server: "saved.example.org:25566".into(),
+                ..Default::default()
+            };
+            crate::config::save_instance_settings(&options.root, "test", &instance).unwrap();
+            let path = crate::config::instance_settings_path(&options.root, "test").unwrap();
+            let before = fs::read(&path).unwrap();
+            let plan = build_plan_with_overrides(
+                &options,
+                &session,
+                &platform,
+                &Default::default(),
+                21,
+                LaunchOverrides {
+                    launcher_size: None,
+                    server: Some("once.example.org:25565"),
+                },
+            )
+            .unwrap();
+            assert!(plan.args.contains(&if modern {
+                "once.example.org:25565".into()
+            } else {
+                "once.example.org".into()
+            }));
+            assert_eq!(plan.args.contains(&"--quickPlayMultiplayer".into()), modern);
+            assert_eq!(fs::read(path).unwrap(), before);
+        }
     }
 }

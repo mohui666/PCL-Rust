@@ -2,9 +2,54 @@ use super::{Launcher, Page};
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, RichText, Vec2};
-use std::{path::PathBuf, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 impl Launcher {
+    fn normalize_visible_navigation(&mut self, ctx: &egui::Context) {
+        let page_key = match self.page {
+            Page::Launch => "",
+            Page::Download => "download",
+            Page::Settings => "setup",
+            Page::More => "more",
+        };
+        if !super::appearance_ui::feature_visible(ctx, &self.settings, page_key) {
+            self.page = Page::Launch;
+            self.version_view = false;
+            self.version_tools = false;
+        }
+        let (keys, current): (&[&str], usize) = match self.page {
+            Page::Settings => (
+                &["setup_launch", "setup_ui", "setup_system"],
+                self.settings_tab,
+            ),
+            Page::More => (&["help", "about"], self.more.tab),
+            _ => (&[], 0),
+        };
+        if !keys.is_empty()
+            && keys
+                .get(current)
+                .is_none_or(|key| !super::appearance_ui::feature_visible(ctx, &self.settings, key))
+        {
+            if let Some(next) = keys
+                .iter()
+                .position(|key| super::appearance_ui::feature_visible(ctx, &self.settings, key))
+            {
+                if self.page == Page::Settings {
+                    self.settings_tab = next;
+                } else {
+                    self.more_navigation(next);
+                }
+            } else {
+                self.page = Page::Launch;
+                self.version_view = false;
+                self.version_tools = false;
+            }
+        }
+        if !super::appearance_ui::feature_visible(ctx, &self.settings, "version") {
+            self.version_view = false;
+            self.version_tools = false;
+        }
+    }
     pub(super) fn settings_page(&mut self, ui: &mut egui::Ui) {
         if self.settings_tab == 1 {
             self.appearance_page(ui);
@@ -15,8 +60,7 @@ impl Launcher {
         }
     }
     pub(super) fn floating_entries(&mut self, ctx: &egui::Context) {
-        let task_visible =
-            !self.task_view && self.task.as_ref().is_some_and(|task| !task.is_finished());
+        let task_visible = !self.task_view && (self.task.is_some() || self.task_hub.has_history());
         let game_visible = self.game_pid.is_some();
         let music = self.appearance.music_info();
         if !task_visible && !game_visible && music.is_none() {
@@ -93,6 +137,7 @@ impl Launcher {
     }
 
     pub(super) fn title_bar(&mut self, ctx: &egui::Context) {
+        self.normalize_visible_navigation(ctx);
         egui::TopBottomPanel::top("title")
             .exact_height(48.0)
             .frame(egui::Frame::NONE)
@@ -193,27 +238,52 @@ impl Launcher {
                         }
                     }
                 } else {
-                    self.assets.icon(
-                        ui,
-                        "logo",
-                        egui::Rect::from_min_size(
-                            rect.min + Vec2::new(19.0, 15.5),
-                            Vec2::new(39.0, 17.0),
-                        ),
-                        Color32::WHITE,
-                    );
                     // 2.13.1.1 HiddenRefresh unconditionally collapses the Link tab.
                     // The full third-party product name remains in the window title and About.
-                    let start = rect.center().x - 176.0;
-                    for (i, (page, text, icon)) in [
+                    let mut items = vec![
                         (Page::Launch, "启动", "launch"),
                         (Page::Download, "下载", "download"),
                         (Page::Settings, "设置", "settings"),
                         (Page::More, "更多", "more"),
-                    ]
-                    .into_iter()
-                    .enumerate()
+                    ];
+                    items.retain(|(page, _, _)| {
+                        super::appearance_ui::feature_visible(
+                            ctx,
+                            &self.settings,
+                            match page {
+                                Page::Launch => "launch",
+                                Page::Download => "download",
+                                Page::Settings => "setup",
+                                Page::More => "more",
+                            },
+                        )
+                    });
+                    if !items.iter().any(|(page, _, _)| *page == self.page) {
+                        self.page = Page::Launch;
+                    }
+                    let start = if self.settings.ui_title_mode == 0 && self.settings.ui_title_left {
+                        13.0
+                    } else {
+                        rect.center().x - items.len() as f32 * 44.0
+                    };
+                    let title_rect = custom_title_rect(rect, start, self.settings.ui_title_mode);
+                    match self
+                        .appearance
+                        .paint_custom_title(ui, title_rect, &self.settings)
                     {
+                        Ok(true) => (),
+                        Ok(false) => self.assets.icon(
+                            ui,
+                            "logo",
+                            egui::Rect::from_min_size(
+                                rect.min + Vec2::new(19.0, 15.5),
+                                Vec2::new(39.0, 17.0),
+                            ),
+                            Color32::WHITE,
+                        ),
+                        Err(error) => self.error = Some(format!("标题栏绘制失败：{error:#}")),
+                    }
+                    for (i, (page, text, icon)) in items.into_iter().enumerate() {
                         let r = egui::Rect::from_min_size(
                             egui::pos2(start + i as f32 * 88.0 + 5.0, rect.top() + 10.5),
                             Vec2::new(78.0, 27.0),
@@ -273,6 +343,7 @@ impl Launcher {
                     if response.clicked() {
                         if close {
                             self.cancel.store(true, Ordering::Relaxed);
+                            self.jobs.cancel_all();
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         } else {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -395,13 +466,15 @@ impl Launcher {
                         egui::pos2(rect.left() + 20.0, small_y),
                         Vec2::new(125.0, 35.0),
                     );
-                    if ui_style::outline_button(ui, r, "版本选择", None, false, true).clicked()
+                    if super::appearance_ui::feature_visible(ui.ctx(), &self.settings, "version")
+                        && ui_style::outline_button(ui, r, "版本选择", None, false, true).clicked()
                     {
                         self.version_view = !self.version_view;
                         self.refresh_versions();
                     }
                     let r = r.translate(Vec2::new(135.0, 0.0));
-                    if ui_style::outline_button(ui, r, "版本设置", None, false, true).clicked()
+                    if super::appearance_ui::feature_visible(ui.ctx(), &self.settings, "version")
+                        && ui_style::outline_button(ui, r, "版本设置", None, false, true).clicked()
                     {
                         self.version_tools = true;
                         self.tools_tab = 0;
@@ -444,7 +517,21 @@ impl Launcher {
                 Color32::from_gray(140),
             );
         }
-        for (i, &(text, icon, tab, enabled)) in rows.iter().enumerate() {
+        let mut visible_index = 0;
+        for &(text, icon, tab, enabled) in rows {
+            let key = match (self.page, tab) {
+                (Page::Settings, 0) => "setup_launch",
+                (Page::Settings, 1) => "setup_ui",
+                (Page::Settings, 2) => "setup_system",
+                (Page::More, 0) => "help",
+                (Page::More, 1) => "about",
+                _ => "",
+            };
+            if !super::appearance_ui::feature_visible(ui.ctx(), &self.settings, key) {
+                continue;
+            }
+            let i = visible_index;
+            visible_index += 1;
             let gap = if self.page == Page::Download && i > 0 {
                 38.0
             } else {
@@ -571,18 +658,6 @@ impl Launcher {
                 roots.push(path.clone());
             }
         }
-        let home =
-            std::env::var_os(if cfg!(windows) { "APPDATA" } else { "HOME" }).map(PathBuf::from);
-        if let Some(home) = home {
-            let vanilla = if cfg!(windows) {
-                home.join(".minecraft")
-            } else {
-                home.join("Library/Application Support/minecraft")
-            };
-            if vanilla.is_dir() && !roots.contains(&vanilla) {
-                roots.push(vanilla);
-            }
-        }
         let mut selected = None;
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -608,14 +683,32 @@ impl Launcher {
                                 Vec2::new(rect.width(), 40.0),
                                 egui::Sense::click(),
                             );
-                            let title = if i == 0 {
-                                "当前文件夹".to_owned()
-                            } else {
-                                root.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned()
-                            };
+                            let title = pcl_core::config::game_root_label(&self.settings, root);
+                            response.context_menu(|ui| {
+                                let can_edit =
+                                    !self.jobs.conflicts_with(root) && self.game_pid.is_none();
+                                if ui
+                                    .add_enabled(can_edit, egui::Button::new("重命名"))
+                                    .clicked()
+                                {
+                                    self.folder_ui.name = title.clone();
+                                    self.folder_ui.pending = Some((root.clone(), false));
+                                    ui.close();
+                                }
+                                if ui
+                                    .add_enabled(can_edit, egui::Button::new("从列表移除"))
+                                    .clicked()
+                                {
+                                    self.folder_ui.pending = Some((root.clone(), true));
+                                    ui.close();
+                                }
+                                if ui.button("打开文件夹").clicked() {
+                                    if let Err(e) = crate::process::open_folder(root) {
+                                        self.error = Some(e.to_string());
+                                    }
+                                    ui.close();
+                                }
+                            });
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &title)
                             });
@@ -662,8 +755,11 @@ impl Launcher {
                                     .color(Color32::from_gray(140)),
                             );
                         });
-                        for (label, import) in [("添加已有文件夹", false), ("导入整合包", true)]
-                        {
+                        for (label, import) in [
+                            ("新建文件夹", false),
+                            ("添加已有文件夹", false),
+                            ("导入整合包", true),
+                        ] {
                             let (r, response) = ui.allocate_exact_size(
                                 Vec2::new(rect.width(), 34.0),
                                 egui::Sense::click(),
@@ -693,7 +789,9 @@ impl Launcher {
                             );
                             if response.clicked() && self.busy.is_none() && self.game_pid.is_none()
                             {
-                                if import {
+                                if label == "新建文件夹" {
+                                    self.new_game_folder();
+                                } else if import {
                                     self.page = Page::Download;
                                     self.download_tab = 2;
                                     self.version_view = false;
@@ -733,6 +831,14 @@ impl Launcher {
 }
 
 /// MyExtraButton.xaml: Color3 circle, Color4 hover, Color8 glyph, 12-DIP inset.
+fn custom_title_rect(rect: egui::Rect, navigation_start: f32, mode: u8) -> egui::Rect {
+    let min = rect.min + Vec2::new(if mode == 3 { 7.0 } else { 18.0 }, 6.0);
+    egui::Rect::from_min_size(
+        min,
+        Vec2::new((navigation_start - 5.0 - min.x).max(0.0), 36.0),
+    )
+}
+
 fn extra_button(
     ui: &mut egui::Ui,
     assets: &crate::ui_style::Assets,
@@ -793,4 +899,45 @@ fn extra_button(
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response.on_hover_text(label)
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    #[test]
+    fn hiding_active_subpages_falls_back_and_f12_restores_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let ctx = egui::Context::default();
+        app.page = Page::Settings;
+        app.settings_tab = 1;
+        app.settings.ui_hidden_pages = vec!["setup_ui".into()];
+        app.normalize_visible_navigation(&ctx);
+        assert_eq!(app.settings_tab, 0);
+        app.settings
+            .ui_hidden_pages
+            .extend(["setup_launch".into(), "setup_system".into()]);
+        app.normalize_visible_navigation(&ctx);
+        assert!(app.page == Page::Launch);
+        app.page = Page::More;
+        app.more.tab = 1;
+        app.settings.ui_hidden_pages.push("about".into());
+        app.normalize_visible_navigation(&ctx);
+        assert_eq!(app.more.tab, 0);
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("pcl-reveal-hidden"), true));
+        app.page = Page::Settings;
+        app.settings_tab = 1;
+        app.normalize_visible_navigation(&ctx);
+        assert!(app.page == Page::Settings);
+        assert_eq!(app.settings_tab, 1);
+    }
+    #[test]
+    fn title_uses_all_available_space_without_overlapping_navigation() {
+        let rect = egui::Rect::from_min_size(egui::pos2(40.0, 20.0), Vec2::new(900.0, 48.0));
+        let title = custom_title_rect(rect, 330.0, 2);
+        assert!(title.width() > 150.0);
+        assert_eq!(title.right(), 325.0);
+        assert_eq!(title.height(), 36.0);
+        assert_eq!(custom_title_rect(rect, 45.0, 2).width(), 0.0);
+    }
 }

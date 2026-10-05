@@ -15,6 +15,10 @@ pub enum LauncherUpdateMode {
 #[serde(default)]
 pub struct SystemSettings {
     pub auto_chinese: bool,
+    pub debug_mode: bool,
+    pub debug_animation: u8,
+    pub debug_delay: bool,
+    pub debug_skip_copy: bool,
     pub notify_release: bool,
     pub notify_snapshot: bool,
     pub launcher_update: LauncherUpdateMode,
@@ -27,6 +31,10 @@ impl Default for SystemSettings {
     fn default() -> Self {
         Self {
             auto_chinese: true,
+            debug_mode: false,
+            debug_animation: 9,
+            debug_delay: false,
+            debug_skip_copy: false,
             notify_release: false,
             notify_snapshot: false,
             launcher_update: LauncherUpdateMode::Notify,
@@ -39,6 +47,7 @@ impl Default for SystemSettings {
 }
 impl SystemSettings {
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.debug_animation <= 30, "动画速度设置无效");
         anyhow::ensure!(
             !self.cache_dir.as_ref().is_some_and(|p| !p.is_absolute()),
             "缓存文件夹必须是绝对路径"
@@ -71,6 +80,10 @@ use std::{
     sync::atomic::AtomicBool,
     time::Duration,
 };
+
+#[path = "system_debug.rs"]
+mod debug;
+pub use debug::{animation_speed, configure_debug, debug_delay, debug_skip_copy, DebugPhase};
 
 pub const RELEASES_PAGE: &str = "https://github.com/mohui666/PCL-Rust/releases";
 const RELEASE_API: &str = "https://api.github.com/repos/mohui666/PCL-Rust/releases/latest";

@@ -7,10 +7,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock, RwLock,
-    },
+    sync::{atomic::AtomicBool, Mutex, OnceLock, RwLock},
     time::{Duration, Instant},
 };
 
@@ -136,6 +133,17 @@ pub(crate) fn request(
     verified: bool,
     cancel: &AtomicBool,
 ) -> Result<Response> {
+    request_range(client, original, metadata, verified, cancel, None)
+}
+pub(crate) fn request_range(
+    client: &Client,
+    original: Url,
+    metadata: bool,
+    verified: bool,
+    cancel: &AtomicBool,
+    range: Option<(u64, u64)>,
+) -> Result<Response> {
+    crate::system::debug_delay(cancel, crate::system::DebugPhase::Request)?;
     let prefs = options();
     let source = if metadata {
         prefs.version_source
@@ -165,9 +173,10 @@ pub(crate) fn request(
                 }))
                 .build()?
                 .get(url)
+                .headers(range_headers(range))
                 .send()
         } else {
-            let request = client.get(url);
+            let request = client.get(url).headers(range_headers(range));
             // Official-first falls back on a bounded slow request; official-only
             // preserves the publisher client's timeout for large artifacts.
             if source == SourcePreference::OfficialFirst {
@@ -200,44 +209,70 @@ pub(crate) fn request(
     bail!("{}", failures.join("；"))
 }
 
-struct RateState {
-    next: Instant,
-    speed: u32,
-}
-/// Shared aggregate budget across simultaneous launcher download workers.
-/// Cancellation is checked every 25 ms even at very low configured rates.
-pub(crate) fn throttle(bytes: usize, cancel: &AtomicBool) -> Result<()> {
-    let speed = options().speed_limit_kib;
-    if speed == 0 || bytes == 0 {
-        return Ok(());
-    }
-    static RATE: OnceLock<Mutex<RateState>> = OnceLock::new();
-    let now = Instant::now();
-    let deadline = {
-        let mut state = RATE
-            .get_or_init(|| Mutex::new(RateState { next: now, speed }))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if state.speed != speed {
-            state.next = now;
-            state.speed = speed;
-        }
-        state.next =
-            state.next.max(now) + Duration::from_secs_f64(bytes as f64 / (speed as f64 * 1024.0));
-        state.next
-    };
-    while Instant::now() < deadline {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(crate::model::OperationCancelled.into());
-        }
-        if options().speed_limit_kib != speed {
-            break;
-        }
-        std::thread::sleep(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(25)),
+fn range_headers(range: Option<(u64, u64)>) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::ACCEPT_ENCODING,
+        reqwest::header::HeaderValue::from_static("identity"),
+    );
+    if let Some((first, last)) = range {
+        headers.insert(
+            reqwest::header::RANGE,
+            reqwest::header::HeaderValue::from_str(&format!("bytes={first}-{last}")).unwrap(),
         );
+    }
+    headers
+}
+
+struct RateState {
+    updated: Instant,
+    speed: u32,
+    tokens: f64,
+}
+impl RateState {
+    fn consume(&mut self, now: Instant, speed: u32, needed: usize) -> usize {
+        let rate = f64::from(speed) * 1024.0;
+        if self.speed != speed {
+            self.speed = speed;
+            self.tokens = 0.0;
+            self.updated = now;
+        }
+        self.tokens = (self.tokens
+            + now.saturating_duration_since(self.updated).as_secs_f64() * rate)
+            .min((rate * 0.05).max(1.0));
+        self.updated = now;
+        let used = needed.min(self.tokens.floor() as usize);
+        self.tokens -= used as f64;
+        used
+    }
+}
+/// Aggregate token budget. Waiting requests never reserve future capacity, so
+/// cancellation cannot leave seconds of unused debt for subsequent transfers.
+pub(crate) fn throttle(bytes: usize, cancel: &AtomicBool) -> Result<()> {
+    static RATE: OnceLock<Mutex<RateState>> = OnceLock::new();
+    let mut remaining = bytes;
+    while remaining > 0 {
+        crate::install::cancelled(cancel)?;
+        let speed = options().speed_limit_kib;
+        if speed == 0 {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let used = RATE
+            .get_or_init(|| {
+                Mutex::new(RateState {
+                    updated: now,
+                    speed,
+                    tokens: 0.0,
+                })
+            })
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .consume(now, speed, remaining);
+        remaining -= used;
+        if remaining > 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
     crate::install::cancelled(cancel)
 }
@@ -283,5 +318,24 @@ mod tests {
             &Url::parse("https://cdn.example/a").unwrap(),
             false
         ));
+    }
+    #[test]
+    fn waiting_transfers_never_reserve_future_rate_budget() {
+        let now = Instant::now();
+        let mut budget = RateState {
+            updated: now,
+            speed: 1,
+            tokens: 0.0,
+        };
+        for _ in 0..4 {
+            assert_eq!(budget.consume(now, 1, 65536), 0);
+        }
+        // All four callers may cancel. A fresh caller receives the next 50 ms,
+        // rather than inheriting 256 seconds of unconsumed reservations.
+        assert_eq!(
+            budget.consume(now + Duration::from_millis(50), 1, 65536),
+            51
+        );
+        assert!(budget.updated <= now + Duration::from_millis(50));
     }
 }

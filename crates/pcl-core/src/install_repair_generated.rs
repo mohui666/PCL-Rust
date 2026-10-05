@@ -201,6 +201,114 @@ fn publish(
     Ok(())
 }
 
+fn regenerate_optifine(
+    root: &Path,
+    version: &Value,
+    java_path: Option<&Path>,
+    platform: &Platform,
+    cancel: &AtomicBool,
+    progress: &(impl Fn(Progress) + Sync),
+    saved: &[(PathBuf, Vec<u8>)],
+) -> Result<()> {
+    let Some(receipt) = version.get("_pcl_optifine_install") else {
+        return Ok(());
+    };
+    let mut missing = Vec::new();
+    for artifact in library_artifacts(version, platform)? {
+        if artifact.relative_path.starts_with("libraries/optifine") && artifact.url.is_empty() {
+            expected_hash(artifact.sha1.as_deref())?.context("OptiFine 生成物缺少原安装 SHA1")?;
+            artifact.size.context("OptiFine 生成物缺少大小")?;
+            if !cache_valid(
+                &safe_target(root, &artifact.relative_path)?,
+                &artifact,
+                cancel,
+            )? {
+                missing.push(artifact);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let minecraft = version["_pcl_jar_id"]
+        .as_str()
+        .context("OptiFine 缺少原版来源")?;
+    validate_id(minecraft)?;
+    let filename = receipt["filename"]
+        .as_str()
+        .context("OptiFine 安装收据缺少文件名")?;
+    let installer_sha1 =
+        expected_hash(receipt["sha1"].as_str())?.context("OptiFine 安装收据缺少安装器 SHA1")?;
+    let entry = crate::loaders::optifine::list_versions(minecraft, cancel)?
+        .into_iter()
+        .find(|entry| entry.filename == filename)
+        .context("原 OptiFine 安装器已不在发行方列表中，保留当前文件")?;
+    super::repair_files(root, minecraft, platform, cancel, progress)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".pcl-repair-optifine-")
+        .tempdir_in(root)?;
+    seed_parent(root, stage.path(), minecraft, platform, cancel)?;
+    let runtime = if let Some(java) = java_path {
+        java.to_owned()
+    } else {
+        java::discover_java_with_cancel(cancel)?
+            .runtimes
+            .into_iter()
+            .filter(|runtime| runtime.architecture == platform.arch)
+            .max_by_key(|runtime| runtime.major)
+            .context("恢复 OptiFine 需要选择 Java")?
+            .path
+    };
+    let id = crate::loaders::optifine::install_optifine(
+        stage.path(),
+        &entry,
+        &runtime,
+        platform,
+        cancel,
+        progress,
+    )?;
+    let rebuilt = crate::metadata::resolve_version(stage.path(), &id)?;
+    ensure!(
+        rebuilt
+            .pointer("/_pcl_optifine_install/sha1")
+            .and_then(Value::as_str)
+            == Some(&installer_sha1),
+        "OptiFine 发行文件与原安装收据不同，未覆盖生成物"
+    );
+    publish_receipted_files(root, stage.path(), &missing, saved, cancel)
+}
+fn publish_receipted_files(
+    root: &Path,
+    stage: &Path,
+    files: &[Artifact],
+    saved: &[(PathBuf, Vec<u8>)],
+    cancel: &AtomicBool,
+) -> Result<()> {
+    for artifact in files {
+        ensure!(
+            cache_valid(
+                &safe_target(stage, &artifact.relative_path)?,
+                artifact,
+                cancel
+            )?,
+            "重建文件与原收据不符：{}",
+            artifact.relative_path.display()
+        );
+    }
+    unchanged(saved)?;
+    for artifact in files {
+        cancelled(cancel)?;
+        unchanged(saved)?;
+        store_verified(
+            root,
+            artifact,
+            &mut fs::File::open(safe_target(stage, &artifact.relative_path)?)?,
+            cancel,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn regenerate(
     root: &Path,
     id: &str,
@@ -212,6 +320,9 @@ pub(super) fn regenerate(
     cancelled(cancel)?;
     let saved = snapshots(root, id)?;
     let version = crate::metadata::resolve_version(root, id)?;
+    regenerate_optifine(
+        root, &version, java_path, platform, cancel, progress, &saved,
+    )?;
     let Some(plan) = plan(root, &version, platform, cancel)? else {
         return Ok(());
     };
@@ -283,6 +394,49 @@ mod tests {
             native: false,
             excludes: vec![],
         }
+    }
+    #[test]
+    fn generated_optifine_files_are_all_checked_before_any_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let json = br#"{"id":"custom"}"#;
+        put(root.path(), "versions/custom/custom.json", json);
+        let saved = snapshots(root.path(), "custom").unwrap();
+        let first = generated(b"verified");
+        let mut second = generated(b"other");
+        second.relative_path = "libraries/generated/second.jar".into();
+        put(root.path(), "libraries/generated/client.jar", b"user-old");
+        put(stage.path(), "libraries/generated/client.jar", b"verified");
+        put(stage.path(), "libraries/generated/second.jar", b"wrong");
+        assert!(publish_receipted_files(
+            root.path(),
+            stage.path(),
+            &[first.clone(), second.clone()],
+            &saved,
+            &AtomicBool::new(false)
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(root.path().join("libraries/generated/client.jar")).unwrap(),
+            b"user-old"
+        );
+        put(stage.path(), "libraries/generated/second.jar", b"other");
+        publish_receipted_files(
+            root.path(),
+            stage.path(),
+            &[first, second],
+            &saved,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(root.path().join("libraries/generated/client.jar")).unwrap(),
+            b"verified"
+        );
+        assert_eq!(
+            fs::read(root.path().join("versions/custom/custom.json")).unwrap(),
+            json
+        );
     }
     #[test]
     fn regenerated_outputs_require_original_receipt_before_replacing_any_file() {

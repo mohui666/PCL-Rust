@@ -20,6 +20,8 @@ pub(super) struct Node {
     pub(super) attrs: HashMap<String, String>,
     #[serde(default)]
     pub(super) children: Vec<Node>,
+    #[serde(default)]
+    pub(super) triggers: Vec<Node>,
 }
 impl Node {
     pub(super) fn attr(&self, key: &str) -> &str {
@@ -154,6 +156,12 @@ fn parse_node(node: roxmltree::Node<'_, '_>, depth: usize, count: &mut usize) ->
             | "MyTextBox"
             | "MyComboBox"
             | "MyComboBoxItem"
+            | "Trigger"
+            | "DataTrigger"
+            | "Style.Triggers"
+            | "TextBlock.Triggers"
+            | "MyButton.Triggers"
+            | "MyCheckBox.Triggers"
             | "StackPanel.Triggers"
             | "Grid.Triggers"
             | "Border.Triggers"
@@ -177,9 +185,6 @@ fn parse_node(node: roxmltree::Node<'_, '_>, depth: usize, count: &mut usize) ->
     ) {
         bail!("暂不支持的 XAML 元素：{tag}（未执行此内容）");
     }
-    if tag.ends_with(".Triggers") && node.children().any(|child| child.is_element()) {
-        bail!("暂不支持自动触发的 XAML 动画/事件（未执行此内容）");
-    }
     let mut attrs = HashMap::new();
     for attr in node.attributes() {
         let name = attr.name();
@@ -188,6 +193,12 @@ fn parse_node(node: roxmltree::Node<'_, '_>, depth: usize, count: &mut usize) ->
             "Loaded" | "Initialized" | "Unloaded" | "DataContext" | "Class" | "FactoryMethod"
         ) {
             bail!("不支持自动执行或对象构造属性：{name}");
+        }
+        if attr.value().starts_with("{Binding") {
+            parse_binding(attr.value())?;
+            if name == "Source" {
+                bail!("图片地址不能绑定输入或私有变量");
+            }
         }
         attrs.insert(
             name.strip_prefix("CustomEventService.")
@@ -223,21 +234,126 @@ fn parse_node(node: roxmltree::Node<'_, '_>, depth: usize, count: &mut usize) ->
                     tag: "Run".into(),
                     attrs: HashMap::from([("Text".into(), text.into())]),
                     children: vec![],
+                    triggers: vec![],
                 });
             }
         }
+    }
+    let mut triggers = Vec::new();
+    children.retain(|child| {
+        if child.tag.ends_with(".Triggers") {
+            triggers.extend(child.children.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for trigger in &triggers {
+        validate_trigger(trigger)?;
     }
     Ok(Node {
         tag: tag.into(),
         attrs,
         children,
+        triggers,
     })
+}
+
+#[derive(Debug)]
+struct Binding {
+    path: String,
+    element: Option<String>,
+    fallback: String,
+}
+fn parse_binding(text: &str) -> Result<Binding> {
+    let body = text
+        .strip_prefix("{Binding")
+        .and_then(|s| s.strip_suffix('}'))
+        .context("Binding 格式无效")?
+        .trim();
+    let mut binding = Binding {
+        path: String::new(),
+        element: None,
+        fallback: String::new(),
+    };
+    for (index, part) in body.split(',').map(str::trim).enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = part.split_once('=') {
+            let value = value.trim();
+            match key.trim() {
+                "Path" => binding.path = value.into(),
+                "ElementName" => binding.element = Some(value.into()),
+                "FallbackValue" => binding.fallback = value.into(),
+                "Mode" if value == "OneWay" => (),
+                _ => bail!("Binding 仅支持 Path、ElementName、FallbackValue 与单向模式"),
+            }
+        } else if index == 0 {
+            binding.path = part.into();
+        } else {
+            bail!("Binding 参数无效");
+        }
+    }
+    if binding.path.len() > 128
+        || binding
+            .element
+            .as_ref()
+            .is_some_and(|name| name.len() > 128)
+    {
+        bail!("Binding 名称过长");
+    }
+    Ok(binding)
+}
+fn validate_trigger(trigger: &Node) -> Result<()> {
+    match trigger.tag.as_str() {
+        "Trigger"
+            if matches!(
+                trigger.attr("Property"),
+                "IsMouseOver"
+                    | "IsPressed"
+                    | "IsChecked"
+                    | "Checked"
+                    | "Text"
+                    | "SelectedItem"
+                    | "IsEnabled"
+            ) => {}
+        "DataTrigger" => {
+            parse_binding(trigger.attr("Binding"))?;
+        }
+        _ => bail!("仅支持本地控件状态 Trigger 与只读 DataTrigger；不执行自动事件"),
+    }
+    for setter in &trigger.children {
+        if setter.tag != "Setter"
+            || !setter.children.is_empty()
+            || !setter.triggers.is_empty()
+            || !setter.attr("TargetName").is_empty()
+            || !matches!(
+                setter.attr("Property"),
+                "Visibility"
+                    | "Foreground"
+                    | "Background"
+                    | "Opacity"
+                    | "Text"
+                    | "Content"
+                    | "IsEnabled"
+                    | "Width"
+                    | "Height"
+                    | "FontSize"
+            )
+        {
+            bail!("Trigger 只能修改自身的显示、文本、颜色或尺寸；不能执行事件、读取文件或联网");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Default)]
 struct StaticResources {
     implicit: HashMap<String, HashMap<String, String>>,
     named: HashMap<String, HashMap<String, String>>,
+    implicit_triggers: HashMap<String, Vec<Node>>,
+    named_triggers: HashMap<String, Vec<Node>>,
     strings: HashMap<String, String>,
     templates: HashMap<String, Vec<Node>>,
     text: HashMap<String, String>,
@@ -299,8 +415,14 @@ fn materialize(
                             .attr("TargetType")
                             .strip_prefix("local:")
                             .unwrap_or(entry.attr("TargetType"));
+                        resources
+                            .implicit_triggers
+                            .insert(target.into(), entry.triggers.clone());
                         resources.implicit.insert(target.into(), attrs);
                     } else {
+                        resources
+                            .named_triggers
+                            .insert(entry.attr("Key").into(), entry.triggers.clone());
                         resources.named.insert(entry.attr("Key").into(), attrs);
                     }
                 }
@@ -313,12 +435,24 @@ fn materialize(
             }
         }
     }
+    let mut inherited_triggers = resources
+        .implicit_triggers
+        .get(&node.tag)
+        .cloned()
+        .unwrap_or_default();
     let mut attrs = resources
         .implicit
         .get(&node.tag)
         .cloned()
         .unwrap_or_default();
     if let Some(name) = resource_name(node.attr("Style"), "StaticResource") {
+        inherited_triggers.extend(
+            resources
+                .named_triggers
+                .get(&name)
+                .cloned()
+                .unwrap_or_default(),
+        );
         attrs.extend(
             resources
                 .named
@@ -327,6 +461,8 @@ fn materialize(
                 .clone(),
         );
     }
+    inherited_triggers.append(&mut node.triggers);
+    node.triggers = inherited_triggers;
     attrs.extend(node.attrs);
     for (name, value) in &resources.text {
         attrs.entry(name.clone()).or_insert_with(|| value.clone());
@@ -348,6 +484,12 @@ fn materialize(
                 *value = text.clone();
             }
         }
+    }
+    if attrs
+        .get("Source")
+        .is_some_and(|value| value.starts_with("{Binding"))
+    {
+        bail!("图片地址不能绑定输入或私有变量");
     }
     node.attrs = attrs;
     if node.tag == "ContentControl" {
@@ -424,6 +566,7 @@ pub(super) struct Renderer {
     images: HashMap<String, Picture>,
     inputs: HashMap<String, String>,
     checks: HashMap<String, bool>,
+    bound_values: HashMap<String, String>,
 }
 enum Picture {
     Pending(mpsc::Receiver<Result<egui::ColorImage>>),
@@ -431,10 +574,112 @@ enum Picture {
     Error(String),
 }
 impl Renderer {
+    fn binding_value(&self, text: &str, values: &HashMap<String, String>) -> String {
+        let Ok(binding) = parse_binding(text) else {
+            return replace(text, values);
+        };
+        if let Some(element) = binding.element {
+            match binding.path.as_str() {
+                "Text" | "Content" | "SelectedItem" => self
+                    .inputs
+                    .get(&element)
+                    .cloned()
+                    .unwrap_or(binding.fallback),
+                "IsChecked" | "Checked" => self
+                    .checks
+                    .get(&element)
+                    .map(|checked| if *checked { "True" } else { "False" }.into())
+                    .unwrap_or(binding.fallback),
+                _ => binding.fallback,
+            }
+        } else {
+            values
+                .get(&binding.path)
+                .cloned()
+                .unwrap_or(binding.fallback)
+        }
+    }
+    fn resolved_node(
+        &self,
+        node: &Node,
+        values: &HashMap<String, String>,
+        hovered: bool,
+        pressed: bool,
+    ) -> Node {
+        let mut resolved = node.clone();
+        for property in ["Text", "Checked"] {
+            if node.attr(property).starts_with("{Binding") {
+                resolved
+                    .attrs
+                    .insert(format!("_PclBinding{property}"), "True".into());
+            }
+        }
+        for value in resolved.attrs.values_mut() {
+            if value.starts_with("{Binding") {
+                *value = self.binding_value(value, values);
+            }
+        }
+        for trigger in &node.triggers {
+            let actual = if trigger.tag == "DataTrigger" {
+                self.binding_value(trigger.attr("Binding"), values)
+            } else {
+                match trigger.attr("Property") {
+                    "IsMouseOver" => if hovered { "True" } else { "False" }.into(),
+                    "IsPressed" => if pressed { "True" } else { "False" }.into(),
+                    "IsChecked" | "Checked" => self
+                        .checks
+                        .get(node.attr("Name"))
+                        .copied()
+                        .unwrap_or(node.attr("Checked") == "True")
+                        .to_string(),
+                    "Text" | "SelectedItem" => self
+                        .inputs
+                        .get(node.attr("Name"))
+                        .cloned()
+                        .unwrap_or_else(|| node.attr("Text").into()),
+                    "IsEnabled" => {
+                        if resolved.attr("IsEnabled").is_empty() {
+                            "True".into()
+                        } else {
+                            resolved.attr("IsEnabled").into()
+                        }
+                    }
+                    property => resolved.attr(property).into(),
+                }
+            };
+            if actual.eq_ignore_ascii_case(trigger.attr("Value")) {
+                for setter in &trigger.children {
+                    resolved.attrs.insert(
+                        setter.attr("Property").into(),
+                        self.binding_value(setter.attr("Value"), values),
+                    );
+                }
+            }
+        }
+        resolved
+    }
+    fn seed_named_inputs(&mut self, nodes: &[Node], values: &HashMap<String, String>) {
+        for node in nodes {
+            if !node.attr("Name").is_empty() {
+                if matches!(node.tag.as_str(), "MyTextBox" | "MyComboBox") {
+                    self.inputs
+                        .entry(node.attr("Name").into())
+                        .or_insert_with(|| replace(node.attr("Text"), values));
+                }
+                if node.tag == "MyCheckBox" {
+                    self.checks
+                        .entry(node.attr("Name").into())
+                        .or_insert(node.attr("Checked") == "True");
+                }
+            }
+            self.seed_named_inputs(&node.children, values);
+        }
+    }
     pub(super) fn clear(&mut self) {
         self.images.clear();
         self.inputs.clear();
         self.checks.clear();
+        self.bound_values.clear();
     }
     pub(super) fn render(
         &mut self,
@@ -443,6 +688,7 @@ impl Renderer {
         origin: &Origin,
         values: &HashMap<String, String>,
     ) -> Vec<Action> {
+        self.seed_named_inputs(nodes, values);
         let mut actions = Vec::new();
         for (index, node) in nodes.iter().enumerate() {
             ui.push_id(index, |ui| {
@@ -468,16 +714,29 @@ impl Renderer {
         values: &HashMap<String, String>,
         actions: &mut Vec<Action>,
     ) {
+        let region = ui.id().with("xaml-node-region");
+        let hovered = ui
+            .ctx()
+            .data(|data| data.get_temp::<egui::Rect>(region))
+            .is_some_and(|rect| ui.rect_contains_pointer(rect));
+        let resolved = self.resolved_node(
+            node,
+            values,
+            hovered,
+            hovered && ui.input(|input| input.pointer.primary_down()),
+        );
+        let node = &resolved;
         let value = |key: &str| replace(node.attr(key), values);
         if matches!(value("Visibility").as_str(), "Collapsed" | "Hidden") {
             return;
         }
         let margin = edges(node.attr("Margin"));
         ui.add_space(margin[1].max(0.0));
-        egui::Frame::NONE.inner_margin(egui::Margin{left:margin[0].clamp(0.0,127.0) as i8,right:margin[2].clamp(0.0,127.0) as i8,top:0,bottom:0}).show(ui,|ui| {
+        let rendered=egui::Frame::NONE.fill(brush(&value("Background"),ui.ctx()).unwrap_or(Color32::TRANSPARENT)).inner_margin(egui::Margin{left:margin[0].clamp(0.0,127.0) as i8,right:margin[2].clamp(0.0,127.0) as i8,top:0,bottom:0}).show(ui,|ui| {
+            if node.attr("IsEnabled")=="False"{ui.disable();}
             if let Some(opacity)=number(node.attr("Opacity")) {ui.multiply_opacity(opacity.clamp(0.0,1.0));}
             if let Some(width)=number(node.attr("Width")) {ui.set_width(width.min(ui.available_width()));}
-            if let Some(height)=number(node.attr("MinHeight")) {ui.set_min_height(height);}
+            if let Some(height)=number(node.attr("Height")).or_else(||number(node.attr("MinHeight"))) {ui.set_min_height(height);}
             match node.tag.as_str() {
                 "MyCard"=>self.card(ui,node,origin,values,actions),
                 "TextBlock"|"Label"|"Run"|"Span"|"Bold"|"Italic"|"Underline"|"Hyperlink"|"Paragraph"|"ListItem"=> {
@@ -493,7 +752,7 @@ impl Renderer {
                 }
                 "MyHint"=> {egui::Frame::NONE.fill(if matches!(node.attr("Theme"),"Blue"|"Green") {theme::palette(ui.ctx()).light} else {Color32::from_rgb(255,241,223)}).inner_margin(10).corner_radius(3).show(ui,|ui| {let response=ui.add(egui::Label::new(value("Text")).wrap());if response.interact(egui::Sense::click()).clicked(){collect_actions(node,values,actions);}});}
                 "MyButton"|"MyTextButton"|"MyIconButton"|"MyIconTextButton"|"MyListItem"=> {
-                    let text=if node.attr("Text").is_empty(){value("Title")}else{value("Text")};
+                    let text=if node.attr("Text").is_empty(){if node.attr("Title").is_empty(){value("Content")}else{value("Title")}}else{value("Text")};
                     let text=if text.is_empty(){let content=plain_text(node);if content.is_empty(){"↻".into()}else{content}}else{text};
                     let height=number(node.attr("Height")).unwrap_or(if node.tag=="MyListItem" {42.0}else{35.0});
                     let width=number(node.attr("Width")).or_else(||number(node.attr("MinWidth"))).unwrap_or(if node.tag=="MyListItem"{ui.available_width()}else{140.0});
@@ -513,27 +772,40 @@ impl Renderer {
                 },
                 "StackPanel" if node.attr("Orientation")=="Horizontal"=> {ui.horizontal(|ui|self.children(ui,node,origin,values,actions));}
                 "WrapPanel"=>{ui.horizontal_wrapped(|ui|self.children(ui,node,origin,values,actions));}
+                "DockPanel"=>self.dock(ui,node,origin,values,actions),
                 "Grid"=>self.grid(ui,node,origin,values,actions),
                 "Border"=>{egui::Frame::NONE.fill(brush(&value("Background"),ui.ctx()).unwrap_or(Color32::TRANSPARENT)).corner_radius(number(node.attr("CornerRadius")).unwrap_or(0.0) as u8).inner_margin(number(node.attr("Padding")).unwrap_or(0.0) as i8).show(ui,|ui|self.children(ui,node,origin,values,actions));}
                 "ScrollViewer"|"MyScrollViewer"|"FlowDocumentScrollViewer"=>{egui::ScrollArea::vertical().id_salt(ui.id().with("xaml-scroll")).max_height(number(node.attr("Height")).unwrap_or(400.0)).show(ui,|ui|self.children(ui,node,origin,values,actions));}
                 "MyTextBox"=>{
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
-                    let input=self.inputs.entry(key).or_insert_with(||value("Text"));
+                    let text=value("Text");
+                    if node.attr("_PclBindingText")=="True" && self.bound_values.get(&key)!=Some(&text) {
+                        self.bound_values.insert(key.clone(),text.clone());self.inputs.insert(key.clone(),text.clone());
+                    }
+                    let input=self.inputs.entry(key).or_insert(text);
                     ui.add_sized([number(node.attr("Width")).unwrap_or(ui.available_width()),28.0],egui::TextEdit::singleline(input));
                 }
                 "MyCheckBox"=>{
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
-                    let checked=self.checks.entry(key).or_insert(node.attr("Checked")=="True");
+                    let text=value("Checked");
+                    if node.attr("_PclBindingChecked")=="True" && self.bound_values.get(&key)!=Some(&text) {
+                        self.bound_values.insert(key.clone(),text.clone());self.checks.insert(key.clone(),text=="True");
+                    }
+                    let checked=self.checks.entry(key).or_insert(text=="True");
                     if ui_style::checkbox(ui,checked,&value("Text"),"").changed(){collect_actions(node,values,actions);}
                 }
                 "MyComboBox"=>{
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
+                    let text=value("Text");
+                    if node.attr("_PclBindingText")=="True" && self.bound_values.get(&key)!=Some(&text) {
+                        self.bound_values.insert(key.clone(),text.clone());self.inputs.insert(key.clone(),text);
+                    }
                     let selected=self.inputs.entry(key).or_default();
                     ui_style::PclComboBox::from_id_salt(ui.id()).width(ui.available_width()).selected_text(selected.clone()).show_ui(ui,|ui|{
                         for item in &node.children {let text=replace(item.attr("Content"),values);if ui.selectable_value(selected,text.clone(),text).clicked(){collect_actions(item,values,actions);}}
                     });
                 }
-                "MyLoading"=>{ui.horizontal(|ui|{ui.spinner();ui.label(value("Text"));});}
+                "MyLoading"=>{super::loading_ui::control(ui, &value("Text"),Vec2::new(number(node.attr("Width")).unwrap_or(ui.available_width()),number(node.attr("Height")).unwrap_or(77.0)));}
                 "Line"=>{let width=number(node.attr("Width")).unwrap_or(ui.available_width());let thickness=number(node.attr("StrokeThickness")).unwrap_or(1.0);let(rect,_)=ui.allocate_exact_size(Vec2::new(width,thickness.max(2.0)),egui::Sense::hover());ui.painter().line_segment([rect.left_center(),rect.right_center()],egui::Stroke::new(thickness,brush(&value("Stroke"),ui.ctx()).unwrap_or(theme::palette(ui.ctx()).border)));}
                 "Rectangle"=>{let (rect,_)=ui.allocate_exact_size(Vec2::new(number(node.attr("Width")).unwrap_or(ui.available_width()),number(node.attr("Height")).unwrap_or(1.0)),egui::Sense::hover());ui.painter().rect_filled(rect,0,brush(&value("Fill"),ui.ctx()).unwrap_or(theme::palette(ui.ctx()).light));}
                 "Path"=>{
@@ -544,6 +816,8 @@ impl Renderer {
                 _=>self.children(ui,node,origin,values,actions),
             }
         });
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(region, rendered.response.rect));
         ui.add_space(margin[3].max(0.0));
     }
     fn inline(
@@ -692,6 +966,71 @@ impl Renderer {
                 ui.data_mut(|data| data.insert_temp(id, open));
             }
         }
+    }
+    fn dock(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &Node,
+        origin: &Origin,
+        values: &HashMap<String, String>,
+        actions: &mut Vec<Action>,
+    ) {
+        let start = ui.next_widget_position();
+        let total = Vec2::new(
+            number(node.attr("Width"))
+                .unwrap_or(ui.available_width())
+                .min(ui.available_width()),
+            number(node.attr("Height")).unwrap_or(240.0),
+        );
+        let mut remaining = egui::Rect::from_min_size(start, total);
+        for (index, child) in node.children.iter().enumerate() {
+            let fill = index + 1 == node.children.len() && node.attr("LastChildFill") != "False";
+            let dock = child.attr("DockPanel.Dock");
+            let width = number(child.attr("Width"))
+                .unwrap_or(140.0)
+                .min(remaining.width());
+            let height = number(child.attr("Height"))
+                .unwrap_or(35.0)
+                .min(remaining.height());
+            let mut rect = remaining;
+            if !fill {
+                match dock {
+                    "Right" => {
+                        rect.min.x = rect.max.x - width;
+                        remaining.max.x = rect.min.x;
+                    }
+                    "Top" => {
+                        rect.max.y = rect.min.y + height;
+                        remaining.min.y = rect.max.y;
+                    }
+                    "Bottom" => {
+                        rect.min.y = rect.max.y - height;
+                        remaining.max.y = rect.min.y;
+                    }
+                    _ => {
+                        rect.max.x = rect.min.x + width;
+                        remaining.min.x = rect.max.x;
+                    }
+                }
+            }
+            let mut child_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("dock", index))
+                    .max_rect(rect),
+            );
+            child_ui.set_clip_rect(ui.clip_rect().intersect(rect));
+            let mut placed = child.clone();
+            placed
+                .attrs
+                .entry("Width".into())
+                .or_insert_with(|| rect.width().to_string());
+            placed
+                .attrs
+                .entry("Height".into())
+                .or_insert_with(|| rect.height().to_string());
+            self.node(&mut child_ui, &placed, origin, values, actions);
+        }
+        ui.allocate_exact_size(total, egui::Sense::hover());
     }
     fn grid(
         &mut self,
@@ -1229,6 +1568,88 @@ fn read_picture(source: &str) -> Result<egui::ColorImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dock_panel_reserves_edges_and_fills_remaining_rectangle() {
+        let nodes=parse(r##"<DockPanel Width="300" Height="100"><Border Width="80" DockPanel.Dock="Left" Background="#FF0000"/><Border Height="20" DockPanel.Dock="Top" Background="#0000FF"/><Border Background="#00FF00"/></DockPanel>"##).unwrap();
+        let mut renderer = Renderer::default();
+        let ctx = egui::Context::default();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                renderer.render(ui, &nodes, &Origin::default(), &HashMap::new());
+            });
+        });
+        let rectangle = |color| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == color => Some(rect.rect),
+                    _ => None,
+                })
+                .expect("visible dock rectangle")
+        };
+        let left = rectangle(Color32::RED);
+        let top = rectangle(Color32::BLUE);
+        let fill = rectangle(Color32::GREEN);
+        assert_eq!(left.size(), Vec2::new(80.0, 100.0));
+        assert_eq!(top.size(), Vec2::new(220.0, 20.0));
+        assert_eq!(fill.size(), Vec2::new(220.0, 80.0));
+        assert_eq!(left.right(), top.left());
+        assert_eq!(top.bottom(), fill.top());
+        assert_eq!(left.bottom(), fill.bottom());
+    }
+    #[test]
+    fn binding_reads_live_named_controls_and_visual_triggers_do_not_emit_actions() {
+        let nodes=parse(r#"<StackPanel><local:MyTextBox Name="entry" Text="first"/><TextBlock Text="{Binding Text, ElementName=entry}"><TextBlock.Triggers><DataTrigger Binding="{Binding Text, ElementName=entry}" Value="second"><Setter Property="Foreground" Value="Red"/></DataTrigger></TextBlock.Triggers></TextBlock></StackPanel>"#).unwrap();
+        let mut renderer = Renderer::default();
+        let values = HashMap::new();
+        renderer.seed_named_inputs(&nodes, &values);
+        let target = &nodes[0].children[1];
+        assert_eq!(
+            renderer
+                .resolved_node(target, &values, false, false)
+                .attr("Text"),
+            "first"
+        );
+        renderer.inputs.insert("entry".into(), "second".into());
+        let resolved = renderer.resolved_node(target, &values, false, false);
+        assert_eq!(resolved.attr("Text"), "second");
+        assert_eq!(resolved.attr("Foreground"), "Red");
+        let ctx = egui::Context::default();
+        let mut actions = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                actions = renderer.render(ui, &nodes, &Origin::default(), &values)
+            });
+        });
+        assert!(actions.is_empty());
+    }
+    #[test]
+    fn style_hover_trigger_is_visual_only_and_binding_cannot_exfiltrate() {
+        let nodes=parse(r#"<StackPanel><StackPanel.Resources><Style x:Key="Hover" TargetType="TextBlock"><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="Red"/></Trigger></Style.Triggers></Style></StackPanel.Resources><TextBlock Style="{StaticResource Hover}" Text="hover"/></StackPanel>"#).unwrap();
+        let renderer = Renderer::default();
+        let target = &nodes[0].children[0];
+        assert_eq!(
+            renderer
+                .resolved_node(target, &HashMap::new(), true, false)
+                .attr("Foreground"),
+            "Red"
+        );
+        assert_eq!(
+            renderer
+                .resolved_node(target, &HashMap::new(), false, false)
+                .attr("Foreground"),
+            ""
+        );
+        for text in [
+            r#"<Image Source="{Binding secret}"/>"#,
+            r#"<TextBlock Text="{Binding secret, Converter=Execute}"/>"#,
+            r#"<TextBlock><TextBlock.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="EventType" Value="执行命令"/></Trigger></TextBlock.Triggers></TextBlock>"#,
+            r#"<StackPanel><StackPanel.Resources><Style TargetType="Image"><Setter Property="Source" Value="{Binding secret}"/></Style></StackPanel.Resources><Image/></StackPanel>"#,
+        ] {
+            assert!(parse(text).is_err(), "{text}");
+        }
+    }
     #[test]
     fn static_styles_strings_and_templates_materialize_without_automatic_events() {
         let nodes=parse(r#"<StackPanel xmlns:sys="clr-namespace:System;assembly=mscorlib"><StackPanel.Triggers/><StackPanel.Resources><Style TargetType="TextBlock"><Setter Property="FontSize" Value="14"/></Style><Style x:Key="Action" TargetType="local:MyButton"><Setter Property="Text" Value="Visit"/><Setter Property="EventType" Value="打开网页"/></Style><sys:String x:Key="Icon">M0 0L1 1</sys:String><ControlTemplate x:Key="Sep"><TextBlock Text="{TemplateBinding Content}"/></ControlTemplate></StackPanel.Resources><local:MyButton Style="{StaticResource Action}" EventData="https://example.org" Logo="{StaticResource Icon}"/><ContentControl Template="{StaticResource Sep}" Content="Heading"/><FlowDocument FontSize="15"><Paragraph>Actual body</Paragraph></FlowDocument></StackPanel>"#).unwrap();

@@ -355,6 +355,34 @@ fn validate_profile(profile: &Value, entry: &OptiFineVersion) -> Result<()> {
     Ok(())
 }
 
+/// Reuse an already installed publisher profile only after checking its receipt
+/// and every declared library. Existing metadata is never rewritten.
+pub fn ensure_optifine(
+    root: &Path,
+    entry: &OptiFineVersion,
+    java: &Path,
+    platform: &Platform,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress) + Sync,
+) -> Result<String> {
+    let id = entry.id();
+    let path = install::safe_target(root, &PathBuf::from(format!("versions/{id}/{id}.json")))?;
+    if !path.exists() {
+        return install_optifine(root, entry, java, platform, cancel, progress);
+    }
+    let value: Value = serde_json::from_slice(&fs::read(path)?)?;
+    validate_profile(&value, entry)?;
+    ensure!(
+        value
+            .pointer("/_pcl_optifine_install/filename")
+            .and_then(Value::as_str)
+            == Some(&entry.filename),
+        "既有 OptiFine 版本缺少匹配安装收据"
+    );
+    install::repair_version_with_java(root, &id, Some(java), platform, cancel, progress)?;
+    Ok(id)
+}
+
 /// Installs into a fresh isolated home, checks the emitted profile and libraries,
 /// then publishes only declared files. Existing versions are never overwritten.
 pub fn install_optifine(
@@ -548,6 +576,42 @@ pub fn install_forge_mod(
     let relative = PathBuf::from("mods").join(&entry.filename);
     let target = install::safe_target(&game, &relative)?;
     ensure!(!target.exists(), "目标 OptiFine Mod 已存在，未覆盖");
+    let bytes = download(entry, cancel)?;
+    let a = artifact(relative, &bytes);
+    put_new(&game, &a, &bytes, cancel)?;
+    Ok(target)
+}
+
+/// The OptiFabric author's installation route: both unmodified jars in mods.
+/// A bridge must already be present; it is obtained through its official project
+/// API by the caller, never by constructing an unapproved CDN URL.
+pub fn install_fabric_mod(
+    root: &Path,
+    instance_id: &str,
+    entry: &OptiFineVersion,
+    cancel: &AtomicBool,
+) -> Result<PathBuf> {
+    entry.validate()?;
+    let resolved = metadata::resolve_version(root, instance_id)?;
+    ensure!(
+        resolved["_pcl_jar_id"].as_str() == Some(&entry.minecraft)
+            && resolved["libraries"]
+                .as_array()
+                .is_some_and(|libs| libs.iter().any(|library| library["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("net.fabricmc:fabric-loader:")))),
+        "目标不是对应的 Fabric 游戏版本"
+    );
+    let game = crate::config::instance_game_dir(root, instance_id)?;
+    let mods = crate::mods::list_mods(&game)?;
+    ensure!(
+        mods.iter()
+            .any(|m| m.enabled && m.mod_ids.iter().any(|id| id == "optifabric")),
+        "请先安装兼容的 OptiFabric 桥接"
+    );
+    let relative = PathBuf::from("mods").join(&entry.filename);
+    let target = install::safe_target(&game, &relative)?;
+    ensure!(!target.exists(), "目标 OptiFine 文件已存在，未覆盖");
     let bytes = download(entry, cancel)?;
     let a = artifact(relative, &bytes);
     put_new(&game, &a, &bytes, cancel)?;

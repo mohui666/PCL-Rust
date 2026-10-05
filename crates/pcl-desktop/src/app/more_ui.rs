@@ -873,6 +873,7 @@ fn load_external_help(target: &str, folder: &Path) -> Result<ExternalHelp> {
                 ("EventData".into(), metadata.event_data),
             ]),
             children: Vec::new(),
+            triggers: Vec::new(),
         }]
     } else {
         let content = if let Some(url) = &origin.url {

@@ -10,6 +10,14 @@ use std::{
 };
 use zip::ZipArchive;
 
+#[path = "mods_removal.rs"]
+mod removal;
+pub use removal::{remove_mods, restore_removed_mods, ModRemoval};
+
+#[path = "mods_import.rs"]
+mod imports;
+pub use imports::{import_mods, imported_mod_name};
+
 const METADATA_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -26,7 +34,9 @@ pub struct LocalMod {
 
 fn jar_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.ends_with(".jar") || lower.ends_with(".jar.disabled")
+    [".jar", ".jar.disabled", ".litemod", ".litemod.disabled"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
 }
 
 fn mods_directory(instance: &Path, create: bool) -> Result<PathBuf> {
@@ -98,6 +108,11 @@ fn inspect(path: &Path, name: &str) -> Result<LocalMod> {
         result.name = metadata["name"].as_str().unwrap_or(id).into();
         result.version = metadata["version"].as_str().map(str::to_owned);
         result.loader = "fabric".into();
+    } else if let Some(text) = read_entry(&mut archive, "litemod.json")? {
+        let metadata: Value = serde_json::from_str(&text)?;
+        result.loader = "liteloader".into();
+        result.name = metadata["name"].as_str().unwrap_or(name).into();
+        result.version = metadata["version"].as_str().map(str::to_owned);
     } else {
         for (entry, loader) in [
             ("META-INF/neoforge.mods.toml", "neoforge"),

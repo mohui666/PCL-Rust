@@ -24,6 +24,8 @@ const MAX_FILE: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
 #[path = "pack_formats.rs"]
 mod formats;
+#[path = "pack_profile.rs"]
+pub(crate) mod profile;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModpackInfo {
@@ -59,7 +61,7 @@ struct PackFile {
     path: String,
     hashes: BTreeMap<String, String>,
     downloads: Vec<String>,
-    file_size: u64,
+    file_size: Option<u64>,
     env: Option<Environment>,
     #[serde(skip)]
     curseforge: Option<crate::resources::VersionFile>,
@@ -86,6 +88,7 @@ enum Payload {
         index: usize,
         size: u64,
         executable: bool,
+        sha1: Option<String>,
     },
 }
 
@@ -188,10 +191,15 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
         if !seen.insert(key.clone()) {
             bail!("整合包索引存在重复或大小写冲突的路径");
         }
-        if !valid_hash(file.hashes.get("sha1"), 40) || !valid_hash(file.hashes.get("sha512"), 128) {
+        if !valid_hash(file.hashes.get("sha1"), 40)
+            || (manifest.format != "MCBBS" && !valid_hash(file.hashes.get("sha512"), 128))
+        {
             bail!("整合包文件必须同时包含有效的 SHA1 和 SHA512");
         }
-        if file.file_size > MAX_FILE {
+        if manifest.format != "MCBBS" && file.file_size.is_none() {
+            bail!("mrpack 文件缺少 fileSize");
+        }
+        if file.file_size.is_some_and(|size| size > MAX_FILE) {
             bail!("整合包单文件超过 2 GiB 限制");
         }
         if let Some(env) = &file.env {
@@ -236,17 +244,22 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
         if entry.is_dir() {
             continue;
         }
-        let Some((layer, relative)) =
-            manifest
-                .override_prefixes
-                .iter()
-                .enumerate()
-                .find_map(|(layer, prefix)| {
-                    name.strip_prefix(prefix).map(|relative| (layer, relative))
-                })
+        let Some((layer, relative)) = manifest
+            .override_prefixes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(layer, prefix)| {
+                name.strip_prefix(prefix).map(|relative| (layer, relative))
+            })
         else {
             continue;
         };
+        if (manifest.format == "HMCL" && relative == "pack.json")
+            || (manifest.format == "通用游戏 ZIP" && !formats::game_payload(relative))
+        {
+            continue;
+        }
         let path = safe_relative(relative)?;
         if entry.size() > MAX_FILE {
             bail!("整合包覆盖文件超过 2 GiB");
@@ -262,6 +275,7 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
                 index: position,
                 size: entry.size(),
                 executable: entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0),
+                sha1: manifest.embedded_hashes.get(relative).cloned(),
             },
         ));
     }
@@ -279,7 +293,7 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
     for (relative, payload) in files.values() {
         total = total
             .checked_add(match payload {
-                Payload::Download(file) => file.file_size,
+                Payload::Download(file) => file.file_size.unwrap_or(0),
                 Payload::Override { size, .. } => *size,
             })
             .context("整合包大小溢出")?;
@@ -423,7 +437,7 @@ fn resolve_curseforge(
             path: path.clone(),
             hashes: file.hashes.clone(),
             downloads: vec![file.url.clone()],
-            file_size: file.size,
+            file_size: Some(file.size),
             env: None,
             curseforge: Some(file),
         };
@@ -436,7 +450,7 @@ fn resolve_curseforge(
     for (relative, payload) in prepared.files.values() {
         size = size
             .checked_add(match payload {
-                Payload::Download(file) => file.file_size,
+                Payload::Download(file) => file.file_size.unwrap_or(0),
                 Payload::Override { size, .. } => *size,
             })
             .context("整合包大小溢出")?;
@@ -560,7 +574,7 @@ fn stream_verified(
             break;
         }
         total += count as u64;
-        if total > file.file_size || total > MAX_FILE {
+        if file.file_size.is_some_and(|size| total > size) || total > MAX_FILE {
             bail!("整合包下载文件大于声明大小");
         }
         crate::network::throttle(count, cancel)?;
@@ -569,7 +583,7 @@ fn stream_verified(
         output.write_all(&buffer[..count])?;
     }
     cancelled(cancel)?;
-    if total != file.file_size {
+    if file.file_size.is_some_and(|size| total != size) {
         bail!("整合包下载文件大小不匹配");
     }
     if format!("{:x}", sha1.finalize()) != file.hashes["sha1"].to_ascii_lowercase()
@@ -588,7 +602,7 @@ fn download(client: &Client, file: &PackFile, target: &Path, cancel: &AtomicBool
         let response = crate::curseforge::download_file(source, cancel)?;
         if response
             .content_length()
-            .is_some_and(|size| size != file.file_size)
+            .is_some_and(|size| file.file_size.is_some_and(|expected| size != expected))
         {
             bail!("CurseForge 文件响应大小与清单不符");
         }
@@ -616,7 +630,7 @@ fn download(client: &Client, file: &PackFile, target: &Path, cancel: &AtomicBool
             }
             if response
                 .content_length()
-                .is_some_and(|length| length != file.file_size)
+                .is_some_and(|length| file.file_size.is_some_and(|expected| length != expected))
             {
                 bail!("整合包下载 Content-Length 不匹配");
             }
@@ -696,6 +710,7 @@ fn import_with(
         .prefix(".pcl-mrpack-")
         .tempdir_in(parent)?;
     let total = prepared.files.len() as u64;
+    let mut staged_bytes = 0u64;
     for (completed, (relative, payload)) in prepared.files.values().enumerate() {
         cancelled(cancel)?;
         progress(Progress {
@@ -714,10 +729,12 @@ fn import_with(
                 index,
                 size,
                 executable,
+                sha1,
             } => {
                 let mut entry = archive.by_index(*index)?;
                 let mut output = File::create(&destination)?;
                 let mut copied = 0u64;
+                let mut digest = Sha1::new();
                 let mut buffer = [0; 64 * 1024];
                 loop {
                     cancelled(cancel)?;
@@ -729,7 +746,14 @@ fn import_with(
                     if copied > *size || copied > MAX_FILE {
                         bail!("整合包覆盖文件大小超限");
                     }
+                    digest.update(&buffer[..count]);
                     output.write_all(&buffer[..count])?;
+                }
+                if sha1
+                    .as_ref()
+                    .is_some_and(|expected| format!("{:x}", digest.finalize()) != *expected)
+                {
+                    bail!("MCBBS 内嵌文件 SHA1 不匹配：{}", relative.display());
                 }
                 if copied != *size {
                     bail!("整合包覆盖文件不完整");
@@ -748,6 +772,10 @@ fn import_with(
                 let _ = executable;
             }
         }
+        staged_bytes = staged_bytes
+            .checked_add(fs::metadata(&destination)?.len())
+            .context("整合包总大小溢出")?;
+        anyhow::ensure!(staged_bytes <= MAX_TOTAL, "整合包实际内容超过 20 GiB");
     }
     cancelled(cancel)?;
     let mut created_dirs = Vec::new();
@@ -782,25 +810,26 @@ fn import_with(
             }
             // A link in the same filesystem commits verified bytes without overwriting
             // even if a destination was created after the preflight check.
+            let stamp = crate::instances::identity(&stage.path().join(relative))?;
             fs::hard_link(stage.path().join(relative), &destination)
                 .context("导入提交冲突，未覆盖目标文件")?;
-            committed.push(destination);
+            committed.push((destination, stamp));
         }
         cancelled(cancel)?;
         Ok::<(), anyhow::Error>(())
     })();
     if let Err(error) = commit {
-        let mut rollback_failed = false;
-        for path in committed.iter().rev() {
-            if fs::remove_file(path).is_err() {
-                rollback_failed = true;
-            }
-        }
+        let retained = rollback_committed(&committed);
         for path in created_dirs.iter().rev() {
             let _ = fs::remove_dir(path);
         }
-        if rollback_failed {
-            bail!("整合包导入失败且部分新增文件无法回滚；原有文件未覆盖：{error:#}");
+        if !retained.is_empty() {
+            let paths = retained
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("、");
+            bail!("整合包导入失败；以下文件在提交后被修改、替换或无法回滚，已保留，请检查：{paths}；原始错误：{error:#}");
         }
         return Err(error);
     }
@@ -813,11 +842,49 @@ fn import_with(
     Ok(prepared.info)
 }
 
+fn rollback_committed(committed: &[(PathBuf, crate::instances::Identity)]) -> Vec<PathBuf> {
+    committed
+        .iter()
+        .rev()
+        .filter_map(|(path, stamp)| {
+            // Only unlink this import's exact hard link. A replacement made by the
+            // user or another process belongs to them even if its contents match.
+            if crate::instances::identity(path).ok() == Some(*stamp)
+                && fs::remove_file(path).is_ok()
+            {
+                None
+            } else {
+                Some(path.clone())
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use zip::{write::SimpleFileOptions, ZipWriter};
+
+    #[test]
+    fn rollback_retains_a_concurrently_replaced_file_even_with_identical_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("staged");
+        fs::write(&staged, b"pack bytes").unwrap();
+        let original = dir.path().join("original");
+        let changed = dir.path().join("changed");
+        fs::hard_link(&staged, &original).unwrap();
+        fs::hard_link(&staged, &changed).unwrap();
+        let stamp = crate::instances::identity(&staged).unwrap();
+        let replacement = dir.path().join("replacement");
+        fs::write(&replacement, b"pack bytes").unwrap();
+        fs::rename(&replacement, &changed).unwrap();
+        let retained = rollback_committed(&[(original.clone(), stamp), (changed.clone(), stamp)]);
+        assert_eq!(retained, std::slice::from_ref(&changed));
+        assert!(!original.exists());
+        assert_eq!(fs::read(&changed).unwrap(), b"pack bytes");
+        assert_eq!(fs::read(&staged).unwrap(), b"pack bytes");
+    }
 
     fn entry(path: &str, bytes: &[u8], side: &str) -> serde_json::Value {
         json!({"path":path,"hashes":{"sha1":format!("{:x}",Sha1::digest(bytes)),"sha512":format!("{:x}",Sha512::digest(bytes))},
@@ -876,6 +943,36 @@ mod tests {
         assert!(!target.join("mods/optional.jar").exists());
         assert!(!target.join("server.txt").exists());
         assert!(source.exists());
+    }
+    #[test]
+    fn mcbbs_file_api_uses_declared_sha1_without_inventing_size_or_sha512() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("server.zip");
+        let mut archive = zip::ZipWriter::new(File::create(&pack).unwrap());
+        archive
+            .start_file("mcbbs.packmeta", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let value = json!({"name":"server","version":"1","fileApi":"https://raw.githubusercontent.com/owner/project/commit","addons":[{"id":"game","version":"1.21.1"}],"files":[{"type":"addon","path":"config/a.txt","hash":format!("{:x}",Sha1::digest(b"verified"))}]});
+        archive.write_all(value.to_string().as_bytes()).unwrap();
+        archive.finish().unwrap();
+        let target = dir.path().join("instance");
+        import_with(&pack,&target,false,&AtomicBool::new(false),|_|{},|file,path,cancel|{
+            assert!(file.file_size.is_none());assert!(!file.hashes.contains_key("sha512"));
+            assert_eq!(file.downloads,["https://raw.githubusercontent.com/owner/project/commit/overrides/config/a.txt"]);
+            stream_verified(b"verified".as_slice(),path,file,cancel)
+        }).unwrap();
+        assert_eq!(fs::read(target.join("config/a.txt")).unwrap(), b"verified");
+        let bad = dir.path().join("bad");
+        assert!(import_with(
+            &pack,
+            &bad,
+            false,
+            &AtomicBool::new(false),
+            |_| {},
+            |file, path, cancel| stream_verified(b"changed".as_slice(), path, file, cancel)
+        )
+        .is_err());
+        assert!(!bad.exists());
     }
     #[test]
     fn sha512_mismatch_does_not_commit_even_if_sha1_matches() {

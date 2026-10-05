@@ -2,7 +2,7 @@
 
 记录更新：2026-10-05（Asia/Shanghai）。目标仍是迁移原版的完整功能与界面；本表用于暴露剩余工作，不能把当前可运行版本、已有导航入口或原版启动成功解释为完整迁移完成。
 
-本轮以主工作区当前源码为准，非登录功能与共享控件的实际范围见 [UI 缺口清单](ui-gap-audit.md)。已新增 OptiFine、继承文件补全/收据约束重建、多格式整合包、CurseForge/中文索引/Mod 更新、下载策略、启动补丁/窗口与离线皮肤、其他设置、音乐/主页/帮助和崩溃分析；下文逐行保留未覆盖范围。本轮总测试数和双平台产物以最终验证记录为准；此表只更新功能范围，不从数量推定完整迁移。Mac 真实鼠标已验证账号下拉定位、名字与下载筛选输入修复；这不增加登录授权验收。只读网络 probe 通过不等于安装或游戏通过，CurseForge 本机无可用 Key、未在线验收。
+本轮以主工作区当前源码为准，非登录功能与共享控件的实际范围见 [UI 缺口清单](ui-gap-audit.md)。本轮补入 LiteLoader/API/OptiFabric 组合、官方父 JSON、HMCL/MCBBS/通用 ZIP、多目录与初始化/图标/Mod移除、资源排序命名缓存、Range续传、多任务与历史、标题隐藏/原生Splash及受限XAML动态显示；下文逐行区分实现与未验。登录与联机按用户当前指示排除。本轮总测试数和双平台产物以最终验证记录为准；此表只更新功能范围，不从数量推定完整迁移。Mac 真实鼠标已验证账号下拉定位、名字与下载筛选输入修复；这不增加登录授权验收。只读网络 probe 通过不等于安装或游戏通过，CurseForge 本机无可用 Key、未在线验收。
 
 此前登录反馈304批通过/0失败/1忽略（核心211、桌面93），工作区全部目标严格Clippy通过，138份冻结输入保持，见 `test-output/login-feedback-checks.json`。已接分类提示、有限重新认证、原账号绑定、披风确认/中文名称与消息框/提示队列；Mac签名release与Windows交叉构建通过；Mac原生生产渲染器以模拟数据验证普通/警告/设备码/输入框与三色提示，新生产应用启动/设置页中文通过，原13号主题与设置文件hash不变。旋转入场360ms暂缓指针提交，键盘可用。详见 `test-output/login-feedback-{macos-validation,windows-validation,ui-validation}.json`；不从模拟数据推断真实授权、披风操作或全页像素一致。
 
@@ -41,14 +41,14 @@
 | 上游文件（`Pages/` 下） | 原版行为 | Rust 对应与当前状态 | 未覆盖/验收边界 |
 | --- | --- | --- | --- |
 | `PageLaunch/PageLaunchLeft.xaml` | 账号切换、启动、版本选择/设置、阶段进度、下载速度与取消 | `shell_ui` 账号选择、启动与版本入口；启动前刷新有效会话；局部实现 | 设备流/恢复/失败/过期多状态已接；真实账号完整流程、原版提示与动画未等价验收 |
-| `PageLaunch/PageLaunchRight.xaml` | 默认空白、自定义主页、快照提示、调试启动日志 | `home_ui/xaml_ui` 默认空白、本地/联网/固定预设与缓存、常见布局/图片/静态样式/模板及受限事件；局部实现 | 新闻预设只读获取/解析通过，不代表全部预设或 GUI；完整 WPF Binding/自动 Triggers/CLR 未实现，回声洞原句库不可得；内嵌调试日志/全部快照提示未等价 |
+| `PageLaunch/PageLaunchRight.xaml` | 默认空白、自定义主页、快照提示、调试启动日志 | `home_ui/xaml_ui` 本地/联网/预设与缓存；静态样式/模板、单向 Binding/ElementName、受限 Trigger/DataTrigger、DockPanel 与显式事件；局部实现 | 新闻预设只读解析、命名控件绑定与无自动动作有定向证据；完整 WPF/CLR/TwoWay/跨节点写入未实现，私有回声洞句库缺失；全部预设/调试日志/快照提示与像素未验 |
 | `PageLaunch/PageLoginLegacy.xaml` | 可编辑历史玩家名、离线皮肤、名称提示 | 离线名字/历史、MD5 UUID；`offline_skin` 默认/Steve/Alex/正版名称/本地 PNG，Run 时模型 UUID 与资源包/选项更新；局部实现 | 不改变认证身份；正版名称方式限 1.20 前，1.6 前无自定义资源包、旧版 Alex 提示；新皮肤未实机游戏验收，账号框鼠标输入修复不等于皮肤验收 |
 | `PageLaunch/PageLoginMs.xaml` | 微软登录、正版购买与官网入口 | `auth/accounts/account_ui` 设备流、真实阶段回调、安全保存/Ready后成功；登录/启动入口分类提示及恢复按钮，刷新凭据失效最多一次设备认证，网络/安全/403不自动重登；购买/官网；自有公共Client ID已保存、真实设备码成功；局部实现 | Minecraft登录HTTP403，未到权益/profile；前段Microsoft/Xbox/XSTS完成为源码顺序推断。审核已提交待审批，不认定唯一失败原因或完整正版登录通过 |
 | `PageLaunch/PageLoginMsSkin.xaml` | 已登录身份、皮肤/披风、信息修改、切换账号 | 多账号列表/选择/安全移除/重新登录、恢复/闲时刷新/启动前有效性检查、在线皮肤、上传/重置与401有限恢复；披风暂选→确定/取消、29个中文名称及专用提示；恢复后核对原账号，已提交变更不自动重放；局部实现 | Keychain 仅合成凭据往返验证；真实账号、皮肤/披风变更、Windows Credential Manager 实机及全部状态像素未验 |
-| `PageLaunch/PageLoginAuth.xaml` | Authlib Injector/LittleSkin 邮箱密码、记住密码、注册 | 未迁移 | 无第三方 Yggdrasil 登录和 authlib-injector 注入 |
-| `PageLaunch/PageLoginAuthSkin.xaml` | 已登录第三方身份、更换角色、切换账号 | 未迁移 | 角色列表、多角色选择、第三方皮肤未迁移 |
-| `PageLaunch/PageLoginNide.xaml` | 统一通行证账号密码、注册与记住密码 | 未迁移 | Nide 登录、服务器 ID、令牌生命周期未迁移 |
-| `PageLaunch/PageLoginNideSkin.xaml` | 统一通行证身份、改密、切换账号 | 未迁移 | 无相应已登录页面及服务交互 |
+| `PageLaunch/PageLoginAuth.xaml` | Authlib Injector/LittleSkin 邮箱密码、记住密码、注册 | 未迁移；本轮排除登录 | 无第三方 Yggdrasil 登录和 authlib-injector 注入 |
+| `PageLaunch/PageLoginAuthSkin.xaml` | 已登录第三方身份、更换角色、切换账号 | 未迁移；本轮排除登录 | 角色列表、多角色选择、第三方皮肤未迁移 |
+| `PageLaunch/PageLoginNide.xaml` | 统一通行证账号密码、注册与记住密码 | 未迁移；本轮排除登录 | Nide 登录、服务器 ID、令牌生命周期未迁移 |
+| `PageLaunch/PageLoginNideSkin.xaml` | 统一通行证身份、改密、切换账号 | 未迁移；本轮排除登录 | 无相应已登录页面及服务交互 |
 | `PageLaunch/MyMsgLogin.xaml` | 设备登录提示控件、重开网页、复制代码、取消 | `account_ui/modal_ui` 设备码弹层、复制/重开网页/取消、Enter不触发网页与Esc取消；真实设备OAuth进入Xbox阶段才提示网页成功并关闭设备码窗，请求代次隔离；局部实现 | 阶段/陈旧事件/有限重入/账号绑定/弹窗键盘与动画有fixture；模拟数据的原生设备框/键盘已验，完整真实授权、成功后恢复、各服务错误分支与成对像素仍未验收 |
 
 `PageLaunch/MySkin.xaml` 是下表单列的第 4 个复用子控件之一，因此本节的 10 行加后面的 MySkin 才是 `PageLaunch/` 的全部 11 个 XAML 文件。
@@ -57,14 +57,14 @@
 
 | 上游文件（`Pages/` 下） | 原版行为 | Rust 对应与当前状态 | 未覆盖/验收边界 |
 | --- | --- | --- | --- |
-| `PageSelectLeft.xaml` | 多个 Minecraft 文件夹、创建/添加/移除/删除/重命名/打开/切换 | `shell_ui::folder_sidebar` 已有目录列表、添加已有目录、持久化与切换；局部实现 | 新多目录完整GUI流程待验；创建/移除/删除/重命名、各目录独立状态及旧数据迁移未覆盖 |
+| `PageSelectLeft.xaml` | 多个 Minecraft 文件夹、创建/添加/移除/删除/重命名/打开/切换 | `folder_ui/config_management` 目录创建/添加/显示名修改/移除登记/打开/切换与持久化；局部实现 | 显示名修改不搬磁盘目录，移除登记不删除游戏文件；不提供目录整体删除/搬迁；完整多目录 GUI、独立状态与像素待验，旧配置迁移排除 |
 | `PageSelectRight.xaml` | 分类版本列表、收藏、隐藏版本、选择及右键管理 | `version_ui` 分类折叠、预设图标、描述、收藏/隐藏/F11与手动分类；局部实现 | 收藏持久化有中间 Mac GUI 证据；新全部交互态、右键管理及成对像素仍待验 |
-| `PageInstance/PageInstanceLeft.xaml` | 概览、设置、初始化、Mod 管理、导出 | 216包概览/设置/Mod/导出导航已接；局部实现 | 初始化/重置全套行为仍缺；导出页可操作不等于所有包格式已迁移，导航/滚动/返回全状态需验 |
-| `PageInstance/PageInstanceOverall.xaml` | 图标/分类/描述/改名/收藏、目录快捷入口、启动脚本、补全、删除 | 描述/12预设图标/分类/隐藏/收藏、目录、重命名/回收站/脚本；`install_repair` 继承文件补全及收据约束 Forge/NeoForge 生成物隔离重建；局部实现 | 缺父 JSON、无哈希/收据生成物明确拒绝；原配置与自有额外文件保留；任意图标、实际处理器重建、Windows/GUI删除及完整状态未验 |
-| `PageInstance/PageInstanceSetup.xaml` | 实例隔离、Java 范围/强制选择、RAM、登录服务器、GC/参数/预命令、禁用更新或补丁 | 隔离/Java四模式/RAM/GC/信息/参数/服务器/登录限制、预命令与等待；实例标题/最大化、内存回收、JLW/LUA禁用已接；局部实现 | 本次PID窗口控制与有限标记，不冒充全原版变量；真实游戏/Windows及全部组合未验；实例禁更新开关、第三方认证另缺，内存只回收启动器自身 |
-| `PageInstance/PageInstanceMod.xaml` | 搜索、解析、导入、批量启停/删除/更新、远端信息、冲突反馈 | `mods/version_ui` 扫描/导入/启停/搜索/批量选择；`mod_updates/mod_update_ui` 官方哈希识别、显式更新及依赖隔离准备、禁用保留、原件备份/回滚；局部实现 | 新更新仅夹具，未线上 Mod 更新/游戏验收；未识别文件单列；完整远端标签/冲突诊断及批量删除仍缺 |
+| `PageInstance/PageInstanceLeft.xaml` | 概览、设置、初始化、Mod 管理、导出 | 概览/设置/Mod/导出导航，实例设置初始化与备份恢复已接；局部实现 | 初始化只重置启动偏好，保留描述/分类/收藏/图标及游戏数据；全导航/滚动/恢复 GUI 与像素待验 |
+| `PageInstance/PageInstanceOverall.xaml` | 图标/分类/描述/改名/收藏、目录快捷入口、启动脚本、补全、删除 | 预设与本地图片图标、描述/分类/隐藏/收藏、目录/改名/回收站/脚本；官方父 JSON 补全及 Forge/NeoForge/OptiFine 收据重建；局部实现 | 图片归一为静态 PNG；仅补有官方清单 SHA1 的父 JSON，未知父或无收据生成物拒绝；厂商重建/Windows删除与完整 GUI 未验 |
+| `PageInstance/PageInstanceSetup.xaml` | 实例隔离、Java 范围/强制选择、RAM、登录服务器、GC/参数/预命令、禁用更新或补丁 | 隔离/Java四模式/RAM/GC/参数/服务器/预命令；标题/最大化、内存回收、补丁禁用与实例禁用 Mod 更新；实例设置初始化/恢复；局部实现 | 禁更新在入口和请求同时检查；初始化保留展示属性与游戏文件，备份恢复不执行命令；真实游戏/Windows与全部组合未验，第三方认证本轮排除 |
+| `PageInstance/PageInstanceMod.xaml` | 搜索、解析、导入、批量启停/删除/更新、远端信息、冲突反馈 | 扫描/导入/启停/搜索/批选；显式更新/依赖准备/禁用保留/备份；选中 Mod 移入实例内备份并可恢复，取消与同名冲突保护；局部实现 | 批量移除是可恢复隔离，不永久销毁；新更新/移除/恢复有临时目录夹具，未线上更新或含 Mod 游戏验收；完整远端标签/冲突诊断与像素仍未等价 |
 | `PageInstance/PageInstanceModDisabled.xaml` | 不支持 Mod 的版本提示、转下载或版本选择 | `version_ui` 按已读取真实加载器、LiteLoader 或手动 Mod 分类显示不可用页/下载入口；局部实现 | 不在元数据未读完时冒充原版；真实加载器识别不等于支持其安装；新页面 GUI/像素待验 |
-| `PageInstance/PageInstanceExport.xaml` | 配置式导出整合包、文件精细选择、隐私排除、协议、资源下载引用、含启动器包 | 逐项文件/资源/世界选择及排除；mrpack/MMC/MCBBS/原版HMCL；版本目录Java、当前平台PCL双ZIP；配置与无覆盖提交；局部实现 | 当前Mac派生PingFang阻止附带该程序；OptiFine/LiteLoader导出、HMCL加载器和所有高级来源策略缺；新格式只夹具，历史269 mrpack GUI证据不代表新格式/Windows |
+| `PageInstance/PageInstanceExport.xaml` | 配置式导出整合包、文件精细选择、隐私排除、协议、资源下载引用、含启动器包 | 逐项文件/世界/资源与排除；mrpack/MMC/MCBBS/HMCL；HMCL 加载器、HMCL/MCBBS OptiFine与LiteLoader、MMC LiteLoader；附Java/当前平台启动器包；局部实现 | mrpack 规范未定义的附加加载器拒绝并提示换格式；Mac派生字体禁止附带；新格式往返夹具不等于跨启动器、Windows或真实游戏互通，全部高级来源策略仍需逐项核对 |
 | `PageInstance/MyLocalModItem.xaml` | 本地 Mod 项：名称/译名/描述/标签/版本/启用/选择/更新状态 | JAR名称/文件名/版本/加载器/错误与启停/选择；更新对话框另显示已识别项目/新旧版本/来源；局部实现 | 复用行全部译名/远端标签/状态图标仍非完整原版；更新流程不等于每行像素复现 |
 
 ### 下载与社区资源：10 个文件
@@ -72,38 +72,38 @@
 | 上游文件（`Pages/` 下） | 原版行为 | Rust 对应与当前状态 | 未覆盖/验收边界 |
 | --- | --- | --- | --- |
 | `PageDownload/PageDownloadLeft.xaml` | 原版、Mod、整合包、数据包、资源包、光影包分类与刷新 | 原版/Mod/在线整合包/数据包/资源包/光影分类，本地 mrpack/ZIP 导入入口；局部实现 | 新全部格式与双源安装未做 GUI 验收；分类导航不等于每条安装链路通过 |
-| `PageDownload/PageDownloadInstall.xaml` | 原版版本选择及 Forge/NeoForge/Fabric/API/OptiFine/OptiFabric/LiteLoader 组合安装 | 原版/自定义实例名、Fabric/Quilt、现代与受限历史Forge/NeoForge；OptiFine官方列表、独立安装和精确Forge组合；共用加载/重试/typed取消；局部实现 | OptiFine仅官方列表真实只读/生成物夹具，厂商安装器未跑；LiteLoader/OptiFabric/API推荐及其它OptiFine组合缺；历史universal/client、额外旧native等仍拒绝，完整恢复/像素未验 |
-| `PageDownload/Resource/PageResource.xaml` | 共用搜索、源/版本/加载器/类型过滤、翻页、安装已有包与失败反馈 | Modrinth/CurseForge五类搜索、分类、分页、详情、版本；请求代次/typed取消；冻结MC百科译名/唯一中文名查询；局部实现 | 真实Modrinth中文查询通过；CF无Key未在线验，API拒分发明确失败；完整排序、多源持久缓存、全部GUI与像素未验 |
+| `PageDownload/PageDownloadInstall.xaml` | 原版版本选择及 Forge/NeoForge/Fabric/API/OptiFine/OptiFabric/LiteLoader 组合安装 | 原版/自定义名、Fabric/Quilt/Forge/NeoForge与早期NeoForge1.20.1；LiteLoader、API推荐、OptiFine独立/Forge/Fabric+OptiFabric组合；真实组件阶段与本任务登记重试；局部实现 | CF Key缺失，OptiFabric未在线下载验收；只采用上游实际兼容版本，Quilt/Neo+OptiFine不伪造支持；历史注入ZIP/额外旧native/特殊ZIP限制见下；未本轮厂商安装器/游戏及全状态像素验收 |
+| `PageDownload/Resource/PageResource.xaml` | 共用搜索、源/版本/加载器/类型过滤、翻页、安装已有包与失败反馈 | Modrinth/CurseForge五类搜索/分类/分页/详情/版本；四种排序、安全命名、分来源完整查询的5分钟持久缓存、请求代次与取消；冻结中文索引；局部实现 | 缓存不合并两源，不将过期结果伪装最新；CF无Key未在线验，拒分发明确失败；全部排序/缓存GUI与像素未验 |
 | `PageDownload/Resource/PageDownloadMod.xaml` | Mod 类型层级与搜索筛选 | 双源资源适配、必需依赖计划/精确版本冲突/复用/事务回滚；Mod更新另走显式检查与备份流程；局部实现 | 此前ModMenu+2依赖隔离实装不覆盖当前CF/更新；新组合/全部标签/游戏与GUI仍需验 |
-| `PageDownload/Resource/PageDownloadPack.xaml` | 整合包类型、搜索、详情、安装 | 在线mrpack/CF ZIP及本地mrpack/MMC-Prism/基础HMCL/MCBBS/CF manifest/双层mrpack；单个Fabric/Quilt/Forge/NeoForge依赖；局部实现 | CF无Key；HMCL pack.json、MCBBS OptiFine/外部文件及无manifest普通游戏ZIP拒绝；新格式回放不等于其它启动器/游戏实机互通 |
+| `PageDownload/Resource/PageDownloadPack.xaml` | 整合包类型、搜索、详情、安装 | 在线mrpack/CF ZIP、本地mrpack/MMC-Prism/HMCL pack.json/MCBBS/CF manifest/双层mrpack及单叶游戏ZIP；加载器与受支持LiteLoader/OptiFine组合；局部实现 | CF无Key；未知组件/任意执行钩子、多独立实例ZIP与任意私有fileApi域仍拒绝；MCBBS外部SHA1流和内嵌校验有夹具，新格式未跨启动器/真实游戏验收；同任务已登记尾组件按身份/hash收据继续，无法恢复的残留明确禁用重试 |
 | `PageDownload/Resource/PageDownloadDataPack.xaml` | 数据包分类、版本与下载 | Modrinth/CurseForge数据包适配，显式选择实例内有level.dat世界；无覆盖写入/回滚；局部实现 | 历史真实Modrinth下载仅写合成世界；CF无Key，未由Minecraft识别/启用或验全类别筛选 |
 | `PageDownload/Resource/PageDownloadResourcePack.xaml` | 资源包风格/特性/分辨率筛选与下载 | 双源资源包分类/详情/版本与哈希下载到resourcepacks；中文索引与百科入口；局部实现 | NeoFullbright历史实装不覆盖CF；GUI安装/游戏启用、全部筛选等价仍未验 |
 | `PageDownload/Resource/PageDownloadShader.xaml` | 光影风格、性能、Iris/OptiFine/原版筛选 | 双源光影分类/版本/ZIP；core shader走resourcepacks，常规shaderpacks；局部实现 | 历史MakeUp UltraFast实装/复用不覆盖CF或当前游戏；不自动安装Iris/OptiFine，完整兼容未验 |
-| `PageDownload/Resource/PageDownloadCompDetail.xaml` | 项目详情、官网/MC 百科、名称复制、版本文件列表与下载 | 公共标题返回、简介/官网/复制、版本分组/文件/依赖计划；平台slug映射中文名与MC百科；局部实现 | 固定索引不是实时完整库；统一持久缓存、双源全部GUI状态及像素仍未验 |
+| `PageDownload/Resource/PageDownloadCompDetail.xaml` | 项目详情、官网/MC 百科、名称复制、版本文件列表与下载 | 公共标题/返回、简介/官网/复制、版本分组/文件/依赖；中文名/百科；双源项目与版本持久缓存、安全命名和可续传下载；局部实现 | 固定中文索引不是实时完整库；5分钟缓存不保证离线最新；CF与双源全部GUI/像素未验 |
 | `PageDownload/Resource/MyResourceItem.xaml` | 社区项目复用条目、标签和元数据 | 双源统一ProjectHit元数据、来源与冻结索引中文标题；条目UI已接；局部实现 | 不是所有中文别名或远端标签；新CF条目未在线/GUI验收，不等于64DIP全部状态像素一致 |
 
 ### 设置：5 个文件
 
 | 上游文件（`Pages/` 下） | 原版行为 | Rust 对应与当前状态 | 未覆盖/验收边界 |
 | --- | --- | --- | --- |
-| `PageSetup/PageSetupLeft.xaml` | 启动、联机、个性化、其他，按页初始化 | 启动/个性化/其他导航已接；旧配置迁移保持用户排除；局部实现 | 联机、各页完整重置/独立滚动状态与原版所有设置仍未迁移 |
+| `PageSetup/PageSetupLeft.xaml` | 启动、联机、个性化、其他，按页初始化 | 启动/个性化/其他导航与隐藏后回退；系统页/全部偏好初始化；旧配置迁移排除；局部实现 | 全局重置保留备份/目录/账号相关输入，暂无全局备份图形恢复选择器；各页独立重置/滚动态未全等价；联机本轮排除 |
 | `PageSetup/PageSetupLaunch.xaml` | 默认隔离、标题/自定义信息、启动器可见性、进程优先级、窗口、RAM、离线皮肤、Java列表与高级参数 | 四卡布局/Java/RAM/隔离/窗口/参数；可见性/优先级/预命令；标题/最大化、仅本进程内存回收、离线五皮肤、JLW/LUA及Windows临时GPU偏好；局部实现 | Mac AX需用户已有授权；平台/游戏可拒绝，明确提示；固定补丁条件与禁用开关生效，真实游戏/Windows/完整变量和全部像素未验 |
-| `PageSetup/PageSetupLink.xaml` | P2P/延迟策略、自定义节点、节点状态与贡献入口 | 未迁移 | 需要 EasyTier 进程、独立配置和跨机连通验证 |
-| `PageSetup/PageSetupUI.xaml` | 主题、透明度、背景图/模糊、音乐、标题栏、主页源/预设、功能隐藏 | 15主题/自定义参数、背景透明度/模糊/13布局/GIF帧循环、窗口透明度/Logo；原生本地音乐及联动，本地/联网/预设主页；局部实现 | 1–13主题及模糊核非官方私有精确实现；Logo非原生Splash；音乐Mac静音WAV实跑、Windows仅编译，主页仅新闻只读通过；功能隐藏/部分标题栏和全状态仍缺 |
-| `PageSetup/PageSetupSystem.xaml` | 源优先级、并发/限速、社区文件命名、更新/公告、缓存、遥测、导入导出、语言、调试 | `setup_system_ui/system/network`源优先级、资产线程/接入流限速、CF安全存储、游戏更新提示/首次中文、本项目GitHub更新检查/校验下载与缓存；局部实现 | 只缓存更新包、不搬游戏/Java、不自动安装；原版私有公告/遥测无请求；社区命名/完整调试/语言/重置及原键兼容仍缺，旧配置迁移不恢复 |
+| `PageSetup/PageSetupLink.xaml` | P2P/延迟策略、自定义节点、节点状态与贡献入口 | 用户排除：本轮不做联机；保留原版清单 | EasyTier进程、房间节点和两端实机验证均未实现，不恢复入口，也不计入本轮已完成 |
+| `PageSetup/PageSetupUI.xaml` | 主题、透明度、背景图/模糊、音乐、标题栏、主页源/预设、功能隐藏 | 15主题/自定义参数、背景/模糊/布局/GIF、窗口透明度、原生启动Splash；标题无/默认/文字/图片与无标题导航居左；11个现有功能隐藏键与F12临时显示、隐藏当前页回退；音乐/受限主页；局部实现 | 1–13私有主题参数仍近似；原生Splash仅Mac进程冒烟/Windows目标检查，非成对像素；音乐/所有主页预设与Windows实机未全验，不恢复用户排除入口 |
+| `PageSetup/PageSetupSystem.xaml` | 源优先级、并发/限速、社区文件命名、更新/公告、缓存、遥测、导入导出、语言、调试 | 源策略/并发/限速、双源排序命名缓存、资源续传；更新/首次游戏中文、本项目校验包；系统/全局偏好初始化备份；动画倍率/可取消调试延迟/禁跨目录缓存复制与脱敏诊断；局部实现 | 原版启动器语言卡在固定源码注释隐藏，不伪造全界面翻译；私有公告/遥测未接，全局备份GUI恢复缺；历史原键与旧配置迁移排除，调试/重置全状态GUI待验 |
 
 ### 联机、更多、任务：8 个文件
 
 | 上游文件（`Pages/` 下） | 原版行为 | Rust 对应与当前状态 | 未覆盖/验收边界 |
 | --- | --- | --- | --- |
-| `PageLink/PageLinkMain.xaml` | EasyTier 下载、创建/加入房间、邀请码、延迟/人数/端口、退出与错误恢复 | 未迁移；当前无入口 | 模块下载和节点选择依赖缺失的在线配置，macOS 网络权限亦需实际处理 |
+| `PageLink/PageLinkMain.xaml` | EasyTier 下载、创建/加入房间、邀请码、延迟/人数/端口、退出与错误恢复 | 用户排除：本轮不做联机；保留原版清单 | EasyTier进程、房间节点和两端实机验证均未实现，不恢复入口，也不计入本轮已完成 |
 | `PageOther/PageOtherLeft.xaml` | 帮助、关于、百宝箱、反馈、投票 | 当前仅保留帮助/关于；百宝箱、反馈、投票三个入口及其状态/说明弹窗按用户要求删除 | 三个已删除入口不再列为迁移缺口；保留页面的导航/返回及完整几何状态仍需验 |
 | `PageOther/PageOtherAbout.xaml` | 作者/协作者/服务鸣谢、赞助、版本、更新、赞助者列表 | 上游作者/官网/赞助与固定鸣谢，Rust作者mohui666及第三方身份；本项目GitHub更新入口；局部实现 | 固定快照非实时赞助等级；本项目下载需公开可校验包，不代表原版更新服务；全部链接/头像/滚动状态待验 |
 | `PageOther/PageOtherHelp.xaml` | 本地/缓存帮助目录、分类、搜索、加载与刷新 | 固定40条帮助分类/搜索/刷新，加显式事件打开的本地及远程JSON/XAML帮助；局部实现 | 原版统一在线目录版本/全部缓存和用户扩展发现规则未等价；远程读取不执行自动动作，全部失败/滚动/像素未验 |
-| `PageOther/PageOtherHelpDetail.xaml` | 动态帮助详情、XAML 内容、事件入口 | 共用惰性XAML子集、图片/静态资源/模板/变量、页面导航与显式事件；受影响文件/程序/下载/设置/变量需确认；局部实现 | 无完整WPF Binding/自动Triggers/CLR；设置白名单，未知动作报错；远程模板与全部图文布局未逐页实机核验 |
+| `PageOther/PageOtherHelpDetail.xaml` | 动态帮助详情、XAML 内容、事件入口 | 共用受限XAML布局/静态资源/模板、单向Binding/ElementName、只读Trigger/DataTrigger和DockPanel；显式事件与有副作用操作确认；局部实现 | 没有CLR/完整WPF/TwoWay、任意Source私有绑定或自动事件执行；设置白名单、未知动作报错；全部远程模板/图文布局未逐页实机核验 |
 | `PageOther/PageOtherTest.xaml` | 百宝箱容器 | 用户排除；入口和占位页已删除 | 原版公开代码仍缺此实现；保留本行用于43文件清单完整性，不纳入当前迁移待办 |
-| `PageSpeedLeft.xaml` | 全局任务总进度、下载速度、剩余文件/线程 | 单任务真实网络字节/速度/待校验文件及active/已知并发上限；200 DIP侧栏四组，未知上限或无遥测显示— | 仅原版管线有线程遥测，不能把其它生产者猜成8；已知单计划仍阶段等权，非原版权重/字节比。全局聚合/逐任务控制和完整新GUI流程待验；下载设置的资产并发配置另已接入 |
-| `PageSpeedRight.xaml` | 任务树、分任务状态/进度、取消 | 阶段/取消及六阶段自动原版四组；JobId绑定root/目标/取消状态，旧事件不清新锁，浏览失效不吞安装终态；269包逐项导出完成后按钮恢复 | JobId/旧root/取消与真实错误有fixture；该次GUI导出释放锁不等于所有安装路线终态。原版组合任务树/并行队列/持久历史、取消后重试仍待迁移或验收 |
+| `PageSpeedLeft.xaml` | 全局任务总进度、下载速度、剩余文件/线程 | 多作业实际传输总量、速度、已知剩余与活动线程聚合；未知值保持—；独立根并行、冲突根排队；局部实现 | 阶段/组件按明确等权汇总，不能称原版全权重或总字节百分比；并发时序/真实公网续传、完整原生GUI及Windows待验 |
+| `PageSpeedRight.xaml` | 任务树、分任务状态/进度、取消 | `job/task_hub/task_ui` 根目录排队/最多4个独立作业、每任务取消/切换/本会话重试、200条本地历史、真实组件+阶段树；局部实现 | 重启历史标为中断，不自动重放写操作；重试闭包仅本会话，既有目标仍校验；通用任意Loader依赖图/原版权重与全状态像素未等价 |
 
 ### 皮肤复用控件：1 个文件
 
@@ -119,29 +119,29 @@
 | --- | --- | --- |
 | `Base/ModAnimation.vb` | 下拉/消息框/提示/加载与GIF各自接入部分动画；未迁统一动画系统 | 完整时间线/缓动组合、页面进退场和全部颜色/位置状态仍需逐项核对 |
 | `Base/ModBase.vb` | `metadata/model/config` 与标准库局部替代 | 替换标记、平台工具及广泛公共方法必须按调用链核查；不能按文件名整体划为完成 |
-| `Base/ModLoader.vb` | 后台线程/channel/typed取消、显式阶段计划和单任务页；局部实现 | LoaderTask/Combo依赖图、原版权重、多任务并行、重载缓存与持久历史仍缺；局部阶段进度不等于完整调度器 |
-| `Base/ModNet.vb` | `install/network/transfer`HTTPS/哈希/原子落盘、已知官方路径BMCLAPI回退、资产worker线程配置与接入流全局限速/遥测；局部实现 | 分片/断点续传、所有网络生产者统一策略/遥测及全局多任务统计未覆盖；身份接口不走镜像 |
+| `Base/ModLoader.vb` | `job/task_hub/task_ui` 冲突路径排队/独立根并行、逐任务取消切换/本会话重试、持久历史及组件阶段；局部实现 | 最多4并行；重启不自动恢复写任务，组件/阶段等权不冒充原版权重；通用任意依赖图/全部Loader缓存语义与GUI待验 |
+| `Base/ModNet.vb` | `install/network/transfer/resumable` HTTPS/校验落盘、官方路径镜像、全局限制/遥测、可信文件Range分片续传与缓存校验；资源/Mod更新/在线包共用；局部实现 | 无Range降级完整响应；最终官方大小/hash校验后提交，身份接口不走镜像；隔离HTTP夹具不等于全部公网/CDN/代理和Windows通过 |
 | `Base/ModValidate.vb` | 路径/ID/配置/登录输入各自校验；局部实现 | 原版所有控件校验器与错误反馈行为 |
 | `Base/MyBitmap.vb` | `ui_style` 纹理/原版资产，`auth/account_ui` 在线皮肤受限下载与分层裁切；局部实现 | 完整图像缓存、缩放模式、主题处理和真实账号头像未验 |
-| `Base/PclLogger.vb` | 内存日志/已知凭据脱敏；`crash`本地日志收集与ZIP导出；局部实现 | 不是全原版持久日志/级别系统；未知私人信息仍需分享前检查 |
+| `Base/PclLogger.vb` | 已知凭据脱敏、调试信息与可导出的本地诊断/崩溃日志；调试模式增加保留；局部实现 | 仍非原版全部日志级别/转储行为；未知个人信息须分享前检查，不自动上传 |
 | `Minecraft/ModCrash.vb` | `crash/crash_ui`实际PID/cwd/启动时间隔离、异常退出延后收集、25类线索/建议、手工导入与无覆盖ZIP导出；局部实现 | 未覆盖全部原规则；合成日志不是实际游戏崩溃，分析线索不当成确定根因，无自动上传 |
-| `Minecraft/ModDownload.vb` | 原版/Fabric/Quilt/Forge/NeoForge/Java、受限历史Forge、OptiFine独立与精确Forge组合；继承补全及收据绑定生成物重建；局部实现 | 历史其他分支、LiteLoader/OptiFabric/API推荐、无收据修复缺；本轮OptiFine安装器/生成物重跑仅夹具，官方列表只读不等于安装 |
+| `Minecraft/ModDownload.vb` | 原版/Java/Fabric/Quilt/Forge/NeoForge含早期1.20.1；LiteLoader/API/OptiFabric与合法OptiFine组合；Mojang父JSON补全及收据重建；局部实现 | 旧Forge无installer注入ZIP、额外custom natives/特殊ZIP及无收据自定义修复拒绝；CF资格与真实厂商安装器/组合游戏未本轮验收 |
 | `Minecraft/ModJava.vb` | java/java_selection/java_download：完整版本与范围、四种模式、原版约束、有界发现、优先/排除、官方平台下载；局部实现 | 21.0.7/21.0.12.1实际只读探测/选择通过；全部历史版本/发行版/原版缓存与Windows运行仍未验，手选/范围不是无条件exact-major |
 | `Minecraft/ModLaunch.vb` | `launch/process/native_window/launch_patches/offline_skin`会话/配置优先级、预命令/窗口/进服/可见性、PID窗口控制、条件补丁、离线资源包与本进程内存回收；局部实现 | 只用本机预命令；真实游戏/Windows、全部历史版本/事件/变量仍需验；第三方认证不在本轮范围，GPU强杀启动器可能遗留临时偏好 |
-| `Minecraft/ModMinecraft.vb` | 多目录/识别、收藏隐藏分类、隔离、重命名/回收站；局部实现 | 每目录完整管理/状态、全部版本识别与GUI仍缺；旧170包别名往返仅证明记录语义，不能泛化任意用户数据。旧PCL配置迁移不在当前用户要求范围 |
-| `Minecraft/ModModpack.vb` | mrpack/MMC-Prism/基础HMCL/MCBBS/CF及双层mrpack导入，Forge/Neo依赖；多格式导出/精细选择、Java/当前平台PCL双ZIP；局部实现 | 未知格式/无manifest游戏ZIP、HMCL pack.json和加载器导出、MCBBS额外addon/下载、OptiFine/LiteLoader导出缺；Mac派生字体禁止随包，未新格式实机互通 |
+| `Minecraft/ModMinecraft.vb` | 目录创建/登记/显示名/移除/切换；任意本地图标、收藏分类、隔离、实例初始化/备份恢复、改名/回收站；局部实现 | 目录显示名不搬盘、移除不删数据；全部识别/多目录GUI与Windows仍未验；旧PCL配置迁移排除 |
+| `Minecraft/ModModpack.vb` | mrpack/MMC-Prism/HMCL pack.json/MCBBS/CF及单叶游戏ZIP导入；加载器/受支持LiteLoader与OptiFine依赖；多格式导出/逐项选择/附Java/平台包；局部实现 | 多独立实例ZIP/未知组件/任意执行钩子/任意私人fileApi域拒绝；规范不支持的mrpack依赖提示换格式；Mac派生字体禁随包，跨启动器/游戏未全验 |
 | `Minecraft/ModWatcher.vb` | 仅本次Child/PID日志/就绪/退出、关闭按钮与可见性；PID窗口标题/最大化和异常退出本地崩溃分析；局部实现 | 单受管游戏；操作系统/游戏可拒绝窗口控制；本批真实游戏/Windows全生命周期未验，日志标记不是视觉就绪证明 |
-| `ModDevelop.vb` | 未迁移 | 开发辅助与对应调试入口；不把内部工具数量计为用户功能数量 |
-| `ModEvent.vb` | `home_ui/xaml_ui/more_ui`受限布局/静态资源及显式网页/复制/导航/启动/包入口等事件，写入/文件/程序/下载需确认；局部实现 | 无完整WPF/自动事件/CLR；白名单设置与有限变量，服务器参数型启动事件拒绝；不从下载内容自动执行 |
-| `ModMain.vb` | `app/main/ui_style/hint_ui/modal_ui` 部分窗口/资源行为；三色提示最多20条、重复合并/刷新、进出与抖动动画；消息框显式警告/首按钮/键盘/焦点与进出动画，关闭快照不重复执行动作 | 渲染及输入fixture不等于全部消息框实机/像素验收；窗口生命周期、拖放/快捷键、异常路径及全部主界面状态仍缺 |
+| `ModDevelop.vb` | 系统调试模式、动画倍率、请求及任务开始/结束可取消随机延迟、跨目录缓存复制禁用已接；局部实现 | 只作用实际已接调用链，不改变安全校验或认证；原版内部开发工具/全计数器及GUI仍未等价 |
+| `ModEvent.vb` | 受限静态资源、Binding/ElementName、显示Trigger/DataTrigger、DockPanel及显式事件；带服务器启动先确认并验证当前正版会话；局部实现 | 不实现CLR/完整WPF/任意自动事件或跨节点写入；不从远程内容自动执行，不新发认证或持久改server；设置和公开变量有白名单 |
+| `ModMain.vb` | `app/main/ui_style/hint_ui/modal_ui` 部分窗口/资源行为；三色提示最多20条、重复合并/刷新、进出与抖动动画；消息框显式警告/首按钮/键盘/焦点与进出动画，关闭快照不重复执行动作 | 渲染及输入fixture不等于全部消息框实机/像素验收；Mod/包/主页/日志文件拖入已接，列表排序仍缺；窗口生命周期、完整快捷键/异常路径和全部主界面状态未等价 |
 | `ModMusic.vb` | 本地列表/音量/随机循环/切曲/暂停/自动播放/游戏联动，Mac AVAudioPlayer与Windows MCI，清空留备份；局部实现 | Mac临时静音WAV已实跑；Windows未执行、系统codec和完整GUI未验，无联网音乐服务 |
 | `ModSecret.vb` | 默认蓝色/HSL2/渐变几何由公开算法重算；15主题本地可用，1–13私有参数采用Rust近似 | 官方预设数值、虹彩周期/解锁规则未公开；不冒充官方等级/身份。微软/CF服务资格、原版私有公告/识别码仍有缺失；自有下载与更新已独立实现，见下表 |
 | `Resource/LocalResourceFile.vb` | 本地JAR解析/启停，MR SHA512和CF精确指纹+官方SHA1确认、未知哈希不推断项目；局部实现 | 完整原版资源分类/缓存/全部状态未等价；CF无Key未在线验 |
-| `Resource/LocalResourceLoaders.vb` | 本地扫描/批量启停与Mod显式更新；新依赖隔离准备/禁用保留/原件备份回滚/取消；局部实现 | 完整远端持久缓存、全部更新兼容组合、Mod删除与GUI恢复未验或未覆盖 |
-| `Resource/ResourceProject.vb` | MR/CF五类统一模型/详情/图标，冻结MC百科中文名和slug关联；局部实现 | CF无Key；实时完整译名/统一持久缓存及全部像素状态未验 |
-| `Resource/ResourceSearcher.vb` | 双源query/分类/版本/loader/分页；冻结索引唯一中文名称转换；局部实现 | 完整可选排序/模糊中文关联/热度排名未迁移；CF无Key、全部GUI交互态未验 |
-| `Resource/ResourceVersion.vb` | 双源文件hash/大小、required依赖/循环/冲突/复用/事务提交；CF遵守API许可与SHA1；Mod更新独立显式备份路线 | 不自动替换普通安装中的不兼容文件；跨类别依赖及文件名推断拒绝；CF在线和全部更新/恢复GUI未验 |
-| `ThirdParty/DragHelper.vb` | 未迁移 | 原版可拖动排序/列表拖放；原生选文件不等于拖放覆盖 |
+| `Resource/LocalResourceLoaders.vb` | 扫描/启停/显式更新，依赖准备/禁用保留/备份取消；选中Mod可恢复移除及同名/身份校验；局部实现 | 备份恢复夹具不等于真实用户数据/游戏验收；完整标签/兼容组合/远端及GUI仍未全验 |
+| `Resource/ResourceProject.vb` | MR/CF五类模型/详情/图标、固定中文关联；来源隔离的项目/版本5分钟持久缓存；局部实现 | CF无Key；固定中文不是实时完整库，缓存过期失败不伪装最新，全部像素状态未验 |
+| `Resource/ResourceSearcher.vb` | 双源查询/分类/版本/loader/分页及相关度/下载量/更新/发布排序；中文唯一名转换和查询隔离持久缓存；局部实现 | 不是两源结果合并；完整模糊中文/热度排名仍缺；CF在线、全排序与失效GUI未验 |
+| `Resource/ResourceVersion.vb` | 双源大小/hash、required依赖/循环/冲突/复用/事务提交；安全目标命名与可信Range续传；CF许可检查、Mod更新备份 | 不改官方URL/hash，不根据文件名猜项目；跨类别依赖拒绝；CF在线与所有取消/恢复GUI待验 |
+| `ThirdParty/DragHelper.vb` | `file_drop_ui` 普通文件拖入：Mod、包、XAML主页与日志；分类/目标确认/过期目标防护，复用现有导入器；局部实现 | 未迁列表拖动排序或目录拖放；RAR需自行转换ZIP；不处理认证URI，不因拖入自动执行主页事件；原生拖放GUI待验 |
 
 | `PCLCS/` 文件 | Rust 对应与当前状态 | 主要剩余范围 |
 | --- | --- | --- |
@@ -178,27 +178,27 @@ Rust 已参照部分原版控件的几何与默认配色绘制按钮、导航、
 
 - 版本/目录/下载/资源/帮助页：原版卡片与行的展开/折叠、空态、错误/加载、滚动位置、返回层级和键盘焦点；目前只核过部分静态几何与局部交互。
 - 账号页：304源码已接分类消息/恢复动作、有限重新认证与原账号绑定、皮肤401续办及披风确认；仍需未登录/设备码/pending/拒绝/过期/恢复失败/多账号切换/皮肤上传/披风的完整真实账号与成对像素验收，不能由合成事件跳过。
-- 安装和任务页：原版组合兼容推荐、各子任务权重/层级、取消重试、完成/失败返回；当前四组展示仍是单任务受限映射，没有完整调度器。
+- 安装和任务页：组合兼容选择、真实组件/阶段层级、冲突排队、独立根并行与本会话取消重试已经接入；当前采用明确等权进度，仍需核对原版权重、全部终态/返回/GUI，不把调度夹具当成公网或像素证据。
 - 导出与关于页：216包的居中/遮挡等问题已修，257历史包已观察高级卡/按钮分离和作者鸣谢可见；仍须复核新包全部状态，不能据可见性宣布像素通过。
 - 所有页面：按钮idle/hover/press/disabled、输入校验/选择、弹窗、滚动条/拖拽/动画需相同状态参考；Mac苹方替代是已接受的字体差异，Windows微软雅黑及DPI仍要实机验证。
 
 ## 设置与数据兼容
 
-Rust 全局 `Settings` 已覆盖游戏目录/目录列表、背景、15主题及色调/饱和度/亮度/渐变、Java、手动/自动内存、窗口策略/尺寸、启动器可见性/进程优先级/全局预命令及等待、背景透明度/模糊/布局、窗口透明度/启动图标、默认隔离、GC、自定义信息/JVM/游戏参数、离线名字/历史/皮肤、游戏标题/最大化/本进程内存回收/补丁禁用/Windows GPU偏好、音乐/主页、下载策略、system更新与缓存、版本选择与 Microsoft Client ID。实例 `versions/<id>/PCL-Rust/instance.json` 支持隔离/Java/内存/窗口/GC覆盖、服务器/登录限制、实例预命令及等待、标题/内存回收/补丁禁用、描述/收藏/隐藏/图标/分类，保存时保留自有未知键。全局和实例预命令分别执行，实例不会覆盖掉全局命令；加载的下载元数据不作为命令来源。自有模型不是原版191键的全兼容模型；旧PCL配置迁移核心、桌面入口与独占依赖已按用户要求整体撤回，不读取注册表/原版账号配置，不把迁移历史检查列为当前功能。下面完整保留191键用于界定原版行为范围。
+Rust 全局 `Settings` 已覆盖游戏目录/目录列表、背景、15主题及色调/饱和度/亮度/渐变、Java、手动/自动内存、窗口策略/尺寸、启动器可见性/进程优先级/全局预命令及等待、背景透明度/模糊/布局、窗口透明度/启动图标、默认隔离、GC、自定义信息/JVM/游戏参数、离线名字/历史/皮肤、游戏标题/最大化/本进程内存回收/补丁禁用/Windows GPU偏好、音乐/主页、标题四模式/功能隐藏、下载策略/排序/命名/元数据缓存、system更新/调试与缓存、版本选择与 Microsoft Client ID。实例 `versions/<id>/PCL-Rust/instance.json` 支持隔离/Java/内存/窗口/GC覆盖、服务器/登录限制、实例预命令及等待、标题/内存回收/补丁禁用/禁Mod更新、描述/收藏/隐藏/本地图标/分类、初始化与备份恢复，保存时保留自有未知键。全局和实例预命令分别执行，实例不会覆盖掉全局命令；加载的下载元数据不作为命令来源。自有模型不是原版191键的全兼容模型；旧PCL配置迁移核心、桌面入口与独占依赖已按用户要求整体撤回，不读取注册表/原版账号配置，不把迁移历史检查列为当前功能。下面完整保留191键用于界定原版行为范围。
 
 账号目录另存非秘密资料与选择状态；Microsoft 刷新凭据只交 macOS Keychain / Windows Credential Manager，Minecraft access session 只在内存。恢复与启动前检查会刷新，失败不使用旧会话或退离线。没有复制原版私有凭据。合成 Keychain 往返不等于真实账号授权/续期成功。
 
 | 原版设置前缀 | 数量 | 当前对应与缺口 |
 | --- | ---: | --- |
-| `Ui` | 41 | 15主题、自定义参数、全局调色、本地背景/彩色开关已接自有持久配置；预设1–13是Rust近似，非官方私有参数还原；模糊/背景布局/透明度/图标开关已接；音乐与受限本地/联网主页已接；功能隐藏/完整标题栏及原键兼容未迁移 |
-| `Cache` | 35 | 部分自有下载缓存；原版账号、资源、版本及 Java 缓存不兼容 |
+| `Ui` | 41 | 15主题、自定义参数、全局调色、本地背景/彩色开关已接自有持久配置；预设1–13是Rust近似，非官方私有参数还原；模糊/背景布局/透明度/图标开关已接；音乐与受限本地/联网主页已接；四种标题模式/无标题居左、11个现有功能隐藏/F12临时覆盖及原生Splash已接；原键兼容不迁移，全状态GUI/Windows待验 |
+| `Cache` | 35 | 自有校验下载分片缓存及分来源/完整查询的5分钟资源元数据缓存已接；原版账号/版本/Java序列化格式不兼容 |
 | `Launch` | 27 | 名字/Java/动态RAM、默认隔离、默认/全屏/自定义/跟随窗口尺寸、信息/JVM/游戏参数/GC已有自有配置；可见性/优先级/预命令及等待已接；标题/最大化、离线皮肤与条件JLW/LUA已接；全历史版本实机未验；不做旧键导入 |
-| `Version` | 26 | 实例模型及覆盖启动已实现一部分；Java四模式已有；实例预命令/等待已接；实例补丁禁用已接；第三方认证/实例禁更新开关仍缺；使用自有配置，不做旧键导入 |
-| `System` | 16 | 自有system模型有游戏更新基线提示、首次中文、本项目GitHub更新/校验下载与缓存；原版公告/遥测/调试及全部计数状态未迁移 |
+| `Version` | 26 | 实例模型及覆盖启动已实现一部分；Java四模式已有；实例预命令/等待已接；实例补丁禁用已接；实例禁Mod更新、初始化/恢复已接；第三方认证本轮排除；使用自有配置，不做旧键导入 |
+| `System` | 16 | 自有system模型有游戏更新基线提示、首次中文、本项目GitHub更新/校验下载与缓存；调试模式/动画倍率/可取消延迟/禁跨目录缓存复制、系统页和全部偏好初始化备份已接；原版私有公告/遥测/全部计数仍未迁移 |
 | `Hint` | 14 | 未迁移原版提示已读/条件状态 |
-| `Tool` | 14 | network配置分开文件/清单源、资产线程和接入流限速；双源资源/冻结中文索引；社区命名、完整调试/缓存/排序与原键兼容仍缺 |
+| `Tool` | 14 | network配置分开文件/清单源、资产线程和接入流限速；双源资源/冻结中文索引；社区命名、四种排序、来源隔离持久缓存与Range续传已接；完整原键兼容不在旧配置已排除范围内，全部生产调用链/实机待验 |
 | `Login` | 9 | 离线与微软多账号/安全凭据/有限恢复、原账号绑定、皮肤披风API及确认/分类提示局部实现，完整真实账号未验；第三方/Nide/角色未迁移 |
-| `Link` | 4 | 联机配置未迁移 |
+| `Link` | 4 | 用户明确排除本轮联机；配置未迁移 |
 | `Window` | 2 | 原版启动器窗口尺寸持久化尚未等价；旧配置导入已排除 |
 | `Identify`、`April`、`Potatoes` | 各 1 | 设备识别、活动与赞助相关，公开代码有缺失 |
 
@@ -213,20 +213,32 @@ Rust 全局 `Settings` 已覆盖游戏目录/目录列表、背景、15主题及
 | 微软正版登录 | `ModSecret.vb` 第10行从 `PCL_MS_CLIENT_ID` 取值 | 自有公共客户端ID已保存，真实设备码成功但Minecraft `login_with_xbox` HTTP403，不能确定唯一原因。已按用户确认提交AppID审核、待审批；权益/profile、真实凭据保存后重启恢复和续期仍需验收，注册/提交不代表API资格已批准 |
 | CurseForge | 同文件第 12、35 行为 `PCL_CURSEFORGE_API_KEY` 与 `x-api-key` | 双源适配与Key安全存储已实现；使用合法自有Key，API不许分发/无URL则明确拒绝，不拼CDN地址。本机无可用Key，只有夹具/静态防护，不能写线上CF通过 |
 | 官方更新/联网公告配置 | 同文件 `Update*`、`DownloadLatestPCL` 为空；`ServerLoader` 只记日志 | 已独立接本项目GitHub Releases稳定版、匹配平台且SHA256/大小完整的包下载；没有release/匹配包会明确显示。只下载不替换应用；原版私有公告/遥测服务未接，不冒充官方更新 |
-| EasyTier 房间/节点 | `PageLinkMain.xaml.vb` 使用 `ServerConfig("Link")` 的版本、下载 URL、发现/中继/强制节点与黑名单；公开节点 API 部分可见 | 公共 EasyTier 不代表官方服务配置已提供；可独立接入官方公开二进制与自有/公开节点，并做两端实机连通、退出清理、错误恢复测试。当前没有联机实现 |
+| EasyTier 房间/节点 | `PageLinkMain.xaml.vb` 使用 `ServerConfig("Link")` 的版本、下载 URL、发现/中继/强制节点与黑名单；公开节点 API 部分可见 | 公共 EasyTier 不代表官方服务配置已提供；可独立接入官方公开二进制与自有/公开节点，并做两端实机连通、退出清理、错误恢复测试。当前没有联机实现，本轮按用户指示排除 |
 | 赞助/主题解锁/识别码 | `CurrentRank=None`；`InputPotatoCode`/`GeneratePotatoCode` 空；`GetIdentify` 固定零；`ThemeUnlock=False`；预设参数分支未公开 | 用户要求15主题本地直接可用，Rust提供近似预设/独立虹彩，不调用官方解锁或伪造等级、识别码及身份；原作者/赞助/第三方与许可标识保留，官方私有参数无法据此声称精确 |
 | 匿名上报 | `ClsBaseUrl` 为空 | 不得假定存在可用的官方写入端点；若独立实现，需相应服务与用户可见设置 |
 | 百宝箱/反馈/投票入口 | 百宝箱公开XAML/后台无完整实现；原更多栏列有三个入口 | 用户已明确删除三入口；本地入口/关联状态及说明弹窗已移除，不再作为服务障碍或迁移待办 |
-| 自定义主页/帮助 | `PageLaunchRight` 与 `ModEvent` 公开动态 XAML/事件协议 | 本地/联网文档、图片、静态样式/模板、有限替换/事件已接；有外部后果的操作需用户点击再确认。完整WPF/自动Triggers/CLR、私有回声洞句库及所有预设仍不等价 |
+| 自定义主页/帮助 | `PageLaunchRight` 与 `ModEvent` 公开动态 XAML/事件协议 | 本地/联网文档、图片、静态样式/模板、有限替换/事件已接；有外部后果的操作需用户点击再确认。单向Binding/ElementName、显示Trigger/DataTrigger与DockPanel已接；完整WPF/CLR/TwoWay、任意自动事件、私有回声洞句库及所有预设仍不等价 |
 
 许可记录见 [upstream.md](upstream.md)。上游不是 MIT；公开源码可读不等于官方品牌、私有服务、字体或其他资产可不受限制重新分发。
 
 公开仓库首提交 `adfc9cc033b4054396a425489486843906395042` 提供独立介绍，`b4e82a61bf51686f50036ce1218cd7ac5a8a4f96` 更新审核已提交；历史 `4c8bcfbc75a3ee409f4a61742969e7f9bf523546` 整理发布6份Markdown且远端文件哈希核对一致。历史 `85aa0c0acd4392c28cbc6624263be38abfdc0df9` 按用户要求公开源码与文档，本地副本为 `test-output/github-project-page`，原开发目录仍非Git仓库。公开副本只作cargo fmt规范化、本机路径脱敏及CI取消打包/上传，未改变产品功能；其304测试、严格Clippy与release编译通过，见 `test-output/source-publication-validation.json`。公开CI独立验收，未由本地结果推定通过；发行包、本机字体、原日志与账号/游戏数据未发布，自定义许可和资产的二进制分发条件仍需核对。
 
+## 本轮不可宣称已经闭合的边界
+
+- **13 个私有主题**：默认蓝公开公式已保留，主题 1–13 参数/虹彩周期未在固定公开源码或逐主题参考图中提供；当前可用近似配色不称像素复刻，也不伪造官方等级。
+- **回声洞与 WPF**：私有原句库不可得；只实现明确受限的单向绑定、显示触发器和布局。完整 CLR、转换器、TwoWay 写入、跨节点 Setter、复杂测量/自动执行事件没有迁移。
+- **历史安装器**：Forge universal/client ZIP 注入、额外自定义 native 的旧 profile、ZIP64/分卷/自解压历史 installer 缺可信实际样本，保留拒绝；支持的旧式/中式/现代 installer 不等于所有历史路线。历史 `map_to_resources` 自定义实例名仍受限。
+- **包与修复边界**：多独立实例通用 ZIP、未知组件/任意包执行钩子/任意私有 fileApi 域、无哈希/收据的自定义生成物明确拒绝。mrpack 未定义的 OptiFine/LiteLoader 依赖提示改用规范支持的格式。
+- **外部资格与实机**：本机 CurseForge 无可用 Key；OptiFabric/CF 在线链路未验。新 Java 厂商安装器/组合游戏、Windows 实机、全页面同状态像素比较尚无本轮完整证据。登录和联机从当前实施范围排除，不写成已完成。
+- **管理与历史**：目录移除只移登记、改名只改显示名；实例初始化不删游戏，Mod移除保留可恢复备份。任务历史重启后仅显示中断记录，不自动恢复写入；全局设置备份尚无图形恢复选择器，列表拖动排序仍未迁移。
+
+实际子任务说明：`test-output/remaining-installers-implementation.md`、`remaining-management-implementation.md`、`remaining-personalization-implementation.md`。代码可能在集成时补入新检查，最终完整测试、构建、签名和产物须由主任务验证记录确认，不在这里预填通过数量或包哈希。
+
 ## 验证证据与尚未完成的验收
 
 | 证据 | 可以支持的结论 | 不能支持的结论 |
 | --- | --- | --- |
+| 本轮 `test-output/remaining-*-implementation.md` 与各自定向日志 | 当前源码实现边界、临时目录保护/格式/状态夹具、官方只读列表、Mac原生Splash进程冒烟与Windows目标检查 | 不是新的完整集成包/发布或真实用户操作证据；不预填最终总测试数，不代替厂商安装器、游戏、Windows实机与全页像素 |
 | `test-output/nonlogin-parity/account-dropdown-anchor-validation.json` | 本轮Mac真实鼠标打开并选择两处账号菜单、名字输入及下载名称/分类/连续版本输入，修复定位/命中问题 | 没有登录API请求；不是全部输入控件、像素或Windows验收，后续新构建仍须复核 |
 | `test-output/nonlogin-parity/network-live.log` | 只读官方/镜像原版清单、Fabric及OptiFine列表、Modrinth中文搜索均返回实际数据 | 无JAR安装/游戏执行，不覆盖CF；本机CF没有Key，不能声称线上通过 |
 | `test-output/personalization-home-crash/` | 合成XAML/主页/崩溃/生命周期夹具；Mac临时静音WAV真实播放/暂停/音量；固定新闻主页只读获取解析 | 不是所有音频/联网预设/GUI、真实游戏崩溃或Windows运行；未点击远程动作，不自动上传日志 |

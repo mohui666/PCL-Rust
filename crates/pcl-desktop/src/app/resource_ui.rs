@@ -402,6 +402,7 @@ impl Launcher {
     fn search_resources(&mut self, offset: u32, use_form: bool) {
         let state = &self.resource_browser;
         let mut request = resources::SearchOptions {
+            sort: self.settings.resource_sort,
             provider: state.provider,
             query: state.query.trim().into(),
             minecraft: (!state.minecraft.trim().is_empty()).then(|| state.minecraft.trim().into()),
@@ -559,23 +560,25 @@ impl Launcher {
                 self.error = Some(format!("新实例名称无效：{error:#}"));
                 return;
             }
-            let Some((tx, cancel)) =
-                self.start_download_job("正在下载并安装整合包", Some(id.clone()))
+            let Some((tx, _)) = self.start_download_job("正在下载并安装整合包", Some(id.clone()))
             else {
                 return;
             };
             let root = self.settings.game_root.clone();
             let optional = self.resource_browser.pack_optional;
-            std::thread::spawn(move || {
+            let retry = pcl_core::packs::PackRetry::default();
+            tx.spawn(move |tx| {
+                let cancel = tx.cancel_token();
                 let result = (|| {
                     let pack = resources::download_modpack(&project, &version, &cancel, |p| {
                         let _ = tx.send(Event::Progress(p));
                     })?;
-                    pcl_core::packs::install_pack(
+                    retry.install_with_java(
                         &root,
                         pack.path(),
                         &id,
                         optional,
+                        None,
                         &pcl_core::model::Platform::current(),
                         &cancel,
                         |p| {
@@ -583,6 +586,9 @@ impl Launcher {
                         },
                     )
                 })();
+                if !retry.retryable() {
+                    tx.disable_retry();
+                }
                 let _ = tx.send(match result {
                     Ok(id) => Event::Installed(id),
                     Err(error) => Event::download_failed("整合包安装未完成", error),
@@ -609,7 +615,7 @@ impl Launcher {
             self.error = Some("请先明确选择此实例中的目标世界。".into());
             return;
         }
-        let Some((tx, cancel)) = self.start_download_job("正在下载资源", Some(target.clone()))
+        let Some((tx, _)) = self.start_download_job("正在下载资源", Some(target.clone()))
         else {
             return;
         };
@@ -617,7 +623,9 @@ impl Launcher {
         // cancellation token. The task cancel button controls installation.
         let key = self.resource_request(None);
         let root = self.settings.game_root.clone();
-        std::thread::spawn(move || {
+        let naming = self.settings.resource_naming;
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
             let result = (|| {
                 std::fs::create_dir_all(&instance)?;
                 let checked = config::instance_game_dir(&root, &target)?;
@@ -637,6 +645,7 @@ impl Launcher {
                         &cancel,
                     )?
                 };
+                let plan = plan.with_naming(naming)?;
                 let _ = tx.send(Event::Resource(ResourceEvent::Plan(
                     key.clone(),
                     plan.resources(),
@@ -797,6 +806,47 @@ impl Launcher {
                         }
                     });
             });
+            ui.add_space(10.0);
+            let previous = (self.settings.resource_sort, self.settings.resource_naming);
+            ui.horizontal(|ui| {
+                ui.label("排序");
+                crate::ui_style::PclComboBox::from_id_salt("resource-sort")
+                    .width(130.0)
+                    .selected_text(self.settings.resource_sort.label())
+                    .show_ui(ui, |ui| {
+                        for value in [
+                            resources::SearchSort::Relevance,
+                            resources::SearchSort::Downloads,
+                            resources::SearchSort::Updated,
+                            resources::SearchSort::Newest,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.settings.resource_sort,
+                                value,
+                                value.label(),
+                            );
+                        }
+                    });
+                ui.label("文件命名");
+                crate::ui_style::PclComboBox::from_id_salt("resource-naming")
+                    .width(150.0)
+                    .selected_text(self.settings.resource_naming.label())
+                    .show_ui(ui, |ui| {
+                        for value in [
+                            resources::ResourceNaming::Original,
+                            resources::ResourceNaming::ProjectVersion,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.settings.resource_naming,
+                                value,
+                                value.label(),
+                            );
+                        }
+                    });
+            });
+            if previous != (self.settings.resource_sort, self.settings.resource_naming) {
+                self.persist();
+            }
             search |= self.busy.is_none()
                 && (name_response.lost_focus() || version_response.lost_focus())
                 && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -827,6 +877,13 @@ impl Launcher {
                 }
             });
             ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "公开列表缓存保留 5 分钟；过期后重新获取，获取失败不会显示为最新结果。",
+                )
+                .size(11.0)
+                .color(MUTED),
+            );
         });
         if kind == ResourceKind::Modpack && self.resource_browser.local_pack {
             self.modpack_page(ui);
@@ -2541,7 +2598,8 @@ mod tests {
                 version("snapshot", &["24w20a"], &["fabric"]),
             ],
             last_search: Some(resources::SearchOptions {
-                provider: resources::ResourceProvider::Modrinth,
+                sort: Default::default(),
+            provider: resources::ResourceProvider::Modrinth,
                 query: String::new(), minecraft: Some("1.21.1".into()), loader: Some("fabric".into()), offset: 0, limit: 20,
             }),
             project: Some(serde_json::from_value(serde_json::json!({

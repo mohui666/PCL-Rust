@@ -205,6 +205,13 @@ impl Launcher {
         else {
             return;
         };
+        self.import_crash_path(ctx, path);
+    }
+    pub(super) fn import_crash_path(&mut self, ctx: &egui::Context, path: PathBuf) {
+        if self.crash.pending.is_some() {
+            self.crash.open = true;
+            return;
+        }
         let label = path
             .file_name()
             .unwrap_or_default()
@@ -279,7 +286,7 @@ impl Launcher {
                         .add_enabled(!busy, egui::Button::new("导入其他日志"))
                         .clicked();
                     if busy {
-                        ui.spinner();
+                        super::loading_ui::inline(ui, "正在分析日志…");
                     }
                 });
                 ui.add_space(8.0);
@@ -343,6 +350,25 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropped_log_uses_existing_analysis_worker_without_a_file_picker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let path = dir.path().join("dropped.log");
+        std::fs::write(&path, "java.lang.OutOfMemoryError: Java heap space\n").unwrap();
+        let ctx = egui::Context::default();
+        app.import_crash_path(&ctx, path);
+        assert!(app.crash.open && app.crash.pending.is_some());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.crash.pending.is_some() && Instant::now() < deadline {
+            app.crash.poll(&ctx);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let report = app.crash.report.as_ref().expect("log analysis completed");
+        assert_eq!(report.files.len(), 1);
+        assert!(report.files[0].text.contains("OutOfMemoryError"));
+        assert_eq!(app.crash.title, "dropped.log");
+    }
     #[test]
     fn delayed_analysis_keeps_original_context_and_ignores_other_pids() {
         let mut state = CrashUiState::default();

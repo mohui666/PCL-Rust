@@ -10,6 +10,7 @@ pub(super) struct Manifest {
     pub format: &'static str,
     pub warnings: Vec<String>,
     pub curseforge: Vec<CurseForgeFile>,
+    pub embedded_hashes: BTreeMap<String, String>,
 }
 #[derive(Clone)]
 pub(super) struct CurseForgeFile {
@@ -69,10 +70,10 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
         _ => 4,
     };
     candidates.sort_by_key(|path| priority(path));
-    let index_path = candidates
-        .first()
-        .context("压缩包缺少受支持的 mrpack / MMC / HMCL / MCBBS / CurseForge 清单")?
-        .clone();
+    if candidates.is_empty() {
+        return read_game_zip(archive);
+    }
+    let index_path = candidates[0].clone();
     let prefix = index_path
         .rsplit_once('/')
         .map_or("".into(), |(prefix, _)| format!("{prefix}/"));
@@ -95,11 +96,14 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
             format: "mrpack",
             warnings: Vec::new(),
             curseforge: Vec::new(),
+            embedded_hashes: BTreeMap::new(),
         });
     }
     let mut dependencies = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut curseforge = Vec::new();
+    let mut external_files = Vec::new();
+    let mut embedded_hashes = BTreeMap::new();
     let mut name = value["name"].as_str().unwrap_or("导入的整合包").to_owned();
     let version = value["version"]
         .as_str()
@@ -139,6 +143,8 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
                     "net.neoforged" => "neoforge",
                     "net.fabricmc.fabric-loader" => "fabric-loader",
                     "org.quiltmc.quilt-loader" => "quilt-loader",
+                    "com.mumfrey.liteloader" => "liteloader",
+                    "optifine.OptiFine" => "optifine",
                     value if value.starts_with("org.lwjgl") => continue,
                     _ => bail!("尚不支持 MMC 组件 {uid}，未开始安装"),
                 };
@@ -158,11 +164,14 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
                     .as_str()
                     .context("HMCL 缺少 gameVersion")?,
             )?;
-            if archive
-                .by_name(&format!("{prefix}minecraft/pack.json"))
-                .is_ok()
-            {
-                bail!("此 HMCL 包包含自定义 pack.json，当前不能安全推断其加载器；未开始安装");
+            let pack_path = format!("{prefix}minecraft/pack.json");
+            if archive.file_names().any(|name| name == pack_path) {
+                let profile: Value = serde_json::from_str(&text(archive, &pack_path)?)?;
+                let mc = dependencies["minecraft"].clone();
+                for (key, version) in super::profile::components(&profile, &mc)? {
+                    insert(&mut dependencies, &key, &version)?;
+                }
+                warnings.push("依据 pack.json 识别游戏组件并从发行方重建；包内启动命令、凭据和自定义下载地址不执行。".into());
             }
             ("HMCL", "minecraft/")
         }
@@ -178,6 +187,8 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
                     "neoforge" => "neoforge",
                     "fabric" => "fabric-loader",
                     "quilt" => "quilt-loader",
+                    "optifine" => "optifine",
+                    "liteloader" => "liteloader",
                     _ => bail!("尚不支持 MCBBS 组件 {name}，未开始安装"),
                 };
                 insert(
@@ -190,12 +201,65 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
                 warnings
                     .push("MCBBS 附带的启动参数不自动导入；请检查后在版本设置中手动配置。".into());
             }
-            anyhow::ensure!(
-                value["files"].as_array().is_none_or(|files| files
-                    .iter()
-                    .all(|file| file["type"].as_str() == Some("addon"))),
-                "此 MCBBS 包含外部下载文件，需提供方解析后才能安装"
-            );
+            let mut seen = HashSet::new();
+            for file in value["files"].as_array().into_iter().flatten() {
+                match file["type"].as_str() {
+                    Some("addon") => {
+                        let path = file["path"].as_str().context("MCBBS 内嵌文件缺少 path")?;
+                        safe_relative(path)?;
+                        let archived = format!("{prefix}overrides/{path}");
+                        let hash = file["hash"].as_str().context("MCBBS 文件缺少 SHA1")?;
+                        anyhow::ensure!(
+                            hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                            "MCBBS 文件 SHA1 无效"
+                        );
+                        if !archive.file_names().any(|name| name == archived) {
+                            let api = value["fileApi"]
+                                .as_str()
+                                .context("MCBBS 外部文件缺少 fileApi")?;
+                            let base =
+                                Url::parse(&format!("{}/overrides/", api.trim_end_matches('/')))?;
+                            let url = base.join(path)?;
+                            validate_download_url(url.as_str())?;
+                            external_files.push(json!({"path":path,"hashes":{"sha1":hash},"downloads":[url.as_str()]}));
+                            continue;
+                        }
+                        anyhow::ensure!(
+                            archive.by_name(&archived)?.size() <= MAX_FILE,
+                            "MCBBS 内嵌文件过大"
+                        );
+                        anyhow::ensure!(
+                            embedded_hashes
+                                .insert(path.to_owned(), hash.to_ascii_lowercase())
+                                .is_none(),
+                            "MCBBS 重复声明内嵌文件"
+                        );
+                    }
+                    Some("curse") => {
+                        let project = file["projectID"]
+                            .as_u64()
+                            .context("MCBBS CurseForge 项目 ID 无效")?;
+                        let id = file["fileID"]
+                            .as_u64()
+                            .context("MCBBS CurseForge 文件 ID 无效")?;
+                        anyhow::ensure!(
+                            (1..=u32::MAX as u64).contains(&project)
+                                && (1..=u32::MAX as u64).contains(&id)
+                                && seen.insert(project),
+                            "MCBBS CurseForge ID 越界或重复"
+                        );
+                        curseforge.push(CurseForgeFile {
+                            project,
+                            file: id,
+                            required: true,
+                        });
+                    }
+                    _ => bail!("MCBBS 文件类型未知"),
+                }
+            }
+            if !curseforge.is_empty() {
+                warnings.push("MCBBS 外部 Mod 将通过 CurseForge 官方 API 解析并校验；包内直链不代替 API 下载许可。".into());
+            }
             ("MCBBS", "overrides/")
         }
         "manifest.json" => {
@@ -232,6 +296,8 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
                     "neoforge" => "neoforge",
                     "fabric" => "fabric-loader",
                     "quilt" => "quilt-loader",
+                    "optifine" => "optifine",
+                    "liteloader" => "liteloader",
                     _ => bail!("尚不支持 CurseForge 加载器 {name}，未开始下载"),
                 };
                 insert(&mut dependencies, key, version)?;
@@ -267,6 +333,7 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
                 format: "CurseForge",
                 warnings,
                 curseforge,
+                embedded_hashes,
             });
         }
         _ => bail!("整合包格式无法识别"),
@@ -276,12 +343,127 @@ pub(super) fn read(archive: &mut ZipArchive<File>) -> Result<Manifest> {
         "整合包未声明 Minecraft 版本"
     );
     Ok(Manifest {
-        index: json!({"formatVersion":1,"game":"minecraft","name":name,"versionId":version,"summary":value["description"],"files":[],"dependencies":dependencies}),
+        index: json!({"formatVersion":1,"game":"minecraft","name":name,"versionId":version,"summary":value["description"],"files":external_files,"dependencies":dependencies}),
         index_path,
         override_prefixes: vec![format!("{prefix}{folder}")],
         format,
         warnings,
         curseforge,
+        embedded_hashes,
+    })
+}
+
+/// Only portable game content is taken from an unstructured game ZIP. A launcher,
+/// account database, scripts, libraries and arbitrary version JSON never become
+/// active launcher configuration.
+pub(super) fn game_payload(path: &str) -> bool {
+    matches!(
+        path.split('/').next().unwrap_or(""),
+        "mods"
+            | "config"
+            | "defaultconfigs"
+            | "resourcepacks"
+            | "shaderpacks"
+            | "saves"
+            | "screenshots"
+            | "kubejs"
+            | "scripts"
+    ) || matches!(
+        path,
+        "options.txt"
+            | "optionsof.txt"
+            | "optionsshaders.txt"
+            | "servers.dat"
+            | "servers.dat_old"
+            | "icon.png"
+    )
+}
+fn read_game_zip(archive: &mut ZipArchive<File>) -> Result<Manifest> {
+    let mut versions = BTreeMap::<String, (String, String, Value)>::new();
+    let names = archive.file_names().map(str::to_owned).collect::<Vec<_>>();
+    for path in names {
+        let parts = path.split('/').collect::<Vec<_>>();
+        if parts.len() < 3 || parts[parts.len() - 3] != "versions" {
+            continue;
+        }
+        let id = parts[parts.len() - 2];
+        if parts[parts.len() - 1] != format!("{id}.json") {
+            continue;
+        }
+        validate_id(id)?;
+        let value: Value = serde_json::from_str(&text(archive, &path)?)?;
+        anyhow::ensure!(
+            value["id"].as_str() == Some(id),
+            "通用 ZIP 版本 ID 与文件夹不符"
+        );
+        let prefix = parts[..parts.len() - 3].join("/");
+        let prefix = if prefix.is_empty() {
+            prefix
+        } else {
+            format!("{prefix}/")
+        };
+        anyhow::ensure!(
+            versions.insert(id.into(), (path, prefix, value)).is_none(),
+            "通用 ZIP 包含重名实例"
+        );
+    }
+    anyhow::ensure!(
+        !versions.is_empty(),
+        "压缩包缺少受支持的整合包清单或 versions/<版本>/<版本>.json"
+    );
+    let parents = versions
+        .values()
+        .filter_map(|(_, _, v)| v["inheritsFrom"].as_str())
+        .collect::<HashSet<_>>();
+    let leaves = versions
+        .keys()
+        .filter(|id| !parents.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        leaves.len() == 1,
+        "通用 ZIP 包含多个独立版本，请分别导出后导入"
+    );
+    let leaf = &leaves[0];
+    let (index_path, prefix, _) = &versions[leaf];
+    let mut current = leaf.clone();
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    let minecraft = loop {
+        anyhow::ensure!(
+            seen.insert(current.clone()) && seen.len() <= 65,
+            "通用 ZIP 继承循环或过深"
+        );
+        let Some((_, _, profile)) = versions.get(&current) else {
+            break current;
+        };
+        chain.push(profile);
+        if let Some(parent) = profile["inheritsFrom"].as_str() {
+            validate_id(parent)?;
+            current = parent.into();
+            continue;
+        }
+        break profile["jar"].as_str().unwrap_or(&current).to_owned();
+    };
+    validate_id(&minecraft)?;
+    let mut dependencies = BTreeMap::from([("minecraft".into(), minecraft.clone())]);
+    for profile in chain {
+        for (key, value) in super::profile::components(profile, &minecraft)? {
+            if let Some(old) = dependencies.insert(key.clone(), value.clone()) {
+                anyhow::ensure!(old == value, "通用 ZIP 的 {key} 版本冲突");
+            }
+        }
+    }
+    Ok(Manifest {
+        index: json!({"formatVersion":1,"game":"minecraft","name":leaf,"versionId":"1.0.0","files":[],"dependencies":dependencies}),
+        index_path: index_path.clone(),
+        override_prefixes: vec![prefix.clone(), format!("{prefix}versions/{leaf}/")],
+        format: "通用游戏 ZIP",
+        warnings: vec![
+            "仅导入唯一实例的游戏文件并重建官方组件；不运行附带启动器、脚本或账号配置。".into(),
+        ],
+        curseforge: Vec::new(),
+        embedded_hashes: BTreeMap::new(),
     })
 }
 
@@ -349,6 +531,70 @@ mod tests {
             fixture(&pack, &files);
             assert!(inspect_mrpack(&pack).is_err());
         }
+    }
+    #[test]
+    fn hmcl_components_rebuilt_without_importing_launch_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let pack = temp.path().join("hmcl.zip");
+        fixture(&pack,&[("modpack.json",br#"{"name":"HMCL","version":"1","gameVersion":"1.20.1"}"#),
+            ("minecraft/pack.json",br#"{"id":"old","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.5"}],"javaArgs":"-javaagent:bad.jar"}"#),
+            ("minecraft/config/a.txt",b"selected")]);
+        let info = inspect_mrpack(&pack).unwrap();
+        assert_eq!(info.dependencies["fabric-loader"], "0.16.5");
+        let dest = temp.path().join("target");
+        import_mrpack(&pack, &dest, false, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(dest.join("config/a.txt").exists());
+        assert!(!dest.join("pack.json").exists());
+    }
+    #[test]
+    fn universal_zip_rebuilds_single_leaf_and_skips_account_and_launcher_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let pack = temp.path().join("game.zip");
+        fixture(&pack,&[("Game/.minecraft/versions/Fabric/Fabric.json",br#"{"id":"Fabric","inheritsFrom":"1.21.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.5"}]}"#),
+            ("Game/.minecraft/config/a.txt",b"shared"),("Game/.minecraft/versions/Fabric/config/a.txt",b"isolated"),
+            ("Game/.minecraft/launcher_accounts.json",b"secret"),("Game/launcher.exe",b"program")]);
+        let info = inspect_mrpack(&pack).unwrap();
+        assert_eq!(info.minecraft, "1.21.1");
+        assert_eq!(info.dependencies["fabric-loader"], "0.16.5");
+        let dest = temp.path().join("target");
+        import_mrpack(&pack, &dest, false, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(fs::read(dest.join("config/a.txt")).unwrap(), b"isolated");
+        assert!(!dest.join("launcher_accounts.json").exists());
+        assert!(!dest.join("versions").exists());
+    }
+    #[test]
+    fn mcbbs_external_curse_ids_and_embedded_integrity_are_checked() {
+        let temp = tempfile::tempdir().unwrap();
+        let pack = temp.path().join("mcbbs.zip");
+        let body=serde_json::to_vec(&json!({"name":"test","version":"1","addons":[{"id":"game","version":"1.21.1"}],"files":[{"type":"curse","projectID":306612,"fileID":123},{"type":"addon","path":"config/a.txt","hash":format!("{:x}",Sha1::digest(b"keep"))}]})).unwrap();
+        fixture(
+            &pack,
+            &[
+                ("mcbbs.packmeta", &body),
+                ("overrides/config/a.txt", b"keep"),
+            ],
+        );
+        let info = inspect_mrpack(&pack).unwrap();
+        assert_eq!(info.files, 2);
+        fixture(
+            &pack,
+            &[
+                ("mcbbs.packmeta", &body),
+                ("overrides/config/a.txt", b"bad"),
+            ],
+        );
+        assert!(inspect_mrpack(&pack).is_ok());
+        let body=serde_json::to_vec(&json!({"name":"test","version":"1","addons":[{"id":"game","version":"1.21.1"}],"files":[{"type":"addon","path":"config/a.txt","hash":format!("{:x}",Sha1::digest(b"keep"))}]})).unwrap();
+        fixture(
+            &pack,
+            &[
+                ("mcbbs.packmeta", &body),
+                ("overrides/config/a.txt", b"bad"),
+            ],
+        );
+        let target = temp.path().join("failed");
+        assert!(import_mrpack(&pack, &target, false, &AtomicBool::new(false), |_| {}).is_err());
+        assert!(!target.exists());
     }
     #[test]
     fn a_payload_manifest_is_not_a_second_pack() {

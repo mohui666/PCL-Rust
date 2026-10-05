@@ -29,8 +29,106 @@ pub fn repair_version_with_java(
         root.is_absolute() && root.is_dir(),
         "Minecraft 根目录必须是已有的绝对目录"
     );
+    complete_official_parents(root, id, cancel)?;
     generated::regenerate(root, id, java, platform, cancel, &progress)?;
     repair_files(root, id, platform, cancel, progress)
+}
+
+/// A missing ancestor may be restored only when Mojang's authenticated manifest
+/// names it and provides its SHA1. Existing JSON (including custom parents) is
+/// read verbatim, never replaced by the network copy.
+fn complete_official_parents(root: &Path, id: &str, cancel: &AtomicBool) -> Result<()> {
+    let mut manifest = None;
+    let client = http_client()?;
+    complete_parents_with(root, id, cancel, |parent| {
+        if manifest.is_none() {
+            manifest = Some(fetch_manifest_with_cancel(cancel)?);
+        }
+        let entry = manifest.as_ref().unwrap()["versions"]
+            .as_array()
+            .context("官方版本清单缺少 versions")?
+            .iter()
+            .find(|entry| entry["id"].as_str() == Some(parent))
+            .with_context(|| {
+                format!("缺失父版本 {parent} 不在 Mojang 官方清单中，请提供该自定义版本")
+            })?;
+        let hash = expected_hash(entry["sha1"].as_str())?.context("官方父版本条目缺少 SHA1")?;
+        let url = entry["url"].as_str().context("官方父版本条目缺少 URL")?;
+        request_bytes(&client, url, Some(&hash), None, cancel)
+    })
+}
+
+fn complete_parents_with(
+    root: &Path,
+    id: &str,
+    cancel: &AtomicBool,
+    mut fetch: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let mut current = id.to_owned();
+    let mut seen = HashSet::new();
+    let mut saved = Vec::new();
+    loop {
+        cancelled(cancel)?;
+        validate_id(&current)?;
+        ensure!(
+            seen.insert(current.clone()) && seen.len() <= 65,
+            "版本继承循环或过深"
+        );
+        let relative = PathBuf::from(format!("versions/{current}/{current}.json"));
+        let path = safe_target(root, &relative)?;
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && current != id => {
+                let bytes = fetch(&current)?;
+                ensure!(
+                    bytes.len() <= MAX_METADATA_SIZE as usize,
+                    "父版本元数据过大"
+                );
+                let value: Value = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    value["id"].as_str() == Some(&current),
+                    "官方父版本 ID 不匹配"
+                );
+                ensure!(
+                    value.get("inheritsFrom").is_none(),
+                    "官方父版本意外包含继承关系"
+                );
+                // Do not publish if a user edited the child while the network was busy.
+                unchanged(&saved)?;
+                cancelled(cancel)?;
+                let folder = path.parent().context("父版本路径无效")?;
+                fs::create_dir_all(folder)?;
+                ensure!(safe_target(root, &relative)? == path, "父版本路径发生变化");
+                let mut temporary = tempfile::NamedTempFile::new_in(folder)?;
+                temporary.write_all(&bytes)?;
+                temporary.as_file().sync_all()?;
+                match temporary.persist_noclobber(&path) {
+                    Ok(_) => bytes,
+                    Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        fs::read(&path)?
+                    }
+                    Err(error) => return Err(error.error.into()),
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("读取版本元数据失败：{current}"))
+            }
+        };
+        ensure!(bytes.len() <= MAX_METADATA_SIZE as usize, "版本元数据过大");
+        let value: Value = serde_json::from_slice(&bytes)?;
+        ensure!(
+            value["id"].as_str() == Some(&current),
+            "版本元数据 ID 与目录不符：{current}"
+        );
+        saved.push((path, bytes));
+        let Some(parent) = value.get("inheritsFrom") else {
+            return unchanged(&saved);
+        };
+        current = parent
+            .as_str()
+            .context("inheritsFrom 必须为字符串")?
+            .to_owned();
+    }
 }
 
 fn repair_files(
@@ -585,6 +683,64 @@ mod tests {
         assert_eq!(
             fs::read(root.path().join(relative).join("user")).unwrap(),
             b"user"
+        );
+    }
+}
+
+#[cfg(test)]
+mod parent_tests {
+    use super::*;
+    fn child(root: &Path, value: &str) -> PathBuf {
+        let folder = root.join("versions/custom");
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("custom.json");
+        fs::write(&path, value).unwrap();
+        path
+    }
+    #[test]
+    fn restores_missing_official_parent_preserving_exact_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = r#"{ "id":"custom", "inheritsFrom":"1.21.1", "user":"keep" }"#;
+        let path = child(dir.path(), original);
+        let mut calls = 0;
+        complete_parents_with(dir.path(), "custom", &AtomicBool::new(false), |id| {
+            calls += 1;
+            assert_eq!(id, "1.21.1");
+            Ok(br#"{"id":"1.21.1"}"#.to_vec())
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+        complete_parents_with(dir.path(), "custom", &AtomicBool::new(false), |_| {
+            panic!("existing parent must not be fetched")
+        })
+        .unwrap();
+    }
+    #[test]
+    fn invalid_missing_or_changed_parent_does_not_publish() {
+        for (body, change) in [
+            (br#"{"id":"wrong"}"#.as_slice(), false),
+            (br#"{"id":"1.21.1"}"#.as_slice(), true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = child(dir.path(), r#"{"id":"custom","inheritsFrom":"1.21.1"}"#);
+            assert!(
+                complete_parents_with(dir.path(), "custom", &AtomicBool::new(false), |_| {
+                    if change {
+                        fs::write(&path, br#"{"id":"custom","inheritsFrom":"another"}"#)?;
+                    }
+                    Ok(body.to_vec())
+                })
+                .is_err()
+            );
+            assert!(!dir.path().join("versions/1.21.1/1.21.1.json").exists());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            complete_parents_with(dir.path(), "custom", &AtomicBool::new(false), |_| panic!(
+                "cannot invent selected metadata"
+            ))
+            .is_err()
         );
     }
 }

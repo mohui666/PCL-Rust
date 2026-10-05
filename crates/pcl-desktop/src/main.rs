@@ -4,6 +4,7 @@ mod app;
 mod cli;
 mod native_window;
 mod process;
+mod startup_splash;
 mod theme;
 mod ui_style;
 
@@ -35,10 +36,18 @@ fn main() -> anyhow::Result<()> {
             .with_decorations(false),
         ..Default::default()
     };
-    eframe::run_native(
+    let splash_enabled = pcl_core::config::load_settings(&pcl_core::config::settings_path())
+        .map(|s| s.ui_launcher_logo)
+        .unwrap_or(false);
+    if let Err(error) = startup_splash::show(splash_enabled) {
+        eprintln!("启动画面无法显示：{error:#}");
+    }
+    let result = eframe::run_native(
         "Plain Craft Launcher (PCL) Rust 第三方重构版",
         options,
         Box::new(|cc| Ok(Box::new(app::Launcher::new(cc)))),
     )
-    .map_err(|e| anyhow::anyhow!("窗口启动失败：{e}"))
+    .map_err(|e| anyhow::anyhow!("窗口启动失败：{e}"));
+    startup_splash::close();
+    result
 }

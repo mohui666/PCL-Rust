@@ -43,7 +43,14 @@ pub(super) fn manifests(
         Ok(vec![(name.into(), serde_json::to_vec_pretty(&value)?)])
     };
     match format {
-        PackFormat::Mrpack => single("modrinth.index.json", serde_json::to_value(index)?),
+        PackFormat::Mrpack => {
+            ensure!(
+                !index.dependencies.contains_key("optifine")
+                    && !index.dependencies.contains_key("liteloader"),
+                "mrpack 规范不支持 OptiFine / LiteLoader 依赖，请选择 HMCL 或 MCBBS"
+            );
+            single("modrinth.index.json", serde_json::to_value(index)?)
+        }
         PackFormat::MultiMc => {
             let mut components = Vec::new();
             for (key, version) in &index.dependencies {
@@ -53,6 +60,7 @@ pub(super) fn manifests(
                     "neoforge" => "net.neoforged",
                     "fabric-loader" => "net.fabricmc.fabric-loader",
                     "quilt-loader" => "org.quiltmc.quilt-loader",
+                    "liteloader" => "com.mumfrey.liteloader",
                     _ => bail!("MMC 导出不支持依赖：{key}"),
                 };
                 components.push(json!({"uid":uid,"version":version,"important":key=="minecraft"}));
@@ -69,14 +77,18 @@ pub(super) fn manifests(
             Ok(files)
         }
         PackFormat::Hmcl => {
-            ensure!(
-                index.dependencies.len() == 1,
-                "HMCL 导出目前仅支持原版；加载器版本请选 MMC、MCBBS 或 mrpack"
-            );
-            single(
+            let mut files = single(
                 "modpack.json",
                 json!({"name":index.name,"version":index.version_id,"description":index.summary,"gameVersion":minecraft,"formatVersion":1}),
-            )
+            )?;
+            files.push((
+                "minecraft/pack.json".into(),
+                serde_json::to_vec_pretty(&crate::modpack::profile::hmcl_profile(
+                    &index.dependencies,
+                    index.name,
+                )?)?,
+            ));
+            Ok(files)
         }
         PackFormat::Mcbbs => {
             let mut addons = Vec::new();
@@ -87,6 +99,8 @@ pub(super) fn manifests(
                     "neoforge" => "neoforge",
                     "fabric-loader" => "fabric",
                     "quilt-loader" => "quilt",
+                    "optifine" => "optifine",
+                    "liteloader" => "liteloader",
                     _ => bail!("MCBBS 导出不支持依赖：{key}"),
                 };
                 addons.push(json!({"id":id,"version":version}));

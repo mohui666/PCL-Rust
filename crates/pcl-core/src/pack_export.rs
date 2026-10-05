@@ -1431,9 +1431,7 @@ fn dependencies(version: &serde_json::Value, minecraft: &str) -> Result<BTreeMap
             ("org.quiltmc", "quilt-loader") => "quilt-loader",
             ("net.minecraftforge", "forge") => "forge",
             ("net.neoforged", "neoforge" | "forge") => "neoforge",
-            ("optifine", _) | ("com.mumfrey", "liteloader") => {
-                bail!("mrpack 导出暂不支持 OptiFine / LiteLoader 依赖，未创建不完整整合包")
-            }
+            ("optifine", _) | ("com.mumfrey", "liteloader") => continue,
             _ => continue,
         };
         let value = if key == "forge" || (parts[0] == "net.neoforged" && parts[1] == "forge") {
@@ -1453,7 +1451,15 @@ fn dependencies(version: &serde_json::Value, minecraft: &str) -> Result<BTreeMap
         let neo = game_property(version, "--fml.forgeGroup")?.as_deref() == Some("net.neoforged");
         add(if neo { "neoforge" } else { "forge" }, &forge)?;
     }
-    if loader.is_none() {
+    let primary_present = loader.is_some();
+    // Extra LaunchWrapper components can coexist with Forge. The output format
+    // decides which declarations it can represent without inventing a standard.
+    for (key, value) in crate::modpack::profile::components(version, minecraft)? {
+        if matches!(key.as_str(), "optifine" | "liteloader") {
+            result.insert(key, value);
+        }
+    }
+    if !primary_present && result.len() == 1 {
         ensure!(
             matches!(
                 version["mainClass"].as_str(),
@@ -2041,7 +2047,7 @@ mod tests {
         )
         .is_err());
         assert!(dependencies(&json!({"_pcl_jar_id":"1.21.1","libraries":[{"name":"net.minecraftforge:forge:1.20.1-47.1.0"}]}), "1.21.1").is_err());
-        assert!(dependencies(&json!({"_pcl_jar_id":"1.21.1","libraries":[{"name":"optifine:OptiFine:1.21.1_HD_U_J1"}]}), "1.21.1").is_err());
+        assert_eq!(dependencies(&json!({"_pcl_jar_id":"1.21.1","libraries":[{"name":"optifine:OptiFine:1.21.1_HD_U_J1"}]}), "1.21.1").unwrap()["optifine"], "HD_U_J1");
     }
 
     #[test]
@@ -2574,7 +2580,7 @@ mod tests {
     fn common_zip_formats_roundtrip_selected_payload_without_network() {
         let root = fixture();
         put(root.path(), "instances/pack/options.txt", b"music:0.5");
-        for format in [PackFormat::MultiMc, PackFormat::Mcbbs] {
+        for format in [PackFormat::MultiMc, PackFormat::Mcbbs, PackFormat::Hmcl] {
             let output = root.path().join(format!("{format:?}.zip"));
             let mut value = options();
             value.format = format;
@@ -2596,39 +2602,6 @@ mod tests {
             assert_eq!(fs::read(target.join("options.txt")).unwrap(), b"music:0.5");
             assert!(!target.join("instance.cfg").exists());
         }
-        let mut value = options();
-        value.format = PackFormat::Hmcl;
-        let output = root.path().join("hmcl.zip");
-        assert!(export_with(
-            root.path(),
-            "pack",
-            &output,
-            &value,
-            &AtomicBool::new(false),
-            |_| {},
-            |_, _| panic!()
-        )
-        .is_err());
-        assert!(!output.exists());
-        put(
-            root.path(),
-            "versions/pack/pack.json",
-            br#"{"id":"pack","inheritsFrom":"1.21.1"}"#,
-        );
-        export_with(
-            root.path(),
-            "pack",
-            &output,
-            &value,
-            &AtomicBool::new(false),
-            |_| {},
-            |_, _| panic!(),
-        )
-        .unwrap();
-        assert_eq!(
-            crate::modpack::inspect_mrpack(&output).unwrap().format,
-            "HMCL"
-        );
     }
     #[test]
     fn explicit_version_java_and_launcher_bundle_roundtrip_without_executing_programs() {

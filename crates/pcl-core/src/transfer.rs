@@ -132,6 +132,14 @@ impl<'a> TransferTracker<'a> {
         ActiveDownload { tracker: self }
     }
 
+    pub(crate) fn allow_parallelism(&self, limit: u32) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.concurrency_limit = Some(state.concurrency_limit.unwrap_or(0).max(limit));
+    }
+    pub(crate) fn active_change(&self, change: i32) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.active = state.active.saturating_add_signed(change);
+    }
     pub(crate) fn record_bytes(&self, count: usize) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).bytes += count as u64;
     }

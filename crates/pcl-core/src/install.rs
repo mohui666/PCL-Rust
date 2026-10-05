@@ -60,6 +60,14 @@ fn approved_url(url: &Url) -> bool {
             | "maven.minecraftforge.net"
             | "meta.quiltmc.org",
         ) => true,
+        Some("dl.liteloader.com") => {
+            url.path().starts_with("/versions/") || url.path().starts_with("/repo/")
+        }
+        Some("repo.mumfrey.com") => url.path().starts_with("/content/repositories/"),
+        Some("repo.maven.apache.org") => url.path().starts_with("/maven2/"),
+        Some("repo.spongepowered.org") => {
+            url.path().starts_with("/maven/") || url.path().starts_with("/repository/maven-public/")
+        }
         Some("maven.quiltmc.org") => url.path().starts_with("/repository/release/"),
         Some("maven.neoforged.net") => url.path().starts_with("/releases/"),
         Some("s3.amazonaws.com") => url.path().starts_with("/Minecraft.Download/"),
@@ -263,6 +271,33 @@ fn download_artifact_tracked(
         return Ok(());
     }
     cancelled(cancel)?;
+    if let (Some(size), Some(sha1)) = (artifact.size, artifact.sha1.as_ref()) {
+        if let Some(tracker) = tracker {
+            tracker.allow_parallelism(crate::resumable::parallelism(size));
+        }
+        let checksum = crate::resumable::Checksum {
+            size,
+            sha1: Some(sha1.clone()),
+            sha256: None,
+            sha512: None,
+        };
+        return crate::resumable::download(
+            &target,
+            &crate::resumable::cache_root()?,
+            &checksum,
+            cancel,
+            |range| crate::network::request_range(client, url.clone(), false, true, cancel, range),
+            |event| {
+                if let Some(tracker) = tracker {
+                    match event {
+                        crate::resumable::TransferEvent::Bytes(n) => tracker.record_bytes(n),
+                        crate::resumable::TransferEvent::Started => tracker.active_change(1),
+                        crate::resumable::TransferEvent::Finished => tracker.active_change(-1),
+                    }
+                }
+            },
+        );
+    }
     let active = tracker.map(TransferTracker::begin_download);
     let response = crate::network::request(client, url, false, artifact.sha1.is_some(), cancel)?;
     if let (Some(actual), Some(expected)) = (response.content_length(), artifact.size) {
@@ -351,7 +386,12 @@ fn download_assets(
     completed: &AtomicU64,
     tracker: &TransferTracker<'_>,
 ) -> Result<()> {
-    tracker.set_concurrency_limit(Some(asset_worker_count(assets.len()) as u32));
+    let parallelism = assets
+        .iter()
+        .map(|a| crate::resumable::parallelism(a.size.unwrap_or(0)))
+        .sum::<u32>()
+        .min(crate::network::options().threads.into());
+    tracker.set_concurrency_limit(Some(parallelism));
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
     let first_error = Mutex::new(None);

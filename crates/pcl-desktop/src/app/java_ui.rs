@@ -221,7 +221,7 @@ impl Launcher {
             return;
         };
         let root = java_download::runtime_root();
-        let Some((tx, cancel)) = self.start_download_job_at(
+        let Some((tx, _cancel)) = self.start_download_job_at(
             &format!("正在下载 Java {}", target.version),
             root.clone(),
             Some(target.version.clone()),
@@ -231,7 +231,8 @@ impl Launcher {
         self.java_download.open = false;
         self.java_download.error = None;
         self.java_download.installed = None;
-        std::thread::spawn(move || {
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
             let result =
                 java_download::download_runtime(&root, &target, &cancel, |mut progress| {
                     // These are verified file counts, not an invented whole-task percentage.

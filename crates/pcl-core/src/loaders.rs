@@ -1,6 +1,11 @@
 //! Fabric / Quilt installation from their official launcher profiles.
 //! API sources: https://github.com/FabricMC/fabric-meta/blob/master/README.md
 //! and https://meta.quiltmc.org/openapi.yaml (v3 launcher profile endpoints).
+#[path = "liteloader.rs"]
+pub mod liteloader;
+#[path = "install_registration.rs"]
+mod registration;
+pub use registration::RetryRegistration;
 #[path = "optifine.rs"]
 pub mod optifine;
 use crate::{

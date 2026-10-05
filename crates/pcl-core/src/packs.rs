@@ -1,4 +1,6 @@
 //! Complete .mrpack installation: dependency preflight, files, then no-clobber version registration.
+#[path = "pack_retry.rs"]
+mod retry;
 use crate::{
     install,
     loaders::{self, LoaderKind},
@@ -7,6 +9,7 @@ use crate::{
     modpack::{self, ModpackInfo},
 };
 use anyhow::{bail, Context, Result};
+pub use retry::PackRetry;
 use serde_json::json;
 use std::{
     fs,
@@ -19,6 +22,8 @@ use std::{
 struct Dependencies {
     minecraft: String,
     loader: Option<(PackLoader, String)>,
+    liteloader: Option<String>,
+    optifine: Option<String>,
 }
 #[derive(Debug, Clone, Copy)]
 enum PackLoader {
@@ -34,24 +39,58 @@ fn dependencies(info: &ModpackInfo) -> Result<Dependencies> {
         .clone();
     validate_id(&minecraft)?;
     let mut loader = None;
+    let mut liteloader = None;
+    let mut optifine = None;
     for (name, version) in &info.dependencies {
         validate_id(version)?;
         let kind = match name.as_str() {
             "minecraft" => continue,
+            "liteloader" => {liteloader=Some(version.clone());continue;},
+            "optifine" => {optifine=Some(version.trim_start_matches(&format!("{minecraft}_")).to_owned());continue;},
             "fabric-loader" => PackLoader::Meta(LoaderKind::Fabric),
             "quilt-loader" => PackLoader::Meta(LoaderKind::Quilt),
             "forge" => PackLoader::Forge(crate::forge::ForgeKind::Forge),
             "neoforge" => PackLoader::Forge(crate::forge::ForgeKind::NeoForge),
             _ => bail!(
-                "暂不支持整合包依赖 {name}；当前仅支持 Minecraft 加一个 Fabric、Quilt、Forge 或 NeoForge，未开始下载"
+                "无法识别整合包依赖 {name}；支持 Minecraft、Fabric、Quilt、Forge、NeoForge、LiteLoader 与 OptiFine 的有效组合，未开始下载"
             ),
         };
         if loader.is_some() {
             bail!("整合包同时声明多个加载器，未开始下载");
         }
-        loader = Some((kind, version.clone()));
+        let version = if matches!(kind, PackLoader::Forge(crate::forge::ForgeKind::NeoForge)) {
+            version
+                .strip_prefix(&format!("{minecraft}-"))
+                .unwrap_or(version)
+        } else {
+            version
+        };
+        loader = Some((kind, version.to_owned()));
     }
-    Ok(Dependencies { minecraft, loader })
+    if liteloader.is_some()
+        && loader.as_ref().is_some_and(|(kind, _)| {
+            !matches!(kind, PackLoader::Forge(crate::forge::ForgeKind::Forge))
+        })
+    {
+        bail!("LiteLoader 仅能与原版、OptiFine 或 Forge 组合");
+    }
+    if optifine.is_some()
+        && loader.as_ref().is_some_and(|(kind, _)| {
+            matches!(
+                kind,
+                PackLoader::Meta(LoaderKind::Quilt)
+                    | PackLoader::Forge(crate::forge::ForgeKind::NeoForge)
+            )
+        })
+    {
+        bail!("发行方未声明 OptiFine 与 Quilt / NeoForge 的兼容路线");
+    }
+    Ok(Dependencies {
+        minecraft,
+        loader,
+        liteloader,
+        optifine,
+    })
 }
 
 fn absent(path: &Path, description: &str) -> Result<()> {
@@ -181,61 +220,184 @@ pub fn install_pack_with_java(
     cancel: &AtomicBool,
     progress: impl Fn(Progress) + Sync,
 ) -> Result<String> {
-    install_with(
+    PackRetry::default().install_with_java(
         root,
         pack,
         instance_id,
         include_optional,
+        java,
         platform,
         cancel,
-        &progress,
-        |dependency| {
-            if let Some((PackLoader::Meta(kind), version)) = &dependency.loader {
-                loaders::install_loader(
-                    root,
-                    *kind,
-                    &dependency.minecraft,
-                    version,
-                    platform,
-                    cancel,
-                    &progress,
-                )
-            } else if let Some((PackLoader::Forge(kind), version)) = &dependency.loader {
-                ensure_forge_version(
-                    root,
-                    *kind,
-                    &dependency.minecraft,
-                    version,
-                    java,
-                    platform,
-                    cancel,
-                    &progress,
-                )
-            } else {
-                let parent = install::safe_target(
-                    root,
-                    &safe_relative(&format!("versions/{0}/{0}.json", dependency.minecraft))?,
-                )?;
-                if !parent.exists() {
-                    install::install_version(
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_pack_attempt(
+    root: &Path,
+    pack: &Path,
+    instance_id: &str,
+    include_optional: bool,
+    java: Option<&Path>,
+    platform: &Platform,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress) + Sync,
+    retry: &PackRetry,
+) -> Result<String> {
+    let spec = retry::Spec::new(root, pack, instance_id, include_optional, cancel)?;
+    let info = modpack::inspect_mrpack(pack)?;
+    let deps = dependencies(&info)?;
+    // Resolve OptiFine against its publisher before beginning any game install.
+    let optifine = deps
+        .optifine
+        .as_ref()
+        .map(|version| {
+            loaders::optifine::list_versions(&deps.minecraft, cancel)?
+                .into_iter()
+                .find(|entry| entry.version == *version)
+                .context("整合包指定的 OptiFine 不在官方版本列表中")
+        })
+        .transpose()?;
+    if let (Some(entry), Some((PackLoader::Forge(_), version))) = (&optifine, &deps.loader) {
+        anyhow::ensure!(
+            entry.compatible_forge(&deps.minecraft, version),
+            "OptiFine 官方未声明整合包的 Forge 组合兼容"
+        );
+    }
+    let spec = if optifine.is_some() && deps.loader.is_some() {
+        spec
+    } else {
+        spec.without_tail()
+    };
+    let id = retry.registered(spec, cancel, || {
+        install_with(
+            root,
+            pack,
+            instance_id,
+            include_optional,
+            platform,
+            cancel,
+            &progress,
+            |dependency| {
+                let mut parent = match &dependency.loader {
+                    Some((PackLoader::Meta(kind), version)) => loaders::install_loader(
+                        root,
+                        *kind,
+                        &dependency.minecraft,
+                        version,
+                        platform,
+                        cancel,
+                        &progress,
+                    )?,
+                    Some((PackLoader::Forge(kind), version)) => ensure_forge_version(
+                        root,
+                        *kind,
+                        &dependency.minecraft,
+                        version,
+                        java,
+                        platform,
+                        cancel,
+                        &progress,
+                    )?,
+                    None => {
+                        let parent = install::safe_target(
+                            root,
+                            &PathBuf::from(format!("versions/{0}/{0}.json", dependency.minecraft)),
+                        )?;
+                        if !parent.exists() {
+                            install::install_version(
+                                root,
+                                &dependency.minecraft,
+                                platform,
+                                cancel,
+                                &progress,
+                            )?;
+                        }
+                        install::verify_vanilla_parent(
+                            root,
+                            &dependency.minecraft,
+                            platform,
+                            cancel,
+                        )?;
+                        dependency.minecraft.clone()
+                    }
+                };
+                if dependency.loader.is_none() {
+                    if let Some(entry) = &optifine {
+                        let runtime = if let Some(java) = java {
+                            java.to_owned()
+                        } else {
+                            crate::java::discover_java_with_cancel(cancel)?
+                                .runtimes
+                                .into_iter()
+                                .filter(|j| j.architecture == platform.arch)
+                                .max_by_key(|j| j.major)
+                                .context("OptiFine 安装需要 Java，请先选择 Java")?
+                                .path
+                        };
+                        parent = loaders::optifine::ensure_optifine(
+                            root, entry, &runtime, platform, cancel, &progress,
+                        )?;
+                    }
+                }
+                if let Some(version) = &dependency.liteloader {
+                    parent = loaders::liteloader::install_liteloader(
                         root,
                         &dependency.minecraft,
+                        version,
+                        Some(&parent),
                         platform,
                         cancel,
                         &progress,
                     )?;
                 }
-                progress(Progress {
-                    message: format!("只读校验原版 {}", dependency.minecraft),
-                    completed: 0,
-                    total: 0,
-                    ..Default::default()
-                });
-                install::verify_vanilla_parent(root, &dependency.minecraft, platform, cancel)?;
-                Ok(dependency.minecraft.clone())
+                Ok(parent)
+            },
+        )
+    })?;
+    if let Some(entry) = optifine {
+        match deps.loader {
+            Some((PackLoader::Forge(crate::forge::ForgeKind::Forge), version)) => {
+                loaders::optifine::install_forge_mod(root, &id, &entry, &version, cancel)?;
             }
-        },
-    )
+            Some((PackLoader::Meta(LoaderKind::Fabric), _)) => {
+                let game = crate::config::instance_game_dir(root, &id)?;
+                if !crate::mods::list_mods(&game)?
+                    .iter()
+                    .any(|m| m.enabled && m.mod_ids.iter().any(|id| id == "optifabric"))
+                {
+                    let mut versions = crate::resources::list_versions(
+                        "cf:322385",
+                        &deps.minecraft,
+                        "fabric",
+                        cancel,
+                    )?;
+                    versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+                    let bridge = versions
+                        .first()
+                        .context("OptiFabric 官方项目未列出此 Minecraft 版本")?;
+                    let plan = crate::resources::plan_mod_install(
+                        &game,
+                        &bridge.id,
+                        &deps.minecraft,
+                        "fabric",
+                        cancel,
+                    )?;
+                    crate::resources::execute_install_plan(&plan, cancel, &progress)?;
+                    retry.checkpoint(cancel)?;
+                }
+                loaders::optifine::install_fabric_mod(root, &id, &entry, cancel)?;
+            }
+            _ => (),
+        }
+    }
+    progress(Progress {
+        message: format!("整合包 {id} 安装完成"),
+        completed: 1,
+        total: 1,
+        ..Default::default()
+    });
+    Ok(id)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -264,6 +426,9 @@ pub fn ensure_forge_version(
         let coordinate = match kind {
             crate::forge::ForgeKind::Forge => {
                 format!("net.minecraftforge:forge:{minecraft}-{version}")
+            }
+            crate::forge::ForgeKind::NeoForge if minecraft == "1.20.1" => {
+                format!("net.neoforged:forge:{minecraft}-{version}")
             }
             crate::forge::ForgeKind::NeoForge => format!("net.neoforged:neoforge:{version}"),
         };
@@ -410,7 +575,7 @@ fn install_with(
         });
     }
     progress(Progress {
-        message: format!("整合包 {instance_id} 安装完成"),
+        message: format!("整合包 {instance_id} 文件已登记"),
         completed: 1,
         total: 1,
         ..Default::default()
@@ -619,7 +784,12 @@ mod tests {
             json!({"id":"new-pack","inheritsFrom":"1.21.1","type":"release"})
         );
         assert_eq!(fs::read(parent_file).unwrap(), before);
-        assert!(events.lock().unwrap().last().unwrap().contains("安装完成"));
+        assert!(events
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains("文件已登记"));
     }
 
     #[test]

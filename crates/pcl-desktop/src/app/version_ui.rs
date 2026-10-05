@@ -12,10 +12,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "file_drop_ui.rs"]
+mod file_drop;
+#[path = "version_management_ui.rs"]
+mod management;
+
 #[derive(Clone)]
 struct VersionPresentation {
     group: &'static str,
     icon: &'static str,
+    custom_icon: Option<std::path::PathBuf>,
     description: String,
     repair: bool,
     favorite: bool,
@@ -163,7 +169,8 @@ impl Launcher {
                             row.min + Vec2::new(6.0, 5.0),
                             Vec2::new(31.0, 32.0),
                         );
-                        if info.icon.starts_with("block-") {
+                        if management::paint_custom_icon(ui, info.custom_icon.as_deref(), icon) {
+                        } else if info.icon.starts_with("block-") {
                             ui.painter().image(
                                 self.assets.icons[info.icon].id(),
                                 icon,
@@ -279,6 +286,7 @@ impl Launcher {
             .iter()
             .find(|(version, _)| version.id == id)
             .map(|(_, info)| info);
+        self.version_management_dialog(ui.ctx());
         if self.tools_tab == 1 {
             match info.and_then(|info| info.modable) {
                 Some(true) => self.instance_mods(ui, &id, &instance),
@@ -298,12 +306,16 @@ impl Launcher {
                     egui::Sense::hover(),
                 );
                 let icon = info.as_ref().map_or("game", |info| info.icon);
-                self.assets.icon(
+                let icon_rect =
+                    Rect::from_min_size(row.min + Vec2::new(7.0, 6.0), Vec2::splat(30.0));
+                if !management::paint_custom_icon(
                     ui,
-                    icon,
-                    Rect::from_min_size(row.min + Vec2::new(7.0, 6.0), Vec2::splat(30.0)),
-                    icon_tint(ui.ctx(), icon),
-                );
+                    info.as_ref().and_then(|v| v.custom_icon.as_deref()),
+                    icon_rect,
+                ) {
+                    self.assets
+                        .icon(ui, icon, icon_rect, icon_tint(ui.ctx(), icon));
+                }
                 row_text(
                     ui,
                     row.min + Vec2::new(44.0, 4.0),
@@ -353,14 +365,45 @@ impl Launcher {
                             .map_or("自动", |(label, _)| *label);
                         ui_style::PclComboBox::from_id_salt("version-display-icon")
                             .width(ui.available_width() - 8.0)
-                            .selected_text(current)
+                            .selected_text(if preferences.custom_icon.is_some() {
+                                "自定义图片"
+                            } else {
+                                current
+                            })
                             .show_ui(ui, |ui| {
                                 for (label, key) in PRESET_ICONS {
-                                    ui.selectable_value(
-                                        &mut preferences.display_icon,
-                                        (*key).into(),
-                                        *label,
-                                    );
+                                    if ui
+                                        .selectable_value(
+                                            &mut preferences.display_icon,
+                                            (*key).into(),
+                                            *label,
+                                        )
+                                        .clicked()
+                                    {
+                                        preferences.custom_icon = None;
+                                    }
+                                }
+                                if ui.selectable_label(false, "选择图片…").clicked()
+                                    && !self.jobs.conflicts_with(&self.settings.game_root)
+                                {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter(
+                                            "常用图片",
+                                            &["png", "jpeg", "jpg", "gif", "webp"],
+                                        )
+                                        .pick_file()
+                                    {
+                                        match config::import_instance_icon(
+                                            &self.settings.game_root,
+                                            &id,
+                                            &path,
+                                        ) {
+                                            Ok(name) => preferences.custom_icon = Some(name),
+                                            Err(e) => {
+                                                self.error = Some(format!("图标导入失败：{e:#}"))
+                                            }
+                                        }
+                                    }
                                 }
                             });
                     } else {
@@ -395,7 +438,9 @@ impl Launcher {
                     ui,
                     "修改版本名",
                     140.0,
-                    self.busy.is_none() && self.game_pid.is_none(),
+                    self.busy.is_none()
+                        && self.game_pid.is_none()
+                        && !self.jobs.conflicts_with(&self.settings.game_root),
                     false,
                 )
                 .clicked()
@@ -511,7 +556,7 @@ impl Launcher {
                     ui,
                     rect,
                     "删除版本",
-                    self.busy.is_none() && self.game_pid.is_none(),
+                    self.busy.is_none() && self.game_pid.is_none() && !self.jobs.conflicts_with(&self.settings.game_root),
                 )
                 .on_hover_text("将该版本及其独立数据移入系统废纸篓或回收站。操作前会显示具体目录。")
                 .clicked();
@@ -530,6 +575,10 @@ impl Launcher {
                 });
             }
         } else if let Some(new) = rename_to {
+            if self.jobs.conflicts_with(&self.settings.game_root) {
+                self.error = Some("当前游戏目录正在写入，不能重命名".into());
+                return;
+            }
             if let Some((tx, cancel)) = self.start_job("正在重命名版本") {
                 let root = self.settings.game_root.clone();
                 std::thread::spawn(move || {
@@ -556,7 +605,10 @@ impl Launcher {
             .game_root
             .canonicalize()
             .is_ok_and(|root| root == preview.game_root);
-        if !root_matches || self.game_pid.is_some() {
+        if !root_matches
+            || self.game_pid.is_some()
+            || self.jobs.conflicts_with(&self.settings.game_root)
+        {
             self.pending_version_delete = None;
             return;
         }
@@ -703,6 +755,10 @@ impl Launcher {
         id: &str,
         settings: &config::InstanceSettings,
     ) {
+        if self.jobs.conflicts_with(&self.settings.game_root) {
+            self.error = Some("当前游戏目录正在写入，请完成后修改版本设置".into());
+            return;
+        }
         match config::save_instance_settings(&self.settings.game_root, id, settings) {
             Ok(()) => {
                 ctx.data_mut(|data| {
@@ -746,7 +802,9 @@ impl Launcher {
                 });
             });
         ui.add_space(15.0);
-        let mutable = self.game_pid.is_none() && self.busy.is_none();
+        let mutable = self.game_pid.is_none()
+            && self.busy.is_none()
+            && !self.jobs.conflicts_with(&self.settings.game_root);
         let filter = self.mods_filter.to_lowercase();
         let matches = |value: &&mods::LocalMod| {
             value.name.to_lowercase().contains(&filter)
@@ -766,7 +824,21 @@ impl Launcher {
                     self.open_instance_subfolder(id, "mods");
                 }
                 choose_files = button(ui, "从文件安装", 110.0, mutable, false).clicked();
-                check_updates = button(ui, "检查更新", 110.0, mutable, false).clicked();
+                let updates_allowed = config::load_instance_settings(&self.settings.game_root, id)
+                    .is_ok_and(|s| !s.disable_mod_updates);
+                if super::appearance_ui::feature_visible(ui.ctx(), &self.settings, "mod_update") {
+                    check_updates =
+                        button(ui, "检查更新", 110.0, mutable && updates_allowed, false)
+                            .on_hover_text(if updates_allowed {
+                                "检查兼容的 Mod 更新"
+                            } else {
+                                "该版本已禁用 Mod 更新，可在版本设置中恢复"
+                            })
+                            .clicked();
+                }
+                if button(ui, "恢复已移除", 110.0, mutable, false).clicked() {
+                    self.restore_mod_removal(id, instance);
+                }
                 if button(ui, "下载新 Mod", 110.0, mutable, false).clicked() {
                     self.page = Page::Download;
                     self.version_tools = false;
@@ -956,13 +1028,21 @@ impl Launcher {
                             toggles.extend(selection.iter().map(|name| (name.clone(), enabled)));
                         }
                     }
+                    if button(ui, "移除所选", 110.0, mutable, false).clicked() {
+                        self.confirm_mod_removal(
+                            ui.ctx(),
+                            id,
+                            instance,
+                            selection.iter().cloned().collect(),
+                        );
+                    }
                     if button(ui, "取消选择", 110.0, true, false).clicked() {
                         selection.clear();
                     }
                 });
             });
         }
-        if !toggles.is_empty() {
+        if !toggles.is_empty() && !self.jobs.conflicts_with(&self.settings.game_root) {
             let mut failures = Vec::new();
             let mut count = 0;
             for (file, enabled) in toggles {
@@ -1027,6 +1107,7 @@ fn version_catalog(
                     (
                         version.clone(),
                         VersionPresentation {
+                            custom_icon: None,
                             group: "其他版本",
                             icon: "game",
                             description: "正在读取版本信息…".into(),
@@ -1077,6 +1158,10 @@ fn version_presentation(root: &Path, version: &InstalledVersion) -> VersionPrese
     let mut presentation = infer_version_presentation(root, version);
     match config::load_instance_settings(root, &version.id) {
         Ok(settings) => {
+            presentation.custom_icon = settings
+                .custom_icon
+                .as_deref()
+                .and_then(|name| config::instance_icon_path(root, &version.id, name).ok());
             presentation.favorite = settings.favorite;
             presentation.hidden = settings.hidden;
             if settings.display_category == "mod" {
@@ -1117,6 +1202,7 @@ pub(super) fn export_version_description(root: &Path, version: &InstalledVersion
 fn infer_version_presentation(root: &Path, version: &InstalledVersion) -> VersionPresentation {
     if let Some(error) = &version.error {
         return VersionPresentation {
+            custom_icon: None,
             group: "错误版本",
             icon: "game",
             description: error.clone(),
@@ -1174,6 +1260,7 @@ fn infer_version_presentation(root: &Path, version: &InstalledVersion) -> Versio
             {
                 let loader = loader.strip_prefix(&format!("{base}-")).unwrap_or(loader);
                 return VersionPresentation {
+                    custom_icon: None,
                     group,
                     icon,
                     description: format!("{kind} {base}, {label} {loader}"),
@@ -1188,6 +1275,7 @@ fn infer_version_presentation(root: &Path, version: &InstalledVersion) -> Versio
         }
     }
     VersionPresentation {
+        custom_icon: None,
         favorite: false,
         hidden: false,
         modable: Some(false),
@@ -1313,4 +1401,33 @@ fn button(
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 35.0), egui::Sense::hover());
     ui_style::outline_button(ui, rect, label, None, highlight, enabled)
+}
+
+#[cfg(test)]
+mod management_tests {
+    use super::*;
+    #[test]
+    fn version_preferences_cannot_write_during_root_job() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(d.path());
+        let root = app.settings.game_root.clone();
+        std::fs::create_dir_all(root.join("versions/v")).unwrap();
+        std::fs::write(root.join("versions/v/v.json"), b"{}").unwrap();
+        let old = config::InstanceSettings::default();
+        config::save_instance_settings(&root, "v", &old).unwrap();
+        let path = config::instance_settings_path(&root, "v").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        app.start_download_job("fixture writer", Some("v".into()))
+            .unwrap();
+        app.save_version_preferences(
+            &egui::Context::default(),
+            "v",
+            &config::InstanceSettings {
+                description: "change".into(),
+                ..old
+            },
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert!(app.error.is_some());
+    }
 }

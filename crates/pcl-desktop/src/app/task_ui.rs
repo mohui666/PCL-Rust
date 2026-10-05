@@ -21,7 +21,8 @@ struct Step {
     counts: Option<(u64, u64)>,
 }
 struct VisibleStep {
-    name: &'static str,
+    name: String,
+    depth: u8,
     state: StepStatus,
     fraction: Option<f64>,
     detail: String,
@@ -46,6 +47,7 @@ pub(super) fn download_task_title(label: &str, selected_instance: Option<&str>) 
 }
 #[derive(PartialEq, Eq)]
 enum Status {
+    Queued,
     Running,
     Cancelling,
     Finished,
@@ -53,7 +55,16 @@ enum Status {
     Cancelled,
 }
 
+struct Component {
+    name: String,
+    state: StepStatus,
+    start: usize,
+    end: Option<usize>,
+}
+
 pub(super) struct TaskState {
+    components: Vec<Component>,
+    current_component: Option<usize>,
     title: String,
     status: Status,
     steps: Vec<Step>,
@@ -77,6 +88,8 @@ impl TaskState {
     pub(super) fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            components: Vec::new(),
+            current_component: None,
             status: Status::Running,
             steps: Vec::new(),
             plan: None,
@@ -110,7 +123,78 @@ impl TaskState {
             && self.plan.as_deref() == Some(VANILLA_PLAN.as_slice())
             && self.steps.len() == VANILLA_PLAN.len()
     }
+    pub(super) fn component_plan(&mut self, names: Vec<String>) {
+        if self.steps.is_empty() && self.components.is_empty() {
+            self.components = names
+                .into_iter()
+                .take(128)
+                .map(|name| Component {
+                    name,
+                    state: StepStatus::Waiting,
+                    start: 0,
+                    end: None,
+                })
+                .collect();
+        }
+    }
+    pub(super) fn component_start(&mut self, index: usize) {
+        if let Some(part) = self.components.get_mut(index) {
+            part.state = StepStatus::Running;
+            part.start = self.steps.len();
+            self.current_component = Some(index);
+        }
+    }
+    pub(super) fn component_done(&mut self, index: usize) {
+        if self.current_component != Some(index) {
+            return;
+        }
+        if let Some(part) = self.components.get_mut(index) {
+            part.state = StepStatus::Finished;
+            part.end = Some(self.steps.len());
+            for step in &mut self.steps[part.start..] {
+                step.state = StepStatus::Finished;
+            }
+            self.current_component = None;
+        }
+    }
     fn visible_steps(&self) -> Vec<VisibleStep> {
+        if self.components.is_empty() {
+            return self.flat_visible_steps();
+        }
+        let mut result = Vec::new();
+        for part in &self.components {
+            result.push(VisibleStep {
+                name: part.name.clone(),
+                depth: 0,
+                state: part.state,
+                fraction: if part.state == StepStatus::Finished {
+                    Some(1.0)
+                } else {
+                    None
+                },
+                detail: String::new(),
+            });
+            if part.state != StepStatus::Waiting {
+                for step in self
+                    .steps
+                    .get(part.start..part.end.unwrap_or(self.steps.len()))
+                    .unwrap_or_default()
+                {
+                    result.push(VisibleStep {
+                        name: stage_name(step.stage).into(),
+                        depth: 1,
+                        state: step.state,
+                        fraction: step_fraction(step),
+                        detail: step
+                            .counts
+                            .map_or_else(String::new, |(done, total)| format!("{done}/{total}")),
+                    });
+                }
+            }
+        }
+        result
+    }
+    fn flat_visible_steps(&self) -> Vec<VisibleStep> {
         if self.uses_vanilla_groups() {
             use ProgressStage::*;
             [
@@ -159,7 +243,8 @@ impl TaskState {
                     .collect::<Vec<_>>()
                     .join("\n");
                 VisibleStep {
-                    name,
+                    name: name.into(),
+                    depth: 0,
                     state,
                     fraction,
                     detail: format!(
@@ -172,7 +257,8 @@ impl TaskState {
             self.steps
                 .iter()
                 .map(|step| VisibleStep {
-                    name: stage_name(step.stage),
+                    name: stage_name(step.stage).into(),
+                    depth: 0,
                     state: step.state,
                     fraction: step_fraction(step),
                     detail: step
@@ -286,8 +372,61 @@ impl TaskState {
         };
         self.error = Some(error.into());
     }
+    pub(super) fn queued(&mut self) {
+        self.status = Status::Queued;
+        self.message = "等待空闲下载任务".into();
+    }
+    pub(super) fn started(&mut self) {
+        if self.status == Status::Queued {
+            self.status = Status::Running;
+            self.message = "准备中".into();
+        }
+    }
+    pub(super) fn was_cancelled(&self) -> bool {
+        self.status == Status::Cancelled
+    }
+    pub(super) fn title(&self) -> &str {
+        &self.title
+    }
+    pub(super) fn short_summary(&self) -> String {
+        format!("{} · {}", self.title, self.status_label())
+    }
+    fn status_label(&self) -> &'static str {
+        match self.status {
+            Status::Queued => "等待中",
+            Status::Running => "运行中",
+            Status::Cancelling => "正在取消",
+            Status::Finished => "已完成",
+            Status::Failed => "失败",
+            Status::Cancelled => "已取消",
+        }
+    }
+    pub(super) fn history_summary(&self) -> (String, String, Vec<String>, Option<String>) {
+        (
+            self.title.clone(),
+            self.status_label().into(),
+            self.visible_steps()
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{} · {}",
+                        s.name,
+                        match s.state {
+                            StepStatus::Waiting => "等待中",
+                            StepStatus::Running => "进行中",
+                            StepStatus::Finished => "已完成",
+                        }
+                    )
+                })
+                .collect(),
+            self.error.clone(),
+        )
+    }
     pub(super) fn is_running(&self) -> bool {
-        matches!(self.status, Status::Running | Status::Cancelling)
+        matches!(
+            self.status,
+            Status::Queued | Status::Running | Status::Cancelling
+        )
     }
     pub(super) fn is_finished(&self) -> bool {
         matches!(self.status, Status::Finished | Status::Cancelled)
@@ -307,10 +446,13 @@ impl TaskState {
         format!("{} / {}", number(active), number(self.concurrency_limit))
     }
     fn progress_text(&self) -> String {
+        if self.status == Status::Queued {
+            return "等待中".into();
+        }
         if self.status == Status::Finished {
             return "100 %".into();
         }
-        if self.untyped_progress || self.has_multiple_plans {
+        if self.components.is_empty() && (self.untyped_progress || self.has_multiple_plans) {
             return "—".into();
         }
         if self.plan.is_none() && self.steps.is_empty() && self.message.is_empty() {
@@ -325,6 +467,19 @@ impl TaskState {
     pub(super) fn overall_progress(&self) -> Option<f64> {
         if self.status == Status::Finished {
             return Some(1.0);
+        }
+        if !self.components.is_empty() {
+            // A component completes only after its actual operation returns success.
+            // Unknown inner operations do not invent a fractional byte denominator.
+            return Some(
+                (self
+                    .components
+                    .iter()
+                    .filter(|c| c.state == StepStatus::Finished)
+                    .count() as f64
+                    / self.components.len() as f64)
+                    .min(0.9999),
+            );
         }
         if self.untyped_progress || self.has_multiple_plans || !self.overall_plan_known {
             return None;
@@ -487,13 +642,53 @@ impl Launcher {
             return;
         };
         let rect = ui.max_rect();
-        let values = [
-            task.progress_text(),
-            speed_text(task.speed(Instant::now())),
-            task.remaining_files
-                .map_or_else(|| "—".into(), |count| count.to_string()),
-            task.thread_text(),
-        ];
+        let tasks = self
+            .task_hub
+            .others
+            .values()
+            .chain(self.task.iter())
+            .filter(|t| t.is_running())
+            .collect::<Vec<_>>();
+        let values = if tasks.len() > 1 {
+            let total = tasks
+                .iter()
+                .map(|t| t.overall_progress())
+                .collect::<Option<Vec<_>>>()
+                .map(|p| p.iter().sum::<f64>() / p.len() as f64);
+            let sum = |v: Vec<Option<u64>>| {
+                v.into_iter()
+                    .collect::<Option<Vec<_>>>()
+                    .map(|v| v.into_iter().sum::<u64>())
+                    .map_or_else(|| "—".into(), |v| v.to_string())
+            };
+            [
+                total.map_or_else(|| "—".into(), |v| format!("{:.2} %", v * 100.0)),
+                speed_text(
+                    tasks
+                        .iter()
+                        .map(|t| t.speed(Instant::now()))
+                        .collect::<Option<Vec<_>>>()
+                        .map(|v| v.iter().sum()),
+                ),
+                sum(tasks.iter().map(|t| t.remaining_files).collect()),
+                format!(
+                    "{} / {}",
+                    sum(tasks
+                        .iter()
+                        .map(|t| t.active_downloads.map(u64::from))
+                        .collect()),
+                    pcl_core::network::options().threads
+                ),
+            ]
+        } else {
+            [
+                task.progress_text(),
+                speed_text(task.speed(Instant::now())),
+                task.remaining_files
+                    .map_or_else(|| "—".into(), |count| count.to_string()),
+                task.thread_text(),
+            ]
+        };
         let labels = TASK_STATISTIC_LABELS;
         let label_height = ui
             .painter()
@@ -565,6 +760,8 @@ impl Launcher {
                 theme::palette(ui.ctx()).text,
             );
             let tooltip = match index {
+                0 if tasks.len()>1=>"当前活动任务按任务等权汇总；任一任务尚无进度分母时显示未知。完成记录不参与活动任务统计。",
+                0 if !task.components.is_empty()=>"按已完成组件数 / 已声明组件总数统计，子步骤显示实际进度；只有整个任务成功才显示100%。",
                 0 if task.has_multiple_plans || !task.overall_plan_known => "总任务包含额外安装阶段，尚无统一的进度分母；各步骤显示真实进度，任务成功后显示 100%。",
                 0 if task.uses_vanilla_groups() => "总进度按六个底层安装阶段等权统计，右侧合并为四组展示；任务成功后才显示 100%。",
                 0 => "按已声明安装步骤等权统计；任务成功后才显示 100%。尚未提供步骤计划时显示未知。",
@@ -587,6 +784,11 @@ impl Launcher {
         }
     }
     pub(super) fn task_page(&mut self, ui: &mut egui::Ui) {
+        self.task_list(ui);
+        self.render_current_task(ui);
+        self.task_history_ui(ui);
+    }
+    fn render_current_task(&mut self, ui: &mut egui::Ui) {
         let resource_files = self
             .resource_dependency_plan()
             .map(|files| {
@@ -748,7 +950,11 @@ impl Launcher {
                     }
                 } else {
                     for (index, step) in steps.iter().enumerate() {
-                        let row = rect.min + Vec2::new(14.0, 40.0 + index as f32 * 26.0);
+                        let row = rect.min
+                            + Vec2::new(
+                                14.0 + step.depth as f32 * 16.0,
+                                40.0 + index as f32 * 26.0,
+                            );
                         draw_step_status(ui, &icons, row, step);
                         task_row_label(
                             ui,
@@ -756,7 +962,7 @@ impl Launcher {
                                 row + Vec2::new(50.0, 0.0),
                                 Vec2::new(rect.width() - 79.0, 24.0),
                             ),
-                            step.name,
+                            &step.name,
                         )
                         .on_hover_text(&step.detail);
                     }
@@ -791,13 +997,17 @@ impl Launcher {
         }
         if cancel_or_close {
             if task.is_running() {
-                self.cancel.store(true, Ordering::Relaxed);
+                if let Some(active) = self.task_hub.selected.and_then(|id| self.jobs.get(id)) {
+                    active.cancel.store(true, Ordering::Relaxed);
+                } else {
+                    self.cancel.store(true, Ordering::Relaxed);
+                }
                 task.status = Status::Cancelling;
                 task.message = "正在取消…".into();
                 self.status = "正在取消…".into();
             } else {
                 self.task_view = false;
-                self.task = None;
+                // Keep completed task and retry recipe available in task history.
             }
         }
     }
@@ -906,7 +1116,7 @@ mod tests {
         let mut task = planned_vanilla(true);
         let rows = task.visible_steps();
         assert_eq!(
-            rows.iter().map(|row| row.name).collect::<Vec<_>>(),
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
             [
                 "下载原版 json 文件",
                 "下载原版支持库文件",
@@ -1162,5 +1372,35 @@ mod tests {
         task.fail("取消", true);
         assert!(task.is_finished());
         assert!(!task.is_failed());
+    }
+    #[test]
+    fn component_tree_preserves_prior_rows_and_never_finishes_before_terminal() {
+        let mut task = TaskState::new("组合安装");
+        task.component_plan(vec!["原版".into(), "加载器".into()]);
+        task.component_start(0);
+        task.update(&Progress {
+            plan: Some(vec![ProgressStage::VersionMetadata]),
+            ..Default::default()
+        });
+        task.component_done(0);
+        task.component_start(1);
+        task.update(&Progress {
+            plan: Some(vec![ProgressStage::VersionMetadata]),
+            ..Default::default()
+        });
+        let rows = task.visible_steps();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].state, StepStatus::Finished);
+        assert_eq!(rows[3].state, StepStatus::Waiting);
+        assert_eq!(task.overall_progress(), Some(0.5));
+        task.component_done(1);
+        assert!(task.overall_progress().unwrap() < 1.0);
+        task.finish();
+        assert_eq!(task.overall_progress(), Some(1.0));
+        assert!(task
+            .visible_steps()
+            .iter()
+            .all(|s| s.state == StepStatus::Finished));
     }
 }

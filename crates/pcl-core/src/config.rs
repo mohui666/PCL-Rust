@@ -1,6 +1,9 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[path = "config_management.rs"]
+mod management;
+pub use management::*;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,6 +41,8 @@ pub struct InstanceSettings {
     pub favorite: bool,
     pub hidden: bool,
     pub display_icon: String,
+    pub custom_icon: Option<String>,
+    pub disable_mod_updates: bool,
     pub display_category: String,
 }
 
@@ -79,6 +84,8 @@ impl Default for InstanceSettings {
             favorite: false,
             hidden: false,
             display_icon: String::new(),
+            custom_icon: None,
+            disable_mod_updates: false,
             display_category: String::new(),
         }
     }
@@ -109,6 +116,12 @@ pub fn load_instance_settings(root: &Path, id: &str) -> Result<InstanceSettings>
 }
 
 pub fn validate_instance_settings(settings: &InstanceSettings) -> Result<()> {
+    if let Some(name) = &settings.custom_icon {
+        crate::metadata::validate_id(name)?;
+        if !name.ends_with(".png") {
+            bail!("自定义图标必须为已导入的 PNG");
+        }
+    }
     validate_window_title(&settings.game_window_title)?;
     if !matches!(
         settings.display_icon.as_str(),
@@ -498,6 +511,14 @@ pub enum GcMode {
 pub struct Settings {
     pub game_root: PathBuf,
     pub game_roots: Vec<PathBuf>,
+    pub resource_naming: crate::resources::ResourceNaming,
+    pub resource_sort: crate::resources::SearchSort,
+    pub game_root_names: std::collections::BTreeMap<PathBuf, String>,
+    pub ui_title_mode: u8,
+    pub ui_title_left: bool,
+    pub ui_title_text: String,
+    pub ui_title_logo: Option<PathBuf>,
+    pub ui_hidden_pages: Vec<String>,
     pub downloads: crate::network::DownloadOptions,
     pub system: crate::system::SystemSettings,
     pub ui_background_folder: Option<PathBuf>,
@@ -562,6 +583,14 @@ impl Default for Settings {
                 .join("pcl-rust")
                 .join("game"),
             game_roots: Vec::new(),
+            resource_naming: Default::default(),
+            resource_sort: Default::default(),
+            game_root_names: Default::default(),
+            ui_title_mode: 1,
+            ui_title_left: false,
+            ui_title_text: String::new(),
+            ui_title_logo: None,
+            ui_hidden_pages: Vec::new(),
             downloads: Default::default(),
             system: Default::default(),
             ui_background_folder: None,
@@ -634,6 +663,35 @@ fn validate_window_title(title: &str) -> Result<()> {
 }
 
 pub fn validate_settings(settings: &Settings) -> Result<()> {
+    if settings.ui_title_mode > 3
+        || settings.ui_title_text.len() > 200
+        || settings.ui_title_text.chars().any(char::is_control)
+    {
+        bail!("标题栏设置无效");
+    }
+    if settings
+        .ui_title_logo
+        .as_ref()
+        .is_some_and(|p| !p.is_absolute())
+    {
+        bail!("标题栏图片必须是绝对路径");
+    }
+    if settings.ui_hidden_pages.len() > 64
+        || settings.ui_hidden_pages.iter().any(|key| {
+            key.len() > 64 || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        })
+    {
+        bail!("隐藏功能设置无效");
+    }
+    for (path, name) in &settings.game_root_names {
+        if !path.is_absolute()
+            || name.is_empty()
+            || name.chars().count() > 100
+            || name.chars().any(char::is_control)
+        {
+            bail!("游戏目录显示名无效");
+        }
+    }
     settings.downloads.validate()?;
     settings.system.validate()?;
     validate_window_title(&settings.game_window_title)?;

@@ -31,6 +31,13 @@ pub(super) struct HomeState {
     executing: Option<mpsc::Receiver<Result<String>>>,
     variables: HashMap<String, String>,
     variables_loaded: bool,
+    import: Option<HomeImport>,
+}
+struct HomeImport {
+    source: PathBuf,
+    target: PathBuf,
+    bytes: Vec<u8>,
+    previous: Option<Vec<u8>>,
 }
 #[derive(Serialize, Deserialize)]
 struct Cached {
@@ -72,6 +79,64 @@ pub(super) fn generate_tutorial(settings_path: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 impl Launcher {
+    pub(super) fn import_home_file(&mut self, ctx: &egui::Context, source: &Path) {
+        if self.home.import.is_some() || self.home.executing.is_some() {
+            self.home.message = Some((
+                "主页操作尚未结束".into(),
+                "请先完成当前主页操作后再导入。".into(),
+            ));
+            return;
+        }
+        let result = (|| -> Result<HomeImport> {
+            let bytes = read_bounded(source, xaml_ui::MAX_DOCUMENT)?;
+            xaml_ui::parse(std::str::from_utf8(&bytes).context("本地主页必须使用 UTF-8")?)?;
+            let target = folder(&self.settings_path).join("Custom.xaml");
+            let previous = if target.try_exists()? {
+                Some(read_bounded(&target, xaml_ui::MAX_DOCUMENT)?)
+            } else {
+                None
+            };
+            Ok(HomeImport {
+                source: source.to_owned(),
+                target,
+                bytes,
+                previous,
+            })
+        })();
+        match result {
+            Ok(import)
+                if import
+                    .previous
+                    .as_ref()
+                    .is_some_and(|old| old != &import.bytes) =>
+            {
+                self.home.import = Some(import)
+            }
+            Ok(import) => self.finish_home_import(import),
+            Err(error) => self.home.message = Some(("主页导入失败".into(), format!("{error:#}"))),
+        }
+        ctx.request_repaint();
+    }
+    fn finish_home_import(&mut self, import: HomeImport) {
+        match write_imported_home(&import) {
+            Ok(backup) => {
+                self.settings.ui_custom_type = 1;
+                self.home.actions.clear();
+                self.home.confirmation = None;
+                self.refresh_custom_home();
+                self.persist();
+                self.page = Page::Launch;
+                self.version_view = false;
+                self.version_tools = false;
+                self.task_view = false;
+                self.status = backup.map_or_else(
+                    || "自定义主页已导入".into(),
+                    |path| format!("自定义主页已导入；原主页备份：{}", path.display()),
+                );
+            }
+            Err(error) => self.home.message = Some(("主页导入失败".into(), format!("{error:#}"))),
+        }
+    }
     pub(super) fn refresh_custom_home(&mut self) {
         self.home.key = None;
         self.home.error = None;
@@ -274,6 +339,23 @@ impl Launcher {
         self.home.actions.extend(actions);
     }
     pub(super) fn custom_content_dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(import) = &self.home.import {
+            let text = format!("已选择 {}。\n替换现有的自定义主页？原主页会保留一份备份。\n主页操作仅在点击对应按钮后执行。", import.source.display());
+            if let Some(index) = modal_ui::account_modal_with_options(
+                ctx,
+                "import-custom-home",
+                "替换自定义主页",
+                &text,
+                &["替换", "取消"],
+                modal_ui::ModalOptions::warning(),
+            ) {
+                let import = self.home.import.take().unwrap();
+                if index == 0 {
+                    self.finish_home_import(import);
+                }
+            }
+            return;
+        }
         if !self.home.variables_loaded {
             self.home.variables_loaded = true;
             let path = folder(&self.settings_path).join("variables.json");
@@ -323,7 +405,12 @@ impl Launcher {
                         | "写入设置"
                         | "修改变量"
                         | "写入变量"
-                ) {
+                ) || (action.kind == "启动游戏"
+                    && action
+                        .data
+                        .split_once('|')
+                        .is_some_and(|(_, server)| !server.is_empty()))
+                {
                     self.home.confirmation = Some(action);
                 } else if let Err(error) = self.perform_custom_action(action, ctx) {
                     self.home.message = Some(("事件执行失败".into(), format!("{error:#}")));
@@ -395,8 +482,11 @@ impl Launcher {
                 };
             }
             "启动游戏" => {
+                if self.busy.is_some() || self.game_pid.is_some() {
+                    bail!("请等待当前任务或游戏结束后再启动");
+                }
                 if !arg1.is_empty() {
-                    bail!("此主页启动事件带有服务器参数；请在版本设置中保存服务器后再启动");
+                    config::parse_server_address(arg1)?;
                 }
                 if !matches!(arg0, "\\current" | "") {
                     if !self.versions.iter().any(|version| version.id == arg0) {
@@ -404,7 +494,14 @@ impl Launcher {
                     }
                     self.settings.selected_version = Some(arg0.into());
                 }
-                self.launch(false);
+                if !arg1.is_empty() {
+                    if self.microsoft && self.session.is_none() {
+                        bail!("请先完成正版登录，再使用主页的加入服务器按钮");
+                    }
+                    self.launch_home_server(arg1.to_owned());
+                } else {
+                    self.launch(false);
+                }
             }
             "导入整合包" | "安装整合包" => {
                 self.open_local_pack_import();
@@ -525,6 +622,43 @@ impl Launcher {
         Ok(())
     }
 }
+fn write_imported_home(import: &HomeImport) -> Result<Option<PathBuf>> {
+    let current = if import.target.try_exists()? {
+        Some(read_bounded(&import.target, xaml_ui::MAX_DOCUMENT)?)
+    } else {
+        None
+    };
+    if current != import.previous {
+        bail!("主页文件在确认期间已变化，未覆盖；请重新导入");
+    }
+    if current.as_ref() == Some(&import.bytes) {
+        return Ok(None);
+    }
+    let parent = import.target.parent().context("主页文件缺少目录")?;
+    fs::create_dir_all(parent)?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(&import.bytes)?;
+    staged.as_file().sync_all()?;
+    let backup = if let Some(previous) = current {
+        let mut backup = tempfile::Builder::new()
+            .prefix("Custom-")
+            .suffix(".xaml.bak")
+            .tempfile_in(parent)?;
+        backup.write_all(&previous)?;
+        backup.as_file().sync_all()?;
+        let (_, path) = backup.keep().map_err(|error| error.error)?;
+        staged
+            .persist(&import.target)
+            .map_err(|error| error.error)?;
+        Some(path)
+    } else {
+        staged
+            .persist_noclobber(&import.target)
+            .map_err(|error| error.error)?;
+        None
+    };
+    Ok(backup)
+}
 fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() || meta.file_type().is_symlink() {
@@ -613,6 +747,50 @@ fn open_file(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropped_home_is_parsed_before_save_and_does_not_execute_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let source = dir.path().join("dropped.xaml");
+        let bytes =
+            "<local:MyButton Text='test' EventType='执行命令' EventData='never-run-fixture'/>"
+                .as_bytes();
+        fs::write(&source, bytes).unwrap();
+        app.import_home_file(&egui::Context::default(), &source);
+        assert_eq!(app.settings.ui_custom_type, 1);
+        assert_eq!(
+            fs::read(folder(&app.settings_path).join("Custom.xaml")).unwrap(),
+            bytes
+        );
+        assert!(app.home.actions.is_empty() && app.home.executing.is_none());
+        fs::write(&source, "<InvalidControl/>").unwrap();
+        app.import_home_file(&egui::Context::default(), &source);
+        assert!(app.home.message.as_ref().unwrap().0.contains("失败"));
+        assert_eq!(
+            fs::read(folder(&app.settings_path).join("Custom.xaml")).unwrap(),
+            bytes
+        );
+    }
+    #[test]
+    fn dropped_home_requires_replace_confirmation_and_preserves_changed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let target = generate_tutorial(&app.settings_path).unwrap();
+        let original = fs::read(&target).unwrap();
+        let source = dir.path().join("new.xaml");
+        fs::write(&source, "<TextBlock Text='new'/>").unwrap();
+        app.import_home_file(&egui::Context::default(), &source);
+        assert!(app.home.import.is_some());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        let import = app.home.import.take().unwrap();
+        fs::write(&target, "changed during confirmation").unwrap();
+        assert!(write_imported_home(&import).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"changed during confirmation");
+        fs::write(&target, &original).unwrap();
+        let backup = write_imported_home(&import).unwrap().unwrap();
+        assert_eq!(fs::read(backup).unwrap(), original);
+        assert_eq!(fs::read(target).unwrap(), import.bytes);
+    }
     #[test]
     #[ignore = "Explicit read-only smoke against the fixed upstream news-home endpoint"]
     fn live_fixed_news_home_fetches_and_parses_without_actions() {

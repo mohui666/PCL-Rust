@@ -18,6 +18,7 @@ use std::{
 
 #[derive(Default)]
 pub(super) struct SetupSystemState {
+    reset_open: bool,
     receiver: Option<Receiver<SystemMessage>>,
     cancel: Arc<AtomicBool>,
     loading: bool,
@@ -55,6 +56,7 @@ impl Launcher {
         self.start_system_check(true);
     }
     pub(super) fn init_system_settings(&mut self) {
+        system::configure_debug(&self.settings.system);
         if let Err(error) = pcl_core::network::configure(&self.settings.downloads) {
             self.error = Some(format!("下载设置无效：{error:#}"));
         }
@@ -441,12 +443,14 @@ impl Launcher {
             if self.setup_system.loading {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(if self.setup_system.downloading {
-                        "正在下载更新包"
-                    } else {
-                        "正在检查更新"
-                    });
+                    super::loading_ui::inline(
+                        ui,
+                        if self.setup_system.downloading {
+                            "正在下载更新包"
+                        } else {
+                            "正在检查更新"
+                        },
+                    );
                 });
             }
             if let Some((done, total)) = self
@@ -454,9 +458,10 @@ impl Launcher {
                 .progress
                 .filter(|_| self.setup_system.downloading)
             {
-                ui.add(
-                    egui::ProgressBar::new((done as f64 / total.max(1) as f64) as f32)
-                        .text(format!("{done} / {total} 字节")),
+                super::loading_ui::progress(
+                    ui,
+                    (total > 0).then_some((done as f64 / total.max(1) as f64) as f32),
+                    &format!("{done} / {total} 字节"),
                 );
             }
             if let Some(message) = &self.setup_system.message {
@@ -529,7 +534,7 @@ impl Launcher {
                         }
                     });
                     if self.setup_system.key_receiver.is_some() {
-                        ui.spinner();
+                        super::loading_ui::inline(ui, "正在处理…");
                     }
                 });
                 if let Some(message) = &self.setup_system.key_message {
@@ -582,6 +587,90 @@ impl Launcher {
                     self.settings = previous;
                     self.error = Some(format!("保存设置失败：{error:#}"));
                 }
+            }
+        }
+        let previous_debug = self.settings.system.clone();
+        setup_card(ui, "调试选项", 15, None, |ui| {
+            system_row(ui, "动画速度", |ui| {
+                let mut value = f32::from(self.settings.system.debug_animation);
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new((ui.available_width() - 62.0).max(40.0), 22.0),
+                    egui::Sense::hover(),
+                );
+                let response = super::appearance_ui::slider_control(
+                    ui,
+                    rect,
+                    "动画速度",
+                    &mut value,
+                    0.0,
+                    30.0,
+                    1.0,
+                );
+                if response.changed() || response.clicked() || response.dragged() {
+                    self.settings.system.debug_animation = value.round() as u8;
+                }
+                ui.label(if self.settings.system.debug_animation >= 30 {
+                    "关闭".to_owned()
+                } else {
+                    format!(
+                        "{:.1}x",
+                        system::animation_speed(self.settings.system.debug_animation)
+                    )
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let column = ui.available_width() / 3.5;
+                for (weight, value, title, hint) in [
+                    (1.5, &mut self.settings.system.debug_skip_copy, "禁止在下载时从其他文件夹复制文件", "关闭共享下载缓存的跨目录复用；已校验的目标文件仍保留。只建议测试下载速度时开启。"),
+                    (1.0, &mut self.settings.system.debug_mode, "调试模式", "显示更多诊断信息并保留更多脱敏日志"),
+                    (1.0, &mut self.settings.system.debug_delay, "添加延迟", "在网络请求及任务开始、结束环节添加可取消的随机延迟，仅用于测试。"),
+                ] {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(column * weight, 26.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| { ui_style::checkbox(ui, value, title, "").on_hover_text(hint); },
+                    );
+                }
+            });
+            if self.settings.system.debug_mode {
+                let platform = pcl_core::model::Platform::current();
+                ui.label(format!(
+                    "系统：{} {} / {}",
+                    platform.os, platform.version, platform.arch
+                ));
+                ui.label(format!(
+                    "文件并发：{}；脱敏日志保留上限：2000 条",
+                    self.settings.downloads.threads
+                ));
+                if ui.button("查看运行日志").clicked() {
+                    self.show_logs = true;
+                }
+            }
+            if ui
+                .add_enabled(
+                    !self.jobs.is_active() && self.game_pid.is_none(),
+                    egui::Button::new("初始化设置…"),
+                )
+                .clicked()
+            {
+                self.setup_system.reset_open = true;
+            }
+        });
+        if self.settings.system != previous_debug {
+            match config::save_settings(&self.settings_path, &self.settings) {
+                Ok(()) => system::configure_debug(&self.settings.system),
+                Err(error) => {
+                    self.settings.system = previous_debug;
+                    self.error = Some(format!("保存调试设置失败：{error:#}"));
+                }
+            }
+        }
+        if self.setup_system.reset_open {
+            if let Some(action)=super::modal_ui::account_modal_with_options(ui.ctx(),"reset-launcher-preferences","初始化设置","恢复默认设置前会保留原 JSON 备份。不会删除游戏目录或系统安全存储中的账号；已登记目录、当前版本及账号相关输入保留。",&["仅此页","全部偏好","取消"],super::modal_ui::ModalOptions::warning()) {
+                self.setup_system.reset_open=false;
+                if action<2 && !self.jobs.is_active() && self.game_pid.is_none(){match config::reset_launcher_settings(&self.settings_path,&self.settings,action==1){Ok((next,backup))=>{self.settings=next;system::configure_debug(&self.settings.system);let _=pcl_core::network::configure(&self.settings.downloads);self.instance_setup=Default::default();self.status=format!("设置已初始化；原设置备份：{}",backup.display());},Err(e)=>self.error=Some(format!("初始化失败：{e:#}"))}}
             }
         }
         if open_cache {

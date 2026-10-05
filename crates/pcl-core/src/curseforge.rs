@@ -377,7 +377,16 @@ pub fn search(
         ),
         ("index", options.offset.to_string()),
         ("pageSize", options.limit.to_string()),
-        ("sortField", "2".into()),
+        (
+            "sortField",
+            match options.sort {
+                crate::resources::SearchSort::Relevance => "2",
+                crate::resources::SearchSort::Downloads => "6",
+                crate::resources::SearchSort::Updated => "3",
+                crate::resources::SearchSort::Newest => "11",
+            }
+            .into(),
+        ),
         ("sortOrder", "desc".into()),
     ];
     if !category.is_empty() {
@@ -622,14 +631,23 @@ pub fn list_files(
     Ok(out)
 }
 pub fn download_file(file: &VersionFile, cancel: &AtomicBool) -> Result<Response> {
+    download_file_range(file, cancel, None)
+}
+pub fn download_file_range(
+    file: &VersionFile,
+    cancel: &AtomicBool,
+    range: Option<(u64, u64)>,
+) -> Result<Response> {
     let url = Url::parse(&file.url).context("CurseForge 文件地址无效")?;
     ensure!(trusted_file(&url), "CurseForge 文件仅允许官方 HTTPS CDN");
-    send(
-        client(true, false)?
-            .get(url)
-            .header("x-api-key", key_header()?),
-        cancel,
-    )
+    let mut request = client(true, false)?
+        .get(url)
+        .header("x-api-key", key_header()?)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    if let Some((first, last)) = range {
+        request = request.header(reqwest::header::RANGE, format!("bytes={first}-{last}"));
+    }
+    send(request, cancel)
 }
 pub(crate) fn fetch_icon(url: &str, cancel: &AtomicBool) -> Result<Vec<u8>> {
     let url = Url::parse(url)?;

@@ -4,6 +4,7 @@ mod account_ui;
 mod appearance_ui;
 mod crash_ui;
 mod download_ui;
+mod folder_ui;
 mod game_window_ui;
 mod hint_ui;
 mod home_ui;
@@ -21,6 +22,7 @@ mod resource_ui;
 mod setup_launch_ui;
 mod setup_system_ui;
 mod shell_ui;
+mod task_hub;
 mod task_ui;
 mod version_ui;
 mod xaml_ui;
@@ -69,6 +71,10 @@ enum LaunchAction {
 
 pub(crate) enum Event {
     Job(job::JobMessage),
+    JobStarted,
+    TaskPlan(Vec<String>),
+    TaskPart(usize),
+    TaskPartDone(usize),
     Resource(resource_ui::ResourceEvent),
     Account(account_ui::AccountEvent),
     Runtime(java_ui::RuntimeEvent),
@@ -87,6 +93,10 @@ pub(crate) enum Event {
     Progress(Progress),
     Log(String),
     Installed(String),
+    ModsChanged {
+        target: String,
+        message: String,
+    },
     ModsUpdated {
         target: String,
         report: pcl_core::mod_updates::UpdateReport,
@@ -133,6 +143,7 @@ impl Event {
             self,
             Self::Installed(_)
                 | Self::ModsUpdated { .. }
+                | Self::ModsChanged { .. }
                 | Self::DownloadFailed { .. }
                 | Self::Error(_)
                 | Self::Done(_)
@@ -163,6 +174,7 @@ impl Event {
 
 pub struct Launcher {
     assets: Assets,
+    folder_ui: folder_ui::FolderUi,
     appearance: appearance_ui::AppearanceState,
     home: home_ui::HomeState,
     crash: crash_ui::CrashUiState,
@@ -201,6 +213,8 @@ pub struct Launcher {
     jobs: job::Jobs,
     progress: Option<Progress>,
     task: Option<task_ui::TaskState>,
+    task_hub: task_hub::TaskHub,
+    processing_job: bool,
     task_view: bool,
     cancel: Arc<AtomicBool>,
     game_stop: Arc<AtomicBool>,
@@ -381,6 +395,7 @@ impl Launcher {
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
             assets: Assets::new(ctx),
+            folder_ui: Default::default(),
             appearance: appearance_ui::AppearanceState::default(),
             home: home_ui::HomeState::default(),
             crash: crash_ui::CrashUiState::default(),
@@ -423,6 +438,8 @@ impl Launcher {
             jobs: job::Jobs::default(),
             progress: None,
             task: None,
+            task_hub: Default::default(),
+            processing_job: false,
             task_view: false,
             cancel: Arc::new(AtomicBool::new(false)),
             game_stop: Arc::new(AtomicBool::new(false)),
@@ -452,6 +469,7 @@ impl Launcher {
             pack_optional: false,
             resource_browser: resource_ui::ResourceBrowser::default(),
         };
+        app.load_task_history();
         app.refresh_versions();
         app.detect_java();
         app.init_accounts();
@@ -461,11 +479,18 @@ impl Launcher {
 
     fn record(&mut self, message: String) {
         self.logs.push_back(message);
-        while self.logs.len() > 400 {
+        while self.logs.len()
+            > if self.settings.system.debug_mode {
+                2000
+            } else {
+                400
+            }
+        {
             self.logs.pop_front();
         }
     }
     fn persist(&mut self) {
+        pcl_core::system::configure_debug(&self.settings.system);
         if let Err(e) = config::save_settings(&self.settings_path, &self.settings) {
             self.error = Some(format!("保存失败：{e:#}"));
         } else if let Err(e) = pcl_core::network::configure(&self.settings.downloads) {
@@ -569,7 +594,7 @@ impl Launcher {
         self.resource_browser = resource_ui::ResourceBrowser::default();
     }
     fn start_job(&mut self, label: &str) -> Option<(Sender<Event>, Arc<AtomicBool>)> {
-        if self.busy.is_some() || self.jobs.is_active() {
+        if self.busy.is_some() || self.jobs.conflicts_with(&self.settings.game_root) {
             return None;
         }
         self.cancel = Arc::new(AtomicBool::new(false));
@@ -592,20 +617,42 @@ impl Launcher {
         root: PathBuf,
         target: Option<String>,
     ) -> Option<(job::JobSender, Arc<AtomicBool>)> {
-        let (tx, cancel) = self.start_job(label)?;
         let context = job::JobContext {
             root,
             game_root: self.settings.game_root.clone(),
             target,
         };
-        let sender = match self.jobs.begin(context, tx, cancel.clone()) {
+        self.start_download_job_with_context(label, context)
+    }
+    fn start_download_job_with_context(
+        &mut self,
+        label: &str,
+        context: job::JobContext,
+    ) -> Option<(job::JobSender, Arc<AtomicBool>)> {
+        if self.busy.is_some() {
+            self.error = Some("请等待当前操作完成后再添加下载任务".into());
+            return None;
+        }
+        if self.game_pid.is_some() {
+            self.error = Some("请先关闭正在运行的游戏，再执行文件任务".into());
+            return None;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let sender = match self
+            .jobs
+            .begin(context.clone(), self.tx.clone(), cancel.clone())
+        {
             Ok(sender) => sender,
             Err(error) => {
-                self.busy = None;
                 self.error = Some(error.to_string());
                 return None;
             }
         };
+        self.register_task(sender.id, context);
+        self.cancel = cancel.clone();
+        self.error = None;
+        self.progress = None;
+        self.status = label.into();
         let selected_install = self.page == Page::Download
             && self.download_tab == 0
             && self.download_selection.is_some()
@@ -615,7 +662,9 @@ impl Launcher {
             selected_install.then_some(self.install_name.as_str()),
         ));
         task.group_vanilla_install(selected_install && self.loader_kind.is_none());
+        task.queued();
         self.task = Some(task);
+        self.record_current_task();
         self.task_view = true;
         Some((sender, cancel))
     }
@@ -626,7 +675,7 @@ impl Launcher {
         }
     }
     fn install(&mut self, id: String) {
-        let Some((tx, cancel)) =
+        let Some((tx, _cancel)) =
             self.start_download_job(&format!("正在补全 {id}"), Some(id.clone()))
         else {
             return;
@@ -640,7 +689,8 @@ impl Launcher {
             .java_path
             .clone()
             .or_else(|| self.settings.java_priority.first().cloned());
-        std::thread::spawn(move || {
+        tx.spawn(move |tx| {
+            let cancel = tx.cancel_token();
             let result = install::repair_version_with_java(
                 &root,
                 &id,
@@ -694,7 +744,21 @@ impl Launcher {
             LaunchAction::Run
         });
     }
+    fn launch_home_server(&mut self, server: String) {
+        if self.microsoft && self.session.is_none() {
+            self.error = Some("请先完成正版登录再使用主页进服入口".into());
+            return;
+        }
+        self.start_launch_with_server(LaunchAction::Run, Some(server));
+    }
     fn start_launch(&mut self, action: LaunchAction) {
+        self.start_launch_with_server(action, None);
+    }
+    fn start_launch_with_server(&mut self, action: LaunchAction, home_server: Option<String>) {
+        if self.jobs.conflicts_with(&self.settings.game_root) {
+            self.error = Some("游戏目录仍有写入任务，请等待完成后启动".into());
+            return;
+        }
         if self.game_pid.is_some() && matches!(action, LaunchAction::Run) {
             self.error = Some("当前游戏仍在运行。".into());
             return;
@@ -834,7 +898,7 @@ impl Launcher {
                 } else {
                     None
                 };
-                let mut plan = launch::build_plan_with_settings_and_viewport(
+                let mut plan = launch::build_plan_with_overrides(
                     &options,
                     prepared_skin
                         .as_ref()
@@ -842,7 +906,10 @@ impl Launcher {
                     &current,
                     &settings,
                     runtime.major,
-                    launcher_size,
+                    launch::LaunchOverrides {
+                        launcher_size,
+                        server: home_server.as_deref(),
+                    },
                 )?;
                 plan.behavior.offline_skin = prepared_skin.map(|prepared| prepared.update);
                 if cancel.load(Ordering::Relaxed) {
@@ -944,8 +1011,13 @@ impl Launcher {
         // In particular, a late unscoped terminal must never finish the new card.
         if matches!(
             &event,
-            Event::Installed(_)
+            Event::JobStarted
+                | Event::TaskPlan(_)
+                | Event::TaskPart(_)
+                | Event::TaskPartDone(_)
+                | Event::Installed(_)
                 | Event::ModsUpdated { .. }
+                | Event::ModsChanged { .. }
                 | Event::DownloadFailed { .. }
                 | Event::Resource(resource_ui::ResourceEvent::Installed(..))
                 | Event::Runtime(java_ui::RuntimeEvent::Installed(_))
@@ -953,32 +1025,62 @@ impl Launcher {
             self.record("忽略没有作业编号的下载终态。".into());
             return;
         }
-        if self.jobs.is_active() {
-            match event {
-                Event::Progress(_) => (),
-                Event::Error(message) => {
-                    self.record(format!("后台操作错误（不影响当前下载）：{message}"));
-                }
-                Event::Done(message) => {
-                    self.record(format!("后台操作结果（不影响当前下载）：{message}"));
-                }
-                event => {
-                    // Independent accounts/list/icon/Java-discovery replies keep
-                    // their own generation guards, and cannot release this writer.
-                    let saved = (
-                        self.busy.clone(),
-                        self.progress.clone(),
-                        self.status.clone(),
-                    );
-                    self.handle_event(event);
-                    (self.busy, self.progress, self.status) = saved;
-                }
+        // Generic launch progress is meaningful only while its own operation is active.
+        // Stale unscoped events must not overwrite a queued download card.
+        if self.busy.is_none()
+            && self.jobs.is_active()
+            && matches!(
+                &event,
+                Event::Progress(_) | Event::Done(_) | Event::Error(_)
+            )
+        {
+            if let Event::Error(message) = event {
+                self.record(message);
             }
-        } else {
-            self.handle_event(event);
+            return;
         }
+        self.handle_event(event);
     }
     fn handle_job_message(&mut self, message: job::JobMessage) {
+        if self.jobs.get(message.id).is_none() {
+            return;
+        }
+        let id = message.id;
+        let terminal = message.event.is_download_terminal();
+        let changed_plan = matches!(
+            *message.event,
+            Event::JobStarted | Event::TaskPlan(_) | Event::TaskPart(_) | Event::TaskPartDone(_)
+        );
+        let previous = self.task_hub.selected;
+        let saved = (
+            self.busy.clone(),
+            self.progress.clone(),
+            self.status.clone(),
+            self.task_view,
+            self.cancel.clone(),
+        );
+        self.select_task(id);
+        self.processing_job = true;
+        self.handle_job_message_inner(message);
+        self.processing_job = false;
+        if terminal || changed_plan {
+            self.record_current_task();
+        }
+        let unrelated_operation = saved.0.is_some();
+        self.busy = saved.0;
+        if previous != Some(id) {
+            if let Some(previous) = previous {
+                self.select_task(previous);
+            }
+        }
+        if previous != Some(id) || unrelated_operation {
+            self.progress = saved.1;
+            self.status = saved.2;
+            self.task_view = saved.3;
+            self.cancel = saved.4;
+        }
+    }
+    fn handle_job_message_inner(&mut self, message: job::JobMessage) {
         let terminal = message.event.is_download_terminal();
         let Some(active) = self.jobs.route(message.id, terminal) else {
             return;
@@ -995,6 +1097,17 @@ impl Launcher {
             }
         }
         match *message.event {
+            Event::JobStarted => {
+                if let Some(task) = self.task.as_mut() {
+                    task.started();
+                }
+                if self.settings.system.debug_mode {
+                    self.record(format!("{}：取得目录写入许可", active.label()));
+                }
+            }
+            event @ (Event::TaskPlan(_) | Event::TaskPart(_) | Event::TaskPartDone(_)) => {
+                self.handle_event(event)
+            }
             Event::Log(message) => self.record(format!("{}：{message}", active.label())),
             Event::Progress(progress) => self.handle_event(Event::Progress(progress)),
             Event::Installed(id) => {
@@ -1050,6 +1163,24 @@ impl Launcher {
                     self.refresh_mods();
                 }
             }
+            Event::ModsChanged { target, message } => {
+                if active.context.target.as_deref() != Some(target.as_str()) {
+                    self.handle_event(Event::DownloadFailed {
+                        message: "Mod 操作返回目标不一致".into(),
+                        cancelled: false,
+                    });
+                } else {
+                    self.finish_download_task();
+                    self.status = message.clone();
+                    self.record(message);
+                    self.instance_setup = Default::default();
+                    if current_root
+                        && self.settings.selected_version.as_deref() == Some(target.as_str())
+                    {
+                        self.refresh_mods();
+                    }
+                }
+            }
             Event::ModsUpdated { target, report } => {
                 if active.context.target.as_deref() != Some(target.as_str()) {
                     self.handle_event(Event::DownloadFailed {
@@ -1099,6 +1230,26 @@ impl Launcher {
     fn handle_event(&mut self, event: Event) {
         match event {
             Event::Job(_) => (),
+            Event::JobStarted => {
+                if let Some(task) = self.task.as_mut() {
+                    task.started();
+                }
+            }
+            Event::TaskPlan(parts) => {
+                if let Some(task) = self.task.as_mut() {
+                    task.component_plan(parts);
+                }
+            }
+            Event::TaskPart(index) => {
+                if let Some(task) = self.task.as_mut() {
+                    task.component_start(index);
+                }
+            }
+            Event::TaskPartDone(index) => {
+                if let Some(task) = self.task.as_mut() {
+                    task.component_done(index);
+                }
+            }
 
             Event::VersionList(event) => self.handle_version_list_event(event),
             Event::OptiFineList(event) => self.handle_optifine_list(event),
@@ -1198,7 +1349,11 @@ impl Launcher {
             }
             Event::Progress(p) => {
                 self.status = p.message.clone();
-                if let Some(task) = self.task.as_mut().filter(|task| task.is_running()) {
+                if let Some(task) = self
+                    .task
+                    .as_mut()
+                    .filter(|task| self.processing_job && task.is_running())
+                {
                     task.update(&p);
                 }
                 self.progress = Some(p);
@@ -1293,7 +1448,7 @@ impl Launcher {
                 self.record(message.clone());
                 self.push_hint(hint_ui::HintKind::Error, message);
             }
-            Event::ModsUpdated { .. } => (),
+            Event::ModsUpdated { .. } | Event::ModsChanged { .. } => (),
             Event::Done(message) => {
                 self.status = message;
                 self.busy = None;
@@ -1413,7 +1568,7 @@ impl Launcher {
                 self.error = Some(format!("实例名称无效：{error:#}"));
                 return;
             }
-            let Some((tx, cancel)) = self.start_download_job("正在安装整合包", Some(id.clone()))
+            let Some((tx, _cancel)) = self.start_download_job("正在安装整合包", Some(id.clone()))
             else {
                 return;
             };
@@ -1424,8 +1579,10 @@ impl Launcher {
                 .java_path
                 .clone()
                 .or_else(|| self.settings.java_priority.first().cloned());
-            std::thread::spawn(move || {
-                let result = pcl_core::packs::install_pack_with_java(
+            let retry = pcl_core::packs::PackRetry::default();
+            tx.spawn(move |tx| {
+                let cancel = tx.cancel_token();
+                let result = retry.install_with_java(
                     &root,
                     &path,
                     &id,
@@ -1437,6 +1594,9 @@ impl Launcher {
                         let _ = tx.send(Event::Progress(p));
                     },
                 );
+                if !retry.retryable() {
+                    tx.disable_retry();
+                }
                 let _ = tx.send(match result {
                     Ok(id) => Event::Installed(id),
                     Err(error) => Event::download_failed("整合包安装未完成", error),
@@ -1482,6 +1642,16 @@ impl eframe::App for Launcher {
     }
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         theme::apply(ctx, &self.settings);
+        if let Err(error) = crate::startup_splash::tick(ctx) {
+            self.error = Some(format!("启动画面关闭失败：{error:#}"));
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
+            ctx.data_mut(|d| {
+                let id = egui::Id::new("pcl-reveal-hidden");
+                let show = d.get_temp::<bool>(id).unwrap_or(false);
+                d.insert_temp(id, !show);
+            });
+        }
         self.receive();
         self.system_tick(ctx);
         self.mod_update_tick(ctx);
@@ -1541,7 +1711,7 @@ impl eframe::App for Launcher {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         if self.busy.is_some() {
-                            ui.spinner();
+                            loading_ui::inline(ui, "");
                         }
                         ui.add(
                             egui::Label::new(RichText::new(&self.status).size(12.0).color(MUTED))
@@ -1563,11 +1733,7 @@ impl eframe::App for Launcher {
                         } else {
                             p.completed as f32 / p.total as f32
                         };
-                        ui.add(
-                            egui::ProgressBar::new(fraction)
-                                .fill(theme::palette(ui.ctx()).accent)
-                                .desired_height(5.0),
-                        );
+                        loading_ui::progress(ui, Some(fraction), "");
                     }
                 });
         }
@@ -1658,6 +1824,8 @@ impl eframe::App for Launcher {
         self.floating_entries(ctx);
         self.appearance.paint_startup_logo(ctx, &self.settings);
         self.hints.show(ctx);
+        self.folder_dialog(ctx);
+        self.handle_file_drop(ctx);
         self.dialogs(ctx);
         self.version_delete_dialog(ctx);
         self.account_dialogs(ctx);
@@ -1834,6 +2002,7 @@ mod event_tests {
         let (tx, rx) = mpsc::channel();
         Launcher {
             assets: Assets::new(&egui::Context::default()),
+            folder_ui: Default::default(),
             appearance: appearance_ui::AppearanceState::default(),
             home: home_ui::HomeState::default(),
             crash: crash_ui::CrashUiState::default(),
@@ -1876,6 +2045,8 @@ mod event_tests {
             jobs: job::Jobs::default(),
             progress: None,
             task: None,
+            task_hub: Default::default(),
+            processing_job: false,
             task_view: false,
             cancel: Arc::new(AtomicBool::new(false)),
             game_stop: Arc::new(AtomicBool::new(false)),
@@ -2106,5 +2277,30 @@ mod event_tests {
                 ..
             }
         ));
+    }
+    #[test]
+    fn task_history_survives_reload_and_new_jobs_cannot_write_running_game() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = fixture(temp.path());
+        let (sender, _) = app
+            .start_download_job("download api_key=fixture-private-key", Some("one".into()))
+            .unwrap();
+        sender
+            .send(Event::TaskPlan(vec!["原版".into(), "Fabric".into()]))
+            .unwrap();
+        sender.send(Event::TaskPart(0)).unwrap();
+        app.receive();
+        let mut restored = fixture(temp.path());
+        restored.load_task_history();
+        assert!(restored.task_hub.has_history());
+        assert!(!restored.jobs.is_active());
+        let history =
+            std::fs::read_to_string(app.settings_path.with_file_name("task-history.json")).unwrap();
+        assert!(history.contains("Fabric") && history.contains("进行中"));
+        assert!(!history.contains("fixture-private-key"));
+        app.game_pid = Some(12345);
+        assert!(app
+            .start_download_job("cannot write", Some("two".into()))
+            .is_none());
     }
 }

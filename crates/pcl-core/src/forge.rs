@@ -43,6 +43,20 @@ impl ForgeKind {
             Self::NeoForge => "https://maven.neoforged.net/releases/net/neoforged/neoforge",
         }
     }
+    fn repository_for(self, minecraft: &str) -> &'static str {
+        if self == Self::NeoForge && minecraft == "1.20.1" {
+            "https://maven.neoforged.net/releases/net/neoforged/forge"
+        } else {
+            self.repository()
+        }
+    }
+    fn artifact_for(self, minecraft: &str) -> &'static str {
+        if self == Self::NeoForge && minecraft == "1.20.1" {
+            "forge"
+        } else {
+            self.artifact()
+        }
+    }
     fn artifact(self) -> &'static str {
         match self {
             Self::Forge => "forge",
@@ -70,7 +84,7 @@ pub fn list_versions(kind: ForgeKind, minecraft: &str, cancel: &AtomicBool) -> R
     }
     let bytes = request_bytes(
         &http_client()?,
-        &format!("{}/maven-metadata.xml", kind.repository()),
+        &format!("{}/maven-metadata.xml", kind.repository_for(minecraft)),
         None,
         None,
         cancel,
@@ -78,6 +92,7 @@ pub fn list_versions(kind: ForgeKind, minecraft: &str, cancel: &AtomicBool) -> R
     let text = std::str::from_utf8(&bytes).context("Maven 版本清单不是 UTF-8")?;
     let prefix = match kind {
         ForgeKind::Forge => format!("{minecraft}-"),
+        ForgeKind::NeoForge if minecraft == "1.20.1" => format!("{minecraft}-"),
         ForgeKind::NeoForge => {
             let parts: Vec<_> = minecraft.split('.').collect();
             if !(2..=3).contains(&parts.len())
@@ -99,7 +114,7 @@ pub fn list_versions(kind: ForgeKind, minecraft: &str, cancel: &AtomicBool) -> R
         if !raw.starts_with(&prefix) {
             continue;
         }
-        let version = if kind == ForgeKind::Forge {
+        let version = if kind == ForgeKind::Forge || minecraft == "1.20.1" {
             &raw[prefix.len()..]
         } else {
             raw
@@ -400,14 +415,17 @@ fn validate_profiles(
     loader: &str,
 ) -> Result<String> {
     if profile["spec"].as_u64() != Some(1) {
-        bail!("此安装包不是已支持的现代 spec 1 格式；旧版 Forge 尚未实现");
+        bail!("此安装包不是受支持的 spec 1 处理器格式");
     }
     let id = string(version, "id")?;
     validate_id(id)?;
     if string(profile, "minecraft")? != mc
         || string(version, "inheritsFrom")? != mc
         || string(profile, "version")? != id
-        || id != kind.id(mc, loader)
+        || (id != kind.id(mc, loader)
+            && !(kind == ForgeKind::NeoForge
+                && mc == "1.20.1"
+                && id == format!("{mc}-forge-{loader}")))
     {
         bail!("官方安装包版本与请求的 Minecraft / 加载器不一致");
     }
@@ -922,7 +940,7 @@ fn legacy_profile(profile: &Value, mc: &str, loader: &str, file_version: &str) -
     let install = profile
         .get("install")
         .and_then(Value::as_object)
-        .context("尚未支持此旧版格式：需要 install/versionInfo（不含 install 的中版尚未迁移）")?;
+        .context("旧版格式需要 install/versionInfo；json/maven 中版格式由独立分支处理")?;
     if install.get("minecraft").and_then(Value::as_str) != Some(mc) {
         bail!("旧 Forge 安装包的 Minecraft 版本不匹配");
     }
@@ -1395,7 +1413,7 @@ pub fn install_forge(
     } else {
         None
     };
-    let coordinate = if kind == ForgeKind::Forge {
+    let coordinate = if kind == ForgeKind::Forge || minecraft == "1.20.1" {
         format!(
             "{minecraft}-{}",
             legacy
@@ -1408,8 +1426,8 @@ pub fn install_forge(
     };
     let url = format!(
         "{}/{coordinate}/{}-{coordinate}-installer.jar",
-        kind.repository(),
-        kind.artifact()
+        kind.repository_for(minecraft),
+        kind.artifact_for(minecraft)
     );
     progress(Progress {
         message: format!("校验 {} 官方安装包", kind.label()),
@@ -1519,6 +1537,9 @@ pub fn install_forge(
         cancel,
     )?)?;
     validate_profiles(&profile, &version, kind, minecraft, loader)?;
+    // Early NeoForge intentionally retained Forge's upstream profile id. Give
+    // the local profile its own namespace to avoid colliding with real Forge.
+    version["id"] = id.clone().into();
     let libraries = all_libraries(&profile, &version, platform)?;
     let parent_path = safe_target(
         root,
@@ -1701,6 +1722,37 @@ mod tests {
         parent
     }
 
+    #[test]
+    fn early_neoforge_uses_its_own_repository_and_accepts_publisher_legacy_id() {
+        assert_eq!(
+            ForgeKind::NeoForge.repository_for("1.20.1"),
+            "https://maven.neoforged.net/releases/net/neoforged/forge"
+        );
+        assert_eq!(ForgeKind::NeoForge.artifact_for("1.20.1"), "forge");
+        assert_eq!(ForgeKind::NeoForge.artifact_for("1.21.1"), "neoforge");
+        let profile = json!({"spec":1,"minecraft":"1.20.1","version":"1.20.1-forge-47.1.106","processors":[{"sides":["client"],"jar":"net.neoforged:installertools:1.0","args":[],"classpath":[]}]});
+        let version = json!({"id":"1.20.1-forge-47.1.106","inheritsFrom":"1.20.1","mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher"});
+        assert!(validate_profiles(
+            &profile,
+            &version,
+            ForgeKind::NeoForge,
+            "1.20.1",
+            "47.1.106"
+        )
+        .is_ok());
+        assert!(
+            validate_profiles(&profile, &version, ForgeKind::NeoForge, "1.20.1", "47.1.99")
+                .is_err()
+        );
+        assert!(validate_profiles(
+            &profile,
+            &version,
+            ForgeKind::NeoForge,
+            "1.21.1",
+            "47.1.106"
+        )
+        .is_err());
+    }
     #[test]
     fn legacy_official_table_categories_checksums_and_source_branch_rules() {
         let entries = parse_legacy_entries(
