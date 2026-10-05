@@ -19,5 +19,19 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Font derivatives remain runner-local under ignored test-output; never upload them.
+      - name: Prepare macOS Chinese fixture fonts
+        if: runner.os == 'macOS'
+        run: python3 scripts/build-local-pingfang-sfnt.py --style all
+      - name: Verify Windows Chinese fixture fonts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($name in @('msyh.ttc', 'msyhbd.ttc')) {
+            $font = Join-Path $env:WINDIR "Fonts/$name"
+            if (!(Test-Path -LiteralPath $font -PathType Leaf)) {
+              throw "Required Windows Chinese test font is unavailable: $name"
+            }
+          }
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked
