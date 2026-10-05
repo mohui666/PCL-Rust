@@ -291,6 +291,7 @@ pub fn build_plan_with_settings_and_viewport(
         LaunchOverrides {
             launcher_size,
             server: None,
+            memory_mb: None,
         },
     )
 }
@@ -298,6 +299,8 @@ pub fn build_plan_with_settings_and_viewport(
 pub struct LaunchOverrides<'a> {
     pub launcher_size: Option<(u32, u32)>,
     pub server: Option<&'a str>,
+    /// Explicit CLI memory takes precedence without changing persisted settings.
+    pub memory_mb: Option<u32>,
 }
 pub fn build_plan_with_overrides(
     options: &LaunchOptions,
@@ -331,6 +334,14 @@ pub fn build_plan_with_overrides(
     options.height = 480;
     if !instance.memory_auto && instance.memory_mb.is_none() && settings.memory_auto {
         instance.memory_auto = true;
+    }
+    if let Some(memory) = overrides.memory_mb {
+        anyhow::ensure!(
+            (256..=262_144).contains(&memory),
+            "内存必须为 256–262144 MiB"
+        );
+        instance.memory_auto = false;
+        instance.memory_mb = Some(memory);
     }
     if instance.custom_info.is_empty() {
         instance.custom_info.clone_from(&settings.custom_info);
@@ -1731,6 +1742,7 @@ mod tests {
                 LaunchOverrides {
                     launcher_size: None,
                     server: Some("once.example.org:25565"),
+                    memory_mb: None,
                 },
             )
             .unwrap();

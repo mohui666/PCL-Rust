@@ -7,6 +7,42 @@ on:
 permissions:
   contents: read
 jobs:
+  headless:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Verify the CLI has no window framework dependencies
+        shell: bash
+        run: |
+          cargo tree -p pcl-cli --locked --edges normal --prefix none > headless-dependencies.txt
+          if grep -E '^(eframe|egui|winit|rfd|glutin) ' headless-dependencies.txt; then
+            echo 'A graphical frontend dependency leaked into pcl-cli' >&2
+            exit 1
+          fi
+      - run: cargo clippy -p pcl-cli --all-targets --locked -- -D warnings
+      - name: Test without a display
+        run: cargo test -p pcl-core -p pcl-cli --locked
+        env:
+          DISPLAY: ''
+          WAYLAND_DISPLAY: ''
+      - run: cargo build -p pcl-cli --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcl-cli-${{ matrix.os }}
+          path: |
+            target/release/pcl-cli
+            target/release/pcl-cli.exe
+            UPSTREAM-LICENCE
+            docs/headless.md
+            crates/pcl-core/assets/launch/*
+          if-no-files-found: error
   test:
     strategy:
       matrix:

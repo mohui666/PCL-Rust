@@ -850,13 +850,14 @@ impl Launcher {
                 }
             },
         );
-        if ui
-            .add_sized([150.0, 35.0], egui::Button::new("查看运行日志"))
-            .clicked()
-        {
-            self.show_logs = true;
-        }
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            if ui
+                .add_sized([150.0, 35.0], egui::Button::new("查看运行日志"))
+                .clicked()
+            {
+                self.show_logs = true;
+            }
             if ui
                 .add_sized([150.0, 35.0], egui::Button::new("分析当前版本日志"))
                 .clicked()

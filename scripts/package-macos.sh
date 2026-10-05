@@ -8,10 +8,11 @@ case "$PCL_MACOS_FONT_MODE" in
   noto) "${PYTHON_BIN:-python3}" scripts/prepare-linux-fonts.py ;;
   *) printf 'Unknown PCL_MACOS_FONT_MODE: %s\n' "$PCL_MACOS_FONT_MODE" >&2; exit 1 ;;
 esac
-"$CARGO_BIN" build --release --locked -p pcl-desktop
+"$CARGO_BIN" build --release --locked -p pcl-desktop -p pcl-cli
 PCL_BUNDLE="${PCL_BUNDLE_DIR:-$PWD/dist/PCL Rust.app}"
 mkdir -p "$PCL_BUNDLE/Contents/MacOS" "$PCL_BUNDLE/Contents/Resources"
 cp target/release/pcl-desktop "$PCL_BUNDLE/Contents/MacOS/pcl-desktop"
+cp target/release/pcl-cli "$PCL_BUNDLE/Contents/MacOS/pcl-cli"
 if [[ "$PCL_MACOS_FONT_MODE" == noto ]]; then
   for PCL_FONT_STYLE in Regular Semibold; do
     cp "test-output/fonts/linux/NotoSansSC-$PCL_FONT_STYLE.ttf" "$PCL_BUNDLE/Contents/Resources/"

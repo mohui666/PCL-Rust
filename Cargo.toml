@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pcl-core", "crates/pcl-desktop"]
+members = ["crates/pcl-core", "crates/pcl-cli", "crates/pcl-desktop"]
 resolver = "2"
 
 [workspace.package]
