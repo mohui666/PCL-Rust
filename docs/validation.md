@@ -8,6 +8,17 @@
 
 冻结源码本机核心 **324**、桌面 **236**，共 **560 通过、0 失败、3 忽略**；相比前一列表批新增 17 项几何/点击/滚动回归，包含 989×517 与最小 810×470 窗口。格式及工作区全部目标严格 Clippy 通过；194 份构建输入冻结。上轮 Mac 锁屏后尚未继续原生检查，因此本批没有新的 GUI、保存完成或游戏启动/关闭通过结论；历史结果仍按原构建保留。
 
+本机 Mac/Windows 全部目标严格 Clippy 通过，两端本地 release 已重新构建；公开副本与冻结的 194 个输入逐项一致。源码提交 [bd0c63d](https://github.com/mohui666/PCL-Rust/commit/bd0c63d72102fa0b863dff069dd78b5d0d8f0bf5) 的 [CI 37288877251](https://github.com/mohui666/PCL-Rust/actions/runs/37288877251) 已在 macOS 和 Windows 均通过格式、严格 Clippy、测试及 release 构建：Mac **560 通过、3 忽略**，Windows **532 通过、2 忽略**，均无失败。数量差异来自平台条件编译。托管 CI 不代替原生 GUI 或游戏验收。
+
+本轮最终本地开发产物（未公开发行包）：
+
+| 平台主程序 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| macOS arm64，签名后 | 22,015,216 | `028264a309f18b04629b4a60eab46471a4495e960610042768b1bf371d9d1231` |
+| Windows x86-64 GUI，交叉构建 | 25,146,880 | `fdba3c4c90338a797729cb2b4c9201962a4126b33b6998a31d4fed99e9594598` |
+
+Mac 严格签名验证通过。Windows 为 AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；本地包未执行或经 Wine 运行。当前用户设置与本轮基线相同。证据为 `test-output/ui-consistency-final-{checks,source-snapshot,macos-validation,windows-validation,ci}.json`、对应日志和 `ui-consistency-gui/validation.json`。
+
 ## 列表修正批（2026-10-05）
 
 加载器/API/OptiFine 的展开列表改为原版 42 DIP 图标、标题与副行，仅由页面滚动，不再嵌套 180 DIP 的限高列表；长列表末行、空态和整行点击有回归。资源搜索移除文件命名入口，并统一名称、版本和排序输入框左边界；原有命名设置值未被清除。功能隐藏按保留选项连续排列，不保留删去功能的空单元格。
