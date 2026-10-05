@@ -1015,6 +1015,28 @@ fn slider_track(
     maximum: f32,
     key_step: f32,
 ) -> egui::Response {
+    let response = slider_control(ui, rect, title, value, minimum, maximum, key_step);
+    response.on_hover_text(if title == "不透明度" && maximum == 1000.0 {
+        format!("{title}：{:.0}%", *value / 10.0)
+    } else if title == "窗口不透明度" {
+        format!("{title}：{value:.0}%")
+    } else if title == "背景模糊" {
+        format!("{title}：{value:.0} 像素")
+    } else {
+        format!("{title}：{value:.0}")
+    })
+}
+
+/// PCL MySlider track and keyboard behavior; callers supply domain-specific hints.
+pub(super) fn slider_control(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    title: &str,
+    value: &mut f32,
+    minimum: f32,
+    maximum: f32,
+    key_step: f32,
+) -> egui::Response {
     let palette = crate::theme::palette(ui.ctx());
     let before = *value;
     let mut response = ui.interact(
@@ -1092,15 +1114,7 @@ fn slider_track(
         palette.control_border,
         egui::Stroke::new(1.2_f32, stroke),
     );
-    response.on_hover_text(if title == "不透明度" && maximum == 1000.0 {
-        format!("{title}：{:.0}%", *value / 10.0)
-    } else if title == "窗口不透明度" {
-        format!("{title}：{value:.0}%")
-    } else if title == "背景模糊" {
-        format!("{title}：{value:.0} 像素")
-    } else {
-        format!("{title}：{value:.0}")
-    })
+    response
 }
 
 fn settings_directory(settings_path: &Path) -> &Path {

@@ -44,3 +44,5 @@ python3 scripts/build-local-pingfang-sfnt.py --style all
 2026-10-04 实际验证：CoreText 初次导出 619 个字形；项目自身的 ab_glyph 依赖成功加载生成物，并对“启动下载设置游戏我的世界”逐字检查 glyph ID 非零、outline 非空及 raster alpha 总和大于 5。对应验证程序与可执行文件位于 `test-output/fonts/verify-ab-glyph.rs` 和 `test-output/fonts/verify-ab-glyph`。此验证证明字形可渲染；应用窗口的最终观感由主任务另行检查。
 
 2026-10-04 Semibold 扩展验证：两种字面均导出 736 个字形，覆盖当时全部 582 个源码字符；ab_glyph 对其中 581 个非空白字符逐个验证 glyph ID 非零、outline 非空和 raster alpha 大于 0。24 px 的“启动下载设置游戏我的世界”样本 alpha 总量分别为 Regular 1086.51、Semibold 1619.67，证明使用了更粗的真实轮廓。sfnt 表解析确认字重分别为 400、600，且均含 `glyf`。证据位于 `test-output/fonts/weight-validation.json` 与 `weight-validation.txt`；后续新增文案应重新生成，计数不代表未来源码快照。
+
+2026-10-05 字库范围补充：同时收集随项目发布的帮助文本，以及冻结 MC 百科索引中的 CJK 汉字（含扩展区）。索引里的控制符和彩色表情不作为苹方轮廓要求；普通西文和表情仍使用现有 egui 后备字库，未保证任意外部项目名的全部表情覆盖。界面 Rust 文案的缺字检查保持严格，Regular/Semibold 分别记录实际覆盖。

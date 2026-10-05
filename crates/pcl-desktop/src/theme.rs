@@ -5,7 +5,7 @@
 //! recovered private parameters. Theme 0, HSL2, and gradient geometry are source-bound.
 //! Custom slider ranges/defaults are public; subtracting 20 from its brightness
 //! slider supplies a neutral midpoint. The rainbow cycle is a Rust implementation.
-use eframe::egui::{Color32, Context, Id, Pos2};
+use eframe::egui::{Color32, Context, Id, Pos2, Stroke};
 use pcl_core::config::Settings;
 use std::time::Duration;
 
@@ -64,21 +64,28 @@ pub fn apply(ctx: &Context, settings: &Settings) {
             let visuals = &mut style.visuals;
             visuals.override_text_color = Some(colors.text);
             visuals.hyperlink_color = colors.accent;
-            visuals.selection.bg_fill = colors.accent;
-            visuals.selection.stroke.color = Color32::WHITE;
+            // egui shares this stroke between the focused TextEdit border and
+            // selected glyphs. Keep Color3 visible against both white inputs
+            // and the pale selection fill; a white stroke hides the border.
+            visuals.selection.bg_fill = colors.pale;
+            visuals.selection.stroke = Stroke::new(1.0_f32, colors.accent);
             visuals.text_cursor.stroke.color = colors.accent;
             visuals.widgets.noninteractive.fg_stroke.color = colors.text;
             visuals.widgets.inactive.fg_stroke.color = colors.text;
+            visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, colors.control_border);
             for widget in [
                 &mut visuals.widgets.hovered,
                 &mut visuals.widgets.active,
                 &mut visuals.widgets.open,
             ] {
                 widget.fg_stroke.color = colors.accent;
-                widget.bg_stroke.color = colors.accent;
+                widget.bg_stroke = Stroke::new(1.0_f32, colors.accent);
                 widget.weak_bg_fill = colors.light;
                 widget.bg_fill = colors.pale;
             }
+            // MyTextBox.vb: idle ColorBg0, hover Color4, focus Color3.
+            // Custom buttons and combo boxes paint their own borders.
+            visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, colors.border);
         });
     }
     if settings.ui_theme == 12 {
@@ -341,11 +348,116 @@ mod tests {
         apply(&a, &selected);
         assert_eq!(palette(&a), from_settings(&selected, 0.0));
         assert_eq!(a.style().visuals.hyperlink_color, palette(&a).accent);
-        assert_eq!(a.style().visuals.selection.bg_fill, palette(&a).accent);
+        assert_eq!(a.style().visuals.selection.bg_fill, palette(&a).pale);
         assert_eq!(
             a.style().visuals.override_text_color,
             Some(palette(&a).text)
         );
         assert_eq!(palette(&b), from_settings(&Settings::default(), 0.0));
+    }
+
+    #[test]
+    fn text_edit_keeps_visible_state_borders_while_typing_selecting_and_changing_theme() {
+        use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Rect, Vec2};
+
+        let ctx = Context::default();
+        ctx.set_visuals(egui::Visuals::light());
+        let mut settings = Settings::default();
+        let mut text = String::from("Resource");
+        let draw = |settings: &Settings, text: &mut String, events| {
+            apply(&ctx, settings);
+            let mut response = None;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 120.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        response = Some(ui.add_sized(
+                            [240.0, 28.0],
+                            egui::TextEdit::singleline(text).id_salt("resource-name"),
+                        ));
+                    });
+                },
+            );
+            (response.unwrap(), output)
+        };
+        let assert_border = |response: &egui::Response, output: &egui::FullOutput, color| {
+            let border = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.contains_rect(response.rect)
+                        && rect.rect.width() <= response.rect.width() + 3.0 =>
+                {
+                    Some(rect.stroke)
+                }
+                _ => None,
+            });
+            assert_eq!(border, Some(Stroke::new(1.0_f32, color)));
+        };
+        let (idle, output) = draw(&settings, &mut text, vec![]);
+        assert_border(&idle, &output, palette(&ctx).control_border);
+        let point = idle.rect.center();
+        let (hovered, output) = draw(&settings, &mut text, vec![Event::PointerMoved(point)]);
+        assert!(hovered.hovered());
+        assert_border(&hovered, &output, palette(&ctx).border);
+        let pointer = |pressed| Event::PointerButton {
+            pos: point,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let _ = draw(&settings, &mut text, vec![pointer(true)]);
+        let (focused, output) = draw(&settings, &mut text, vec![pointer(false)]);
+        assert!(focused.has_focus());
+        assert_border(&focused, &output, palette(&ctx).accent);
+        let (focused, output) = draw(&settings, &mut text, vec![Event::Text("Na".into())]);
+        assert!(focused.changed() && text.contains("Na"));
+        assert_border(&focused, &output, palette(&ctx).accent);
+        let (focused, output) = draw(
+            &settings,
+            &mut text,
+            vec![Event::Key {
+                key: Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers {
+                    command: true,
+                    ..Modifiers::NONE
+                },
+            }],
+        );
+        assert_border(&focused, &output, palette(&ctx).accent);
+        let selection_colors = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(&text.galley),
+                _ => None,
+            })
+            .flat_map(|galley| galley.rows.iter())
+            .flat_map(|row| row.visuals.mesh.vertices.iter())
+            .map(|vertex| vertex.color)
+            .collect::<Vec<_>>();
+        assert!(
+            selection_colors.contains(&palette(&ctx).pale),
+            "select-all must paint a visible selection background"
+        );
+        assert!(
+            selection_colors.contains(&palette(&ctx).accent),
+            "selected glyphs must retain a contrasting theme color"
+        );
+        assert_ne!(
+            ctx.style().visuals.selection.stroke.color,
+            ctx.style().visuals.selection.bg_fill
+        );
+        let blue = palette(&ctx).accent;
+        settings.ui_theme = 2;
+        let (focused, output) = draw(&settings, &mut text, vec![]);
+        assert!(focused.has_focus());
+        assert_ne!(palette(&ctx).accent, blue);
+        assert_border(&focused, &output, palette(&ctx).accent);
     }
 }

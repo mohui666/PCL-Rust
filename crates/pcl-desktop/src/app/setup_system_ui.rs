@@ -31,6 +31,8 @@ pub(super) struct SetupSystemState {
     key_checked: bool,
     key_present: bool,
     key_message: Option<String>,
+    key_advanced_open: bool,
+    key_error: bool,
 }
 enum KeyAction {
     Check,
@@ -166,6 +168,7 @@ impl Launcher {
             self.setup_system.key_checked = true;
             match result {
                 Ok(present) => {
+                    self.setup_system.key_error = false;
                     self.setup_system.key_present = present;
                     self.setup_system.key_message = Some(
                         if present {
@@ -176,7 +179,10 @@ impl Launcher {
                         .into(),
                     );
                 }
-                Err(error) => self.setup_system.key_message = Some(error),
+                Err(error) => {
+                    self.setup_system.key_error = true;
+                    self.setup_system.key_message = Some(error);
+                }
             }
         }
         let messages: Vec<_> = self
@@ -332,8 +338,8 @@ impl Launcher {
         let mut download = None;
         ui.spacing_mut().item_spacing.y = 0.0;
         let settings = &mut self.settings;
-        setup_card(ui, "下载", 15, None, |ui| {
-            system_row(ui, "文件下载源", |ui| {
+        download_card(ui, |ui| {
+            download_row(ui, "文件下载源", 28.0, |ui| {
                 source_combo(
                     ui,
                     "system-file-source",
@@ -341,7 +347,7 @@ impl Launcher {
                 )
             });
             ui.add_space(7.0);
-            system_row(ui, "版本列表源", |ui| {
+            download_row(ui, "版本列表源", 28.0, |ui| {
                 source_combo(
                     ui,
                     "system-version-source",
@@ -349,55 +355,28 @@ impl Launcher {
                 )
             });
             ui.add_space(7.0);
-            system_row(ui, "最大线程数", |ui| {
-                ui.add(egui::Slider::new(&mut settings.downloads.threads, 1..=256));
+            download_row(ui, "最大线程数", 27.0, |ui| {
+                let mut threads = u32::from(settings.downloads.threads);
+                download_slider(ui, DownloadControl::Threads, &mut threads);
+                settings.downloads.threads = threads as u16;
             });
-            system_row(ui, "速度限制", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut settings.downloads.speed_limit_kib)
-                        .range(0..=1_048_576)
-                        .suffix(" KiB/s"),
+            download_row(ui, "速度限制", 27.0, |ui| {
+                download_slider(
+                    ui,
+                    DownloadControl::Speed,
+                    &mut settings.downloads.speed_limit_kib,
                 );
-                ui.label("0 为不限速");
             });
             ui.add_space(5.0);
-            ui.label(RichText::new("镜像服务由 BMCLAPI 提供；仅支持的下载地址参与镜像切换。下载目标请在版本选择的文件夹列表中更改。").size(12.0).color(super::MUTED));
+            ui.label(
+                RichText::new("镜像服务由 BMCLAPI 提供")
+                    .size(12.0)
+                    .color(super::MUTED),
+            )
+            .on_hover_text(
+                "仅支持的下载地址参与镜像切换。下载目标请在启动 → 版本选择的文件夹列表中更改。",
+            );
         });
-        ui.add_space(15.0);
-        setup_card(ui, "社区资源", 17, None, |ui| {
-            system_row(ui, "CurseForge", |ui| {
-                ui.add_sized(
-                    [ui.available_width().max(60.0), 28.0],
-                    egui::TextEdit::singleline(&mut self.setup_system.key_input)
-                        .password(true)
-                        .hint_text("开发者 API Key，仅保存到系统安全存储"),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.setup_system.key_receiver.is_none(), |ui| {
-                    if ui
-                        .add_enabled(
-                            !self.setup_system.key_input.trim().is_empty(),
-                            egui::Button::new("保存 API Key"),
-                        )
-                        .clicked()
-                    {
-                        key_action = Some(KeyAction::Save);
-                    }
-                    if ui.button("清除已保存的 API Key").clicked() {
-                        key_action = Some(KeyAction::Clear);
-                    }
-                });
-                if self.setup_system.key_receiver.is_some() {
-                    ui.spinner();
-                }
-            });
-            if let Some(message) = &self.setup_system.key_message {
-                ui.label(message);
-            }
-            ui.label(RichText::new("环境变量 PCL_CURSEFORGE_API_KEY 优先；清除只删除系统安全存储的条目。API Key 不写入设置 JSON 或日志。").size(12.0).color(super::MUTED));
-        });
-        ui.add_space(15.0);
         setup_card(ui, "辅助功能", 17, None, |ui| {
             system_row(ui, "游戏更新提示", |ui| {
                 ui.checkbox(&mut settings.system.notify_release, "正式版更新提示");
@@ -408,7 +387,6 @@ impl Launcher {
                 ui.checkbox(&mut settings.system.auto_chinese,"自动设置为中文").on_hover_text("仅在本次游戏 options.txt 尚未设置语言时写入中文；保留已有语言选择。不会翻译启动器界面。");
             });
         });
-        ui.add_space(15.0);
         setup_card(ui, "启动器", 20, None, |ui| {
             system_row(ui, "启动器更新", |ui| {
                 ui_style::PclComboBox::from_id_salt("launcher-update-mode")
@@ -514,6 +492,71 @@ impl Launcher {
                 ui.hyperlink_to("本项目发布页面", system::RELEASES_PAGE);
             }
         });
+        let key_header = egui::Rect::from_min_size(
+            ui.next_widget_position(),
+            Vec2::new(ui.available_width(), 40.0),
+        );
+        let mut key_open = self.setup_system.key_advanced_open;
+        setup_card(
+            ui,
+            "CurseForge 高级配置",
+            12,
+            Some(&mut key_open),
+            |ui| {
+                system_row(ui, "CurseForge", |ui| {
+                    ui.add_sized(
+                        [ui.available_width().max(60.0), 28.0],
+                        egui::TextEdit::singleline(&mut self.setup_system.key_input)
+                            .password(true)
+                            .hint_text("CurseForge 开发者 API Key"),
+                    )
+                    .on_hover_text(KEY_HELP);
+                });
+                ui.add_space(9.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(self.setup_system.key_receiver.is_none(), |ui| {
+                        if ui
+                            .add_enabled(
+                                !self.setup_system.key_input.trim().is_empty(),
+                                egui::Button::new("保存 API Key"),
+                            )
+                            .clicked()
+                        {
+                            key_action = Some(KeyAction::Save);
+                        }
+                        if ui.button("清除已保存的 API Key").clicked() {
+                            key_action = Some(KeyAction::Clear);
+                        }
+                    });
+                    if self.setup_system.key_receiver.is_some() {
+                        ui.spinner();
+                    }
+                });
+                if let Some(message) = &self.setup_system.key_message {
+                    ui.label(message);
+                }
+            },
+        );
+        self.setup_system.key_advanced_open = key_open;
+        let status = if self.setup_system.key_receiver.is_some() {
+            "读取中…"
+        } else if self.setup_system.key_error {
+            "状态不可用"
+        } else if self.setup_system.key_present {
+            "已配置"
+        } else {
+            "未配置"
+        };
+        let status_rect = egui::Rect::from_min_max(
+            egui::pos2(key_header.right() - 110.0, key_header.top() + 10.0),
+            egui::pos2(key_header.right() - 35.0, key_header.top() + 30.0),
+        );
+        ui_style::place_left(
+            ui,
+            status_rect,
+            egui::Label::new(RichText::new(status).size(12.0).color(super::MUTED)),
+        )
+        .on_hover_text(self.setup_system.key_message.as_deref().unwrap_or(KEY_HELP));
         if let Some(action) = key_action {
             self.start_key_action(action);
         }
@@ -557,6 +600,76 @@ impl Launcher {
         }
     }
 }
+const KEY_HELP: &str = "环境变量 PCL_CURSEFORGE_API_KEY 优先；清除只删除系统安全存储的条目。API Key 不写入设置 JSON 或日志。是否可访问由 CurseForge 服务端授权决定。";
+// PageSetupSystem download body: margins 25,37,25,15; source row heights
+// 28 + 7 + 28 + 7 + 27 + 27. Other cards keep their own existing contents.
+fn download_card(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    let rect = egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 245))
+        .corner_radius(5)
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 2],
+            blur: 3,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(9),
+        })
+        .inner_margin(egui::Margin {
+            left: 25,
+            right: 25,
+            top: 37,
+            bottom: 15,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            body(ui);
+        })
+        .response
+        .rect;
+    ui_style::place_left(
+        ui,
+        egui::Rect::from_min_size(
+            rect.min + Vec2::new(15.0, 10.0),
+            Vec2::new(rect.width() - 50.0, 20.0),
+        ),
+        egui::Label::new(ui_style::card_title("下载")),
+    );
+    ui.add_space(15.0);
+}
+fn download_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    height: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) -> egui::Rect {
+    let name_width = ui
+        .painter()
+        .layout_no_wrap(
+            "最大线程数".into(),
+            egui::FontId::proportional(13.0),
+            crate::theme::palette(ui.ctx()).text,
+        )
+        .size()
+        .x;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    ui_style::place_left(
+        ui,
+        egui::Rect::from_min_size(rect.min, Vec2::new(name_width, height)),
+        egui::Label::new(label),
+    );
+    let body_rect =
+        egui::Rect::from_min_max(rect.min + Vec2::new(name_width + 25.0, 0.0), rect.max);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    body(&mut child);
+    rect
+}
+
 fn system_row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -580,6 +693,12 @@ fn source_combo(ui: &mut egui::Ui, id: &str, source: &mut SourcePreference) {
             ] {
                 ui.selectable_value(source, item, source_label(item));
             }
+        })
+        .response
+        .on_hover_text(if id == "system-version-source" {
+            "选择获取游戏版本列表时使用的来源。镜像可能暂时缺少刚发布的版本。BMCLAPI 提供镜像服务。"
+        } else {
+            "选择游戏文件下载来源；仅适用于支持镜像的公开下载地址。BMCLAPI 提供镜像服务，登录认证不使用镜像。"
         });
 }
 fn source_label(value: SourcePreference) -> &'static str {
@@ -597,6 +716,136 @@ fn update_label(value: LauncherUpdateMode) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DownloadControl {
+    Threads,
+    Speed,
+}
+impl DownloadControl {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Threads => "最大线程数",
+            Self::Speed => "速度限制",
+        }
+    }
+    fn range(self) -> std::ops::RangeInclusive<u32> {
+        match self {
+            Self::Threads => 1..=256,
+            Self::Speed => 0..=1_048_576,
+        }
+    }
+}
+// PageSetupSystem's 43 positions: 0.1–1.5, 2–10, 11–20 MiB/s, unlimited.
+// The existing download policy stores integral KiB/s; keep its precision/limits.
+fn speed_from_index(index: u32) -> u32 {
+    match index {
+        0..=14 => ((index + 1) * 1024 + 5) / 10,
+        15..=31 => (index - 11) * 512,
+        32..=41 => (index - 21) * 1024,
+        _ => 0,
+    }
+}
+fn speed_index(value: u32) -> u32 {
+    if value == 0 {
+        42
+    } else {
+        (0..=41)
+            .min_by_key(|i| speed_from_index(*i).abs_diff(value))
+            .unwrap()
+    }
+}
+fn download_slider(
+    ui: &mut egui::Ui,
+    kind: DownloadControl,
+    value: &mut u32,
+) -> (egui::Response, egui::Response) {
+    let (maximum, mut index) = match kind {
+        DownloadControl::Threads => (255.0, value.saturating_sub(1) as f32),
+        DownloadControl::Speed => (42.0, speed_index(*value) as f32),
+    };
+    let gap = ui.spacing().item_spacing.x;
+    let number_width = 68.0;
+    let unit_width = if matches!(kind, DownloadControl::Speed) {
+        45.0
+    } else {
+        15.0
+    };
+    let rail_width = (ui.available_width() - number_width - unit_width - gap * 2.0).max(40.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(rail_width, 16.0), egui::Sense::hover());
+    let slider =
+        super::appearance_ui::slider_control(ui, rect, kind.title(), &mut index, 0.0, maximum, 1.0);
+    if slider.changed() || slider.clicked() || slider.dragged() {
+        *value = match kind {
+            DownloadControl::Threads => index as u32 + 1,
+            DownloadControl::Speed => speed_from_index(index as u32),
+        };
+    }
+    let hint = match kind {
+        DownloadControl::Threads => format!(
+            "{} 线程；一般 64 线程即可满足下载需要，过多线程可能造成卡顿。",
+            *value
+        ),
+        DownloadControl::Speed if *value == 0 => "无限制；输入 0 为不限速。".into(),
+        DownloadControl::Speed => format!(
+            "{:.1} MiB/s（{} KiB/s）；输入 0 为不限速。",
+            f64::from(*value) / 1024.0,
+            *value
+        ),
+    };
+    let slider = slider.on_hover_text(&hint);
+    let id = ui.id().with(("download-number", kind.title()));
+    let mut text = ui
+        .data_mut(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| value.to_string());
+    if !ui.memory(|memory| memory.has_focus(id)) {
+        text = value.to_string();
+    }
+    let editor = ui.add_sized(
+        [number_width, 24.0],
+        egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .horizontal_align(egui::Align::RIGHT),
+    );
+    if editor.changed() {
+        if let Some(parsed) = text
+            .parse::<u32>()
+            .ok()
+            .filter(|n| kind.range().contains(n))
+        {
+            *value = parsed;
+        }
+    }
+    let valid = text
+        .parse::<u32>()
+        .ok()
+        .is_some_and(|n| kind.range().contains(&n));
+    if !valid && editor.has_focus() {
+        ui.painter().rect_stroke(
+            editor.rect,
+            3.0,
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 76, 76)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if editor.lost_focus() {
+        text = value.to_string();
+    }
+    ui.data_mut(|data| data.insert_temp(id, text));
+    let editor = editor.on_hover_text(format!(
+        "{}：{}–{}。{}",
+        kind.title(),
+        kind.range().start(),
+        kind.range().end(),
+        hint
+    ));
+    ui.label(if matches!(kind, DownloadControl::Speed) {
+        "KiB/s"
+    } else {
+        "个"
+    });
+    (slider, editor)
+}
+
 fn check_was_cancelled<A, B>(first: &anyhow::Result<A>, second: &anyhow::Result<B>) -> bool {
     let mut errors = [first.as_ref().err(), second.as_ref().err()]
         .into_iter()
@@ -606,6 +855,117 @@ fn check_was_cancelled<A, B>(first: &anyhow::Result<A>, second: &anyhow::Result<
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_download_speed_positions_preserve_custom_backend_limits() {
+        assert_eq!(
+            [0, 14, 15, 31, 32, 41, 42].map(speed_from_index),
+            [102, 1536, 2048, 10240, 11264, 20480, 0]
+        );
+        for index in 0..=42 {
+            assert_eq!(speed_index(speed_from_index(index)), index);
+        }
+        let ctx = egui::Context::default();
+        let mut custom = 1_048_576;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    download_slider(ui, DownloadControl::Speed, &mut custom);
+                });
+            });
+        });
+        assert_eq!(
+            custom, 1_048_576,
+            "opening settings cannot quantize a typed custom limit"
+        );
+    }
+    #[test]
+    fn pcl_download_track_has_visible_width_and_source_arrow_step() {
+        for (kind, initial, after) in [
+            (DownloadControl::Threads, 64, 65),
+            (DownloadControl::Speed, 2048, 2560),
+        ] {
+            let ctx = egui::Context::default();
+            let mut value = initial;
+            let mut draw = |events, focus| {
+                let mut response = None;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.set_width(400.0);
+                            ui.horizontal(|ui| {
+                                let (slider, _) = download_slider(ui, kind, &mut value);
+                                if focus {
+                                    slider.request_focus();
+                                }
+                                response = Some(slider);
+                            });
+                        });
+                    },
+                );
+                (response.unwrap(), value)
+            };
+            let (response, _) = draw(vec![], true);
+            assert!(response.rect.width() > 200.0);
+            assert_eq!(response.rect.height(), 16.0);
+            let (response, value) = draw(
+                vec![egui::Event::Key {
+                    key: egui::Key::ArrowRight,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                false,
+            );
+            assert!(response.changed());
+            assert_eq!(value, after);
+        }
+    }
+    #[test]
+    fn download_number_keyboard_edit_applies_valid_value_and_preserves_on_out_of_range() {
+        let ctx = egui::Context::default();
+        let mut value = 64;
+        let mut draw = |events, focus| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            let (_, editor) =
+                                download_slider(ui, DownloadControl::Threads, &mut value);
+                            if focus {
+                                editor.request_focus();
+                            }
+                        });
+                    });
+                },
+            );
+            value
+        };
+        draw(vec![], true);
+        let edit = |text: &str| {
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text(text.into()),
+            ]
+        };
+        assert_eq!(draw(edit("256"), false), 256);
+        assert_eq!(draw(edit("257"), false), 256);
+    }
+
     use super::*;
     #[test]
     fn actual_network_error_is_not_hidden_by_later_cancel() {
