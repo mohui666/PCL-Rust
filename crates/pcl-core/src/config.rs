@@ -506,9 +506,50 @@ pub enum GcMode {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LauncherWindowSize {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for LauncherWindowSize {
+    fn default() -> Self {
+        Self {
+            width: 989.0,
+            height: 517.0,
+        }
+    }
+}
+
+impl LauncherWindowSize {
+    pub fn bounded(self, monitor: Option<[f32; 2]>) -> Self {
+        let defaults = Self::default();
+        let bound = |value: f32, default: f32, min: f32, limit: Option<f32>| {
+            let max = limit
+                .filter(|v| v.is_finite() && *v >= min)
+                .map(|v| v.max(min))
+                .unwrap_or(16384.0);
+            if value.is_finite() {
+                value.clamp(min, max)
+            } else {
+                default.min(max)
+            }
+        };
+        Self {
+            width: bound(self.width, defaults.width, 810.0, monitor.map(|m| m[0])),
+            height: bound(self.height, defaults.height, 470.0, monitor.map(|m| m[1])),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Launcher geometry in logical points, independent of the Minecraft window.
+    pub launcher_window: LauncherWindowSize,
+    /// Original MyHint.RelativeSetup identities, shared across page instances.
+    pub dismissed_hints: std::collections::BTreeSet<String>,
     pub game_root: PathBuf,
     pub game_roots: Vec<PathBuf>,
     pub resource_naming: crate::resources::ResourceNaming,
@@ -578,6 +619,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            launcher_window: Default::default(),
+            dismissed_hints: Default::default(),
             game_root: dirs::data_local_dir()
                 .unwrap_or_else(std::env::temp_dir)
                 .join("pcl-rust")

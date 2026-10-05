@@ -25,6 +25,8 @@ struct HelpEntry {
     id: String,
     meta: HelpMetadata,
     nodes: Vec<HelpNode>,
+    #[serde(default)]
+    xaml: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -80,16 +82,91 @@ struct ExternalHelp {
     origin: xaml_ui::Origin,
 }
 
+fn parse_help_document(source: &str) -> Result<Vec<HelpNode>> {
+    // PageOtherHelpDetail.PanCustom: document defaults, without duplicating
+    // the shell's 25/25/25/10 content margin.
+    xaml_ui::parse(&format!(
+        r#"<StackPanel><StackPanel.Resources>
+        <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+        <Style TargetType="local:MyCard"><Setter Property="Margin" Value="0,0,0,15"/></Style>
+        <Style TargetType="Image"><Setter Property="HorizontalAlignment" Value="Center"/></Style>
+        </StackPanel.Resources>{source}</StackPanel>"#
+    ))
+}
+
+fn load_catalog() -> Result<Catalog> {
+    let mut catalog: Catalog =
+        serde_json::from_str(include_str!("../../assets/help/catalog.json"))?;
+    for entry in &mut catalog.entries {
+        if !entry.meta.is_event && !entry.xaml.is_empty() {
+            entry.nodes = parse_help_document(&entry.xaml)
+                .with_context(|| format!("帮助格式解析失败：{}", entry.id))?;
+        }
+    }
+    // MyListItem_Loaded resolves the referenced HelpEntry when Title/Info
+    // are omitted. The fixed catalog can resolve these without a network read.
+    let metadata: HashMap<_, _> = catalog
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.id.clone(),
+                (
+                    entry.meta.title.clone(),
+                    entry.meta.description.clone(),
+                    if !entry.meta.is_event {
+                        "block-grass"
+                    } else if entry.meta.event_type == "弹出窗口" {
+                        "block-path"
+                    } else {
+                        "block-command"
+                    },
+                ),
+            )
+        })
+        .collect();
+    for entry in &mut catalog.entries {
+        hydrate_help_links(&mut entry.nodes, &metadata);
+    }
+    Ok(catalog)
+}
+
+fn hydrate_help_links(nodes: &mut [HelpNode], metadata: &HashMap<String, (String, String, &str)>) {
+    for node in nodes {
+        if node.tag == "MyListItem"
+            && node.attr("EventType") == "打开帮助"
+            && (node.attr("Title").is_empty() || node.attr("Info").is_empty())
+        {
+            let target = node.attr("EventData").replace('\\', "/");
+            if let Some((title, description, icon)) = metadata.get(target.trim_end_matches(".json"))
+            {
+                node.attrs.insert("Title".into(), title.clone());
+                node.attrs.insert("Info".into(), description.clone());
+                node.attrs.insert("__pcl_help_icon".into(), (*icon).into());
+            } else if !target.contains("://") && target.ends_with(".json") {
+                // The fixed upstream writing guide contains one stale internal
+                // reference. As in MyListItem_Loaded failure, it cannot fire an
+                // unresolved action; show a readable row instead of a blank one.
+                node.attrs.insert("Title".into(), "帮助条目未收录".into());
+                node.attrs.insert("Info".into(), target);
+                node.attrs.insert("IsEnabled".into(), "False".into());
+                node.attrs.remove("EventType");
+                node.attrs.remove("EventData");
+            }
+        }
+        hydrate_help_links(&mut node.children, metadata);
+    }
+}
+
 impl Default for MoreState {
     fn default() -> Self {
-        let (catalog, load_error) =
-            match serde_json::from_str(include_str!("../../assets/help/catalog.json")) {
-                Ok(catalog) => (catalog, None),
-                Err(error) => (
-                    Catalog::default(),
-                    Some(format!("本地帮助资料读取失败：{error}")),
-                ),
-            };
+        let (catalog, load_error) = match load_catalog() {
+            Ok(catalog) => (catalog, None),
+            Err(error) => (
+                Catalog::default(),
+                Some(format!("本地帮助资料读取失败：{error}")),
+            ),
+        };
         Self {
             tab: 0,
             query: String::new(),
@@ -397,7 +474,21 @@ impl Launcher {
                 .more
                 .renderer
                 .render(ui, &entry.nodes, &entry.origin, &values);
-            self.queue_custom_actions(actions);
+            let closeable: std::collections::HashSet<_> = actions
+                .iter()
+                .filter(|action| {
+                    action.kind == "关闭提示"
+                        && xaml_ui::declared_closeable_hint(&entry.nodes, &action.data)
+                })
+                .map(|action| action.data.clone())
+                .collect();
+            for action in actions {
+                if action.kind == "关闭提示" && closeable.contains(&action.data) {
+                    self.dismiss_custom_hint(&action.data);
+                } else {
+                    self.queue_custom_actions([action]);
+                }
+            }
         } else if self.more.pending_external.is_none() && ui.button("重新获取帮助").clicked()
         {
             if let Some(target) = self.more.external_target.clone() {
@@ -496,14 +587,6 @@ impl Launcher {
         let mut action = None;
         if let Some(id) = &self.more.detail {
             if let Some(entry) = catalog.entries.iter().find(|entry| &entry.id == id) {
-                ui.label(
-                    RichText::new(
-                        "上游随附帮助。说明面向原版 Windows；图片按来源加载，操作仅在点击时执行。",
-                    )
-                    .size(12.0)
-                    .color(MUTED),
-                );
-                ui.add_space(10.0);
                 if entry.meta.is_event {
                     more_card(ui, &entry.id, &entry.meta.title, None, TEXT_MARGIN, |ui| {
                         if entry.meta.event_type == "弹出窗口" {
@@ -540,7 +623,15 @@ impl Launcher {
                                 .render(ui, &entry.nodes, &origin, &values)
                         })
                         .inner;
-                    self.queue_custom_actions(actions);
+                    for action in actions {
+                        if action.kind == "关闭提示"
+                            && xaml_ui::declared_closeable_hint(&entry.nodes, &action.data)
+                        {
+                            self.dismiss_custom_hint(&action.data);
+                        } else {
+                            self.queue_custom_actions([action]);
+                        }
+                    }
                 }
             }
         } else {
@@ -893,7 +984,7 @@ fn load_external_help(target: &str, folder: &Path) -> Result<ExternalHelp> {
             }
             read_help_file(&path, xaml_ui::MAX_DOCUMENT)?
         };
-        xaml_ui::parse(&String::from_utf8(content).context("帮助内容必须使用 UTF-8")?)?
+        parse_help_document(&String::from_utf8(content).context("帮助内容必须使用 UTF-8")?)?
     };
     Ok(ExternalHelp {
         title: metadata.title,
@@ -939,7 +1030,7 @@ fn help_search_box(ui: &mut egui::Ui, query: &mut String) {
             rect.min + Vec2::new(32.0, 0.0),
             rect.max - Vec2::new(40.0, 0.0),
         ),
-        egui::TextEdit::singleline(query)
+        crate::ui_style::singleline(query)
             .hint_text("搜索帮助")
             .char_limit(50)
             .frame(false)
@@ -1216,6 +1307,137 @@ fn render_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn implicit_help_links_resolve_catalog_titles_descriptions_and_icons() {
+        fn links<'a>(nodes: &'a [HelpNode], result: &mut Vec<&'a HelpNode>) {
+            for node in nodes {
+                if node.tag == "MyListItem" && node.attr("EventType") == "打开帮助" {
+                    result.push(node);
+                }
+                links(&node.children, result);
+            }
+        }
+        let catalog = load_catalog().unwrap();
+        let mut count = 0;
+        for entry in &catalog.entries {
+            let mut items = Vec::new();
+            links(&entry.nodes, &mut items);
+            for item in items {
+                let target = item.attr("EventData").replace('\\', "/");
+                if let Some(target) = catalog
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == target.trim_end_matches(".json"))
+                {
+                    assert_eq!(
+                        item.attr("Title"),
+                        target.meta.title,
+                        "{} must display referenced title",
+                        entry.id
+                    );
+                    assert_eq!(item.attr("Info"), target.meta.description);
+                    assert!(!item.attr("__pcl_help_icon").is_empty());
+                    count += 1;
+                }
+            }
+        }
+        assert!(
+            count >= 6,
+            "guide subentries must no longer be empty buttons"
+        );
+        let mut stale = vec![HelpNode {
+            tag: "MyListItem".into(),
+            attrs: HashMap::from([
+                ("EventType".into(), "打开帮助".into()),
+                ("EventData".into(), "Minecraft/新手教程.json".into()),
+            ]),
+            ..Default::default()
+        }];
+        hydrate_help_links(&mut stale, &HashMap::new());
+        assert_eq!(stale[0].attr("Title"), "帮助条目未收录");
+        assert_eq!(stale[0].attr("IsEnabled"), "False");
+        assert!(stale[0].attr("EventType").is_empty());
+    }
+
+    #[test]
+    fn every_bundled_help_document_parses_original_layout() {
+        let catalog = load_catalog().unwrap();
+        assert_eq!(catalog.entries.len(), 40);
+        let content: Vec<_> = catalog
+            .entries
+            .iter()
+            .filter(|e| !e.meta.is_event)
+            .collect();
+        assert_eq!(content.len(), 30);
+        for entry in content {
+            assert!(
+                !entry.xaml.is_empty(),
+                "{} must retain its original markup",
+                entry.id
+            );
+            assert!(!entry.nodes.is_empty(), "{} must render", entry.id);
+        }
+    }
+    #[test]
+    fn all_help_pages_keep_native_document_geometry_and_text() {
+        fn expand_all(nodes: &mut [HelpNode]) {
+            for node in nodes {
+                if node.tag == "MyCard" && node.attr("CanSwap") == "True" {
+                    node.attrs.insert("IsSwapped".into(), "False".into());
+                }
+                expand_all(&mut node.children);
+            }
+        }
+        let catalog = load_catalog().unwrap();
+        for width in [589.0, 768.0] {
+            for entry in catalog.entries.iter().filter(|e| !e.meta.is_event) {
+                let mut nodes = entry.nodes.clone();
+                expand_all(&mut nodes);
+                let ctx = context();
+                let mut renderer = xaml_ui::Renderer::default();
+                let mut height = 0.0_f32;
+                let mut content_width = 0.0_f32;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            Vec2::new(width, 18000.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                                renderer.render(
+                                    ui,
+                                    &nodes,
+                                    &xaml_ui::Origin::default(),
+                                    &HashMap::new(),
+                                );
+                                height = ui.min_rect().height();
+                                content_width = ui.min_rect().width();
+                            });
+                    },
+                );
+                assert!(
+                    height.is_finite() && height > 0.0,
+                    "{}: invalid document extent",
+                    entry.id
+                );
+                assert!(
+                    content_width <= width + 1.0,
+                    "{}: width {} exceeds {}",
+                    entry.id,
+                    content_width,
+                    width
+                );
+                let meshes = ctx.tessellate(output.shapes, output.pixels_per_point);
+                assert!(!meshes.is_empty(), "{} must paint", entry.id);
+            }
+        }
+    }
     fn context() -> egui::Context {
         let ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::default();
@@ -1266,7 +1488,7 @@ mod tests {
         fs::write(root.path().join("doc.json"), br#"{"Title":"Doc"}"#).unwrap();
         fs::write(root.path().join("doc.xaml"), "<TextBlock Text='document'/>").unwrap();
         assert_eq!(
-            load_external_help("doc.json", root.path()).unwrap().nodes[0].attr("Text"),
+            load_external_help("doc.json", root.path()).unwrap().nodes[0].children[0].attr("Text"),
             "document"
         );
     }

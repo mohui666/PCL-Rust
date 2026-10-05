@@ -446,7 +446,7 @@ mod tests {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         response = Some(ui.add_sized(
                             [240.0, 28.0],
-                            egui::TextEdit::singleline(text).id_salt("resource-name"),
+                            crate::ui_style::singleline(text).id_salt("resource-name"),
                         ));
                     });
                 },

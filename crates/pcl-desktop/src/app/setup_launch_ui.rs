@@ -139,9 +139,9 @@ impl Launcher {
                         });
                         if custom {
                             ui.add_space(30.0);
-                            let a=ui.add_sized([60.0,28.0],egui::TextEdit::singleline(&mut state.width).horizontal_align(egui::Align::Center).char_limit(5));
+                            let a=ui.add_sized([60.0,28.0],ui_style::singleline(&mut state.width).horizontal_align(egui::Align::Center).char_limit(5));
                             ui.add(egui::Label::new(RichText::new(" × ").size(18.0)));
-                            let b=ui.add_sized([60.0,28.0],egui::TextEdit::singleline(&mut state.height).horizontal_align(egui::Align::Center).char_limit(5));
+                            let b=ui.add_sized([60.0,28.0],ui_style::singleline(&mut state.height).horizontal_align(egui::Align::Center).char_limit(5));
                             if a.changed()||b.changed() {
                                 match dimensions(&state.width,&state.height) {
                                     Ok((width,height))=>{settings.width=width;settings.height=height;state.dimension_error=None;}
@@ -249,11 +249,11 @@ impl Launcher {
                     ui.checkbox(&mut settings.disable_lwjgl_unsafe_agent,"禁用 LWJGL Unsafe Agent").on_hover_text(LUA_HELP);
                     ui.add_enabled(cfg!(windows),egui::Checkbox::new(&mut settings.prefer_high_performance_gpu,"使用高性能显卡")).on_hover_text(GPU_HELP);
                     ui.add_space(9.0);
-                    hint(ui,"版本独立设置中还有更多高级选项可供调整。",false);
+                    super::hint_ui::dismissible_inline(ui, &mut settings.dismissed_hints, "HintMoreAdvancedSetup", "版本独立设置中还有更多高级选项可供调整。", false);
                     ui.add_space(10.0);
                     let extra = egui::CollapsingHeader::new("游戏目录与正版登录").id_salt("launch-extra-settings").open(Some(state.extras_open)).show(ui,|ui| {
                         advanced_row(ui,"游戏目录",|ui| {
-                            ui.add_sized([(ui.available_width()-60.0).max(100.0),28.0],egui::TextEdit::singleline(&mut self.root_text));
+                            ui.add_sized([(ui.available_width()-60.0).max(100.0),28.0],ui_style::singleline(&mut self.root_text));
                             if ui.button("浏览").clicked(){pick_root=true;}
                         });
                         ui.add_space(9.0);
@@ -274,10 +274,10 @@ impl Launcher {
                     ui.add_space(15.0);
                 }
                 if settings.selected_version.is_some() {
-                    ui.vertical_centered(|ui| {
-                        let (rect,_)=ui.allocate_exact_size(Vec2::new(150.0,35.0),egui::Sense::hover());
-                        if ui_style::outline_button(ui,rect,"版本独立设置  →",None,false,true).clicked(){version_settings=true;}
-                    });
+                    // PageSetupLaunch.BtnSwitch uses MyExtraTextButton, with
+                    // the same source arrow and dimensions as the reverse link.
+                    ui.add_space(-5.0);
+                    version_settings = super::instance_setup_ui::settings_switch_button(ui, "版本独立设置").clicked();
                     ui.add_space(15.0);
                 }
             });
@@ -360,10 +360,7 @@ impl Launcher {
             self.show_logs = true;
         }
         if version_settings {
-            self.page = Page::Launch;
-            self.version_view = false;
-            self.version_tools = true;
-            self.tools_tab = 2;
+            self.open_selected_instance_settings();
         }
     }
     fn pick_global_java(&mut self) {

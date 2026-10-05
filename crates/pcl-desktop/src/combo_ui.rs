@@ -547,7 +547,7 @@ pub fn editable_combo(
             rect.min + Vec2::new(1.5, 0.0),
             Pos2::new(rect.right() - 21.5, rect.bottom()),
         ),
-        egui::TextEdit::singleline(value)
+        crate::ui_style::singleline(value)
             .id(edit_id)
             .frame(false)
             .margin(Vec2::new(4.5, 5.0))
@@ -1270,7 +1270,7 @@ mod tests {
                         edit_id = ui
                             .place(
                                 Rect::from_min_size(start, Vec2::new(400.0, 28.0)),
-                                egui::TextEdit::singleline(&mut text),
+                                crate::ui_style::singleline(&mut text),
                             )
                             .id;
                         for (index, y) in [0.0, 37.0].into_iter().enumerate() {

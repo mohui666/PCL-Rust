@@ -85,6 +85,16 @@ pub(super) fn feature_visible(ctx: &egui::Context, settings: &Settings, key: &st
 }
 
 impl AppearanceState {
+    /// Reload only the background selection and its derived effects. Audio,
+    /// startup artwork and title state retain their own lifecycles.
+    pub(super) fn invalidate_background(&mut self) {
+        self.initialized = false;
+        self.background = None;
+        self.pending_blur = None;
+        self.blurred = None;
+        self.failed_blur = None;
+    }
+
     /// Returns false only for the original logo, which the shell already draws.
     pub(super) fn paint_custom_title(
         &mut self,
@@ -798,7 +808,7 @@ impl Launcher {
                                     rect.min + Vec2::new(115.0, 76.0),
                                     Vec2::new(rect.width() - 140.0, 28.0),
                                 ),
-                                egui::TextEdit::singleline(&mut theme_settings.ui_title_text)
+                                crate::ui_style::singleline(&mut theme_settings.ui_title_text)
                                     .char_limit(100),
                             )
                             .changed();
@@ -823,14 +833,21 @@ impl Launcher {
         );
 
         let home_mode = theme_settings.ui_custom_type;
+        let custom_warning_height = if matches!(home_mode, 1 | 2)
+            && !theme_settings.dismissed_hints.contains("HintCustomWarn")
+        {
+            49.0
+        } else {
+            0.0
+        };
         section(
             ui,
             "主页",
             match home_mode {
                 0 => 77.0,
                 3 => 122.0,
-                1 => 193.0,
-                _ => 189.0,
+                1 => 193.0 + custom_warning_height,
+                _ => 189.0 + custom_warning_height,
             },
             |ui, rect| {
                 for (index, (id, title)) in [
@@ -897,6 +914,20 @@ impl Launcher {
                         hint.shrink(10.0),
                         egui::Label::new(RichText::new(message).size(13.0)).wrap(),
                     );
+                    if custom_warning_height > 0.0 {
+                        let warning = Rect::from_min_size(
+                            rect.min + Vec2::new(25.0, 141.0),
+                            Vec2::new(rect.width() - 50.0, 34.0),
+                        );
+                        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(warning));
+                        theme_changed |= super::hint_ui::dismissible_inline(
+                            &mut child,
+                            &mut theme_settings.dismissed_hints,
+                            "HintCustomWarn",
+                            "请谨慎使用陌生人提供的主页，恶意代码可能会造成损害！",
+                            true,
+                        );
+                    }
                     if home_mode == 1 {
                         for (index, title) in
                             ["刷新主页", "生成教学文件", "查看教程", "打开主页文件夹"]
@@ -908,7 +939,10 @@ impl Launcher {
                                 ui,
                                 Rect::from_min_size(
                                     rect.min
-                                        + Vec2::new(25.0 + index as f32 * (width + 20.0), 141.0),
+                                        + Vec2::new(
+                                            25.0 + index as f32 * (width + 20.0),
+                                            141.0 + custom_warning_height,
+                                        ),
                                     Vec2::new(width, 32.0),
                                 ),
                                 title,
@@ -928,7 +962,7 @@ impl Launcher {
                     } else {
                         label(
                             ui,
-                            rect.min + Vec2::new(25.0, 144.0),
+                            rect.min + Vec2::new(25.0, 144.0 + custom_warning_height),
                             90.0,
                             "下载地址",
                             13.0,
@@ -936,10 +970,10 @@ impl Launcher {
                         theme_changed |= ui
                             .place(
                                 Rect::from_min_size(
-                                    rect.min + Vec2::new(115.0, 141.0),
+                                    rect.min + Vec2::new(115.0, 141.0 + custom_warning_height),
                                     Vec2::new(rect.width() - 140.0, 28.0),
                                 ),
-                                egui::TextEdit::singleline(&mut theme_settings.ui_custom_net)
+                                crate::ui_style::singleline(&mut theme_settings.ui_custom_net)
                                     .hint_text("https://…/Custom.xaml")
                                     .char_limit(4096),
                             )
@@ -1881,6 +1915,86 @@ mod tests {
         assert_eq!(animation.at(40).0, 1);
         assert_eq!(animation.at(160).0, 0);
         assert_eq!(animation.at(320), (1, None));
+    }
+
+    #[test]
+    fn personalization_reset_reloads_default_background_without_resetting_music() {
+        for scope in [
+            config::LauncherResetScope::Personalization,
+            config::LauncherResetScope::All,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let settings_path = directory.path().join("settings.json");
+            let custom_folder = directory.path().join("custom-backgrounds");
+            let default_folder = directory.path().join("backgrounds");
+            fs::create_dir(&custom_folder).unwrap();
+            fs::create_dir(&default_folder).unwrap();
+            let custom_image = custom_folder.join("custom.png");
+            let default_image = default_folder.join("default.png");
+            for (path, pixel) in [
+                (&custom_image, [255, 0, 0, 255]),
+                (&default_image, [0, 0, 255, 255]),
+            ] {
+                image::RgbaImage::from_pixel(4, 4, image::Rgba(pixel))
+                    .save(path)
+                    .unwrap();
+            }
+            let settings = Settings {
+                ui_background_folder: Some(custom_folder),
+                ..Default::default()
+            };
+            config::save_settings(&settings_path, &settings).unwrap();
+            let ctx = egui::Context::default();
+            let mut state = AppearanceState::default();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                state.ensure_loaded(ctx, &settings, &settings_path).unwrap();
+            });
+            let background = state.background.as_ref().unwrap();
+            assert_eq!(background.source, custom_image);
+            assert_eq!(background.original.pixels[0], Color32::RED);
+            let old_key = background_key(background, ctx.content_rect(), &settings);
+            let (sender, receiver) = mpsc::channel();
+            state.pending_blur = Some(PendingBlur {
+                key: old_key,
+                receiver,
+            });
+            state.blurred = Some((
+                old_key,
+                ctx.load_texture(
+                    "old-blur",
+                    egui::ColorImage::filled([2, 2], Color32::RED),
+                    Default::default(),
+                ),
+            ));
+            state.failed_blur = Some(old_key);
+            state.music.progress = 0.37;
+            state.clear_music = true;
+            let music_poll = state.music_poll;
+            let (reset, backup) =
+                config::reset_launcher_page(&settings_path, &settings, scope).unwrap();
+            state.invalidate_background();
+            assert_eq!(state.music_poll, music_poll);
+            assert!(
+                state.pending_blur.is_none()
+                    && state.blurred.is_none()
+                    && state.failed_blur.is_none()
+            );
+            assert!(
+                sender
+                    .send(egui::ColorImage::filled([2, 2], Color32::RED))
+                    .is_err(),
+                "an old worker must no longer deliver its image"
+            );
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                state.ensure_loaded(ctx, &reset, &settings_path).unwrap();
+            });
+            let background = state.background.as_ref().unwrap();
+            assert_eq!(background.source, default_image);
+            assert_eq!(background.original.pixels[0], Color32::BLUE);
+            assert_eq!(state.music.progress, 0.37);
+            assert!(state.clear_music);
+            assert!(backup.is_file() && custom_image.is_file() && default_image.is_file());
+        }
     }
 
     #[test]

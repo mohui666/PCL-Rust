@@ -230,7 +230,22 @@ impl Launcher {
             .home
             .renderer
             .render(ui, &nodes, &self.home.origin, &values);
-        self.home.actions.extend(actions);
+        for action in actions {
+            if action.kind == "关闭提示" && xaml_ui::declared_closeable_hint(&nodes, &action.data)
+            {
+                self.dismiss_custom_hint(&action.data);
+            } else {
+                self.home.actions.push_back(action);
+            }
+        }
+    }
+    pub(super) fn dismiss_custom_hint(&mut self, key: &str) {
+        if key.is_empty() || key.len() > 128 || self.settings.dismissed_hints.len() >= 256 {
+            return;
+        }
+        if self.settings.dismissed_hints.insert(key.into()) {
+            self.persist();
+        }
     }
     fn begin_network_home(
         &mut self,
@@ -307,6 +322,9 @@ impl Launcher {
     }
     pub(super) fn custom_values(&self) -> HashMap<String, String> {
         let mut values = self.public_home_values();
+        for key in &self.settings.dismissed_hints {
+            values.insert(format!("__pcl_hint_closed:{key}"), "true".into());
+        }
         let selected = self.settings.selected_version.as_deref().unwrap_or("");
         values.insert("name".into(), selected.into());
         values.insert("version".into(), selected.into());

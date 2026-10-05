@@ -308,7 +308,12 @@ impl Launcher {
                                     .id_salt(&finding.code)
                                     .show(ui, |ui| {
                                         for line in &finding.evidence {
-                                            ui.label(RichText::new(line).monospace().size(12.0));
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(line).monospace().size(12.0),
+                                                )
+                                                .wrap(),
+                                            );
                                         }
                                     });
                                 ui.add_space(10.0);
@@ -355,7 +360,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = super::super::event_tests::fixture(dir.path());
         let path = dir.path().join("dropped.log");
-        std::fs::write(&path, "java.lang.OutOfMemoryError: Java heap space\n").unwrap();
+        std::fs::write(&path, "---- Minecraft Crash Report ----\njava.lang.OutOfMemoryError: Java heap space\n-- Entity being ticked --\n\tEntity Type: example:bird\n\tEntity's Exact location: 12.0, 64.0, -5.0\n").unwrap();
         let ctx = egui::Context::default();
         app.import_crash_path(&ctx, path);
         assert!(app.crash.open && app.crash.pending.is_some());
@@ -367,6 +372,14 @@ mod tests {
         let report = app.crash.report.as_ref().expect("log analysis completed");
         assert_eq!(report.files.len(), 1);
         assert!(report.files[0].text.contains("OutOfMemoryError"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ticking-entity"
+                && finding
+                    .evidence
+                    .iter()
+                    .any(|line| line.contains("12.0, 64.0, -5.0"))));
         assert_eq!(app.crash.title, "dropped.log");
     }
     #[test]

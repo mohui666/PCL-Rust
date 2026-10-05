@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
 };
 use zip::ZipArchive;
@@ -17,6 +17,13 @@ pub use removal::{remove_mods, restore_removed_mods, ModRemoval};
 #[path = "mods_import.rs"]
 mod imports;
 pub use imports::{import_mods, imported_mod_name};
+
+#[path = "mods_metadata.rs"]
+mod details;
+pub use details::{DependencyKind, ModDependency, ModDiagnostic, ModMetadata};
+#[path = "mods_remote.rs"]
+mod remote;
+pub use remote::{load_remote_details, remote_snapshot, RemoteModDetails};
 
 const METADATA_LIMIT: u64 = 1024 * 1024;
 
@@ -30,6 +37,8 @@ pub struct LocalMod {
     pub mod_ids: Vec<String>,
     pub loader: String,
     pub error: Option<String>,
+    #[serde(default)]
+    pub metadata: ModMetadata,
 }
 
 fn jar_name(name: &str) -> bool {
@@ -61,7 +70,7 @@ fn mods_directory(instance: &Path, create: bool) -> Result<PathBuf> {
     Ok(mods)
 }
 
-fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Option<String>> {
+fn read_entry<R: Read + Seek>(archive: &mut ZipArchive<R>, name: &str) -> Result<Option<String>> {
     let mut entry = match archive.by_name(name) {
         Ok(entry) => entry,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
@@ -96,6 +105,7 @@ fn inspect(path: &Path, name: &str) -> Result<LocalMod> {
         mod_ids: vec![],
         loader: "unknown".into(),
         error: None,
+        metadata: ModMetadata::default(),
     };
     let mut archive = ZipArchive::new(File::open(path)?).context("文件不是有效的 JAR/ZIP")?;
     if archive.len() > 100_000 {
@@ -159,6 +169,7 @@ fn inspect(path: &Path, name: &str) -> Result<LocalMod> {
             break;
         }
     }
+    details::read_metadata(&mut archive, &mut result)?;
     Ok(result)
 }
 
@@ -201,10 +212,12 @@ pub fn list_mods(instance_dir: &Path) -> Result<Vec<LocalMod>> {
                 mod_ids: vec![],
                 loader: "unknown".into(),
                 error: Some(format!("{error:#}")),
+                metadata: ModMetadata::default(),
             },
         });
     }
     output.sort_by_key(|item| item.file_name.to_ascii_lowercase());
+    details::diagnose(&mut output);
     Ok(output)
 }
 

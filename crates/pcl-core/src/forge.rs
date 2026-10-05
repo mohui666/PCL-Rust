@@ -976,8 +976,12 @@ fn legacy_profile(profile: &Value, mc: &str, loader: &str, file_version: &str) -
     if install.get("minecraft").and_then(Value::as_str) != Some(mc) {
         bail!("旧 Forge 安装包的 Minecraft 版本不匹配");
     }
-    let coordinate = format!("net.minecraftforge:forge:{mc}-{file_version}");
-    if install.get("path").and_then(Value::as_str) != Some(coordinate.as_str()) {
+    let modern_coordinate = format!("net.minecraftforge:forge:{mc}-{file_version}");
+    let historical_coordinate = format!("net.minecraftforge:minecraftforge:{file_version}");
+    let coordinate = string(&profile["install"], "path")?;
+    // Authenticated 1.6.1/1.6.2 installers predate the forge:<mc>-<loader>
+    // artifact name. Both forms must still match the selected official row.
+    if coordinate != modern_coordinate && coordinate != historical_coordinate {
         bail!("旧 Forge 安装包的 Maven 坐标与所选分支不匹配");
     }
     safe_relative(string(&profile["install"], "filePath")?)?;
@@ -986,7 +990,7 @@ fn legacy_profile(profile: &Value, mc: &str, loader: &str, file_version: &str) -
         .filter(|v| v.is_object())
         .context("旧 Forge 安装包缺少 versionInfo")?
         .clone();
-    validate_legacy_version(version, mc, loader, &coordinate)
+    validate_legacy_version(version, mc, loader, coordinate)
 }
 
 fn validate_legacy_version(
@@ -1038,9 +1042,11 @@ fn validate_legacy_version(
         bail!("旧 Forge 客户端 libraries 必须恰好引用一次内嵌 Forge 坐标");
     }
     if libraries.iter().any(|library| {
-        library["name"]
-            .as_str()
-            .is_some_and(|name| name.starts_with("net.minecraftforge:forge:") && name != coordinate)
+        library["name"].as_str().is_some_and(|name| {
+            (name.starts_with("net.minecraftforge:forge:")
+                || name.starts_with("net.minecraftforge:minecraftforge:"))
+                && name != coordinate
+        })
     }) {
         bail!("旧 Forge libraries 混入了其他 Forge 版本");
     }
@@ -1242,123 +1248,167 @@ fn prepare_legacy_libraries(
         .as_array_mut()
         .context("旧 Forge 缺少 libraries")?;
     let total = libraries.len();
-    let mut paths = HashSet::new();
-    let mut output = Vec::new();
+    let mut output: Vec<Artifact> = Vec::new();
     for (index, library) in libraries.iter_mut().enumerate() {
         cancelled(cancel)?;
         let mut artifacts = library_artifacts(&json!({"libraries":[library.clone()]}), platform)?;
+        // Original launcher metadata before downloads/classifiers uses a
+        // natives map to describe a native-only library (e.g. lwjgl-platform).
+        // There is no corresponding unclassified runtime JAR to download.
+        if library.get("downloads").is_none() && library.get("natives").is_some() {
+            artifacts.retain(|artifact| artifact.native);
+        }
         if artifacts.is_empty() {
             continue;
         }
-        if artifacts.len() != 1 || artifacts[0].native {
-            bail!("该旧版 Forge 含额外原生库，尚未支持；不会登记不完整版本");
-        }
-        let mut artifact = artifacts.remove(0);
-        if !paths.insert(artifact.relative_path.clone()) {
-            bail!("旧 Forge libraries 含重复路径");
-        }
-        let coordinate_path = maven_path(string(library, "name")?)?;
-        if (middle || coordinate_path == embedded_path) && artifact.relative_path != coordinate_path
-        {
-            bail!("内嵌 Forge 下载路径与 Maven 坐标冲突");
-        }
-        let embedded_entry = embedded_entries.get(&artifact.relative_path);
-        let embedded = embedded_entry.is_some();
-        artifact.url = if embedded {
-            // Legacy installers carry their runtime JAR; no fabricated external repair URL.
-            String::new()
-        } else {
-            legacy_library_url(&artifact.url)?
-        };
-        let mut expected = Vec::new();
-        if let Some(hash) = artifact
-            .sha1
-            .as_deref()
-            .or_else(|| library["sha1"].as_str())
-        {
-            expected.push(expected_hash(Some(hash))?.unwrap());
-        }
-        let primary_checksum = expected.first().cloned();
-        if let Some(checksums) = library.get("checksums") {
-            for hash in checksums.as_array().context("旧版 checksums 必须是数组")? {
-                expected.push(
-                    expected_hash(Some(hash.as_str().context("旧版 checksum 必须是字符串")?))?
-                        .unwrap(),
+        for mut artifact in artifacts {
+            let coordinate_path = maven_path(string(library, "name")?)?;
+            if !artifact.native
+                && (middle || coordinate_path == embedded_path)
+                && artifact.relative_path != coordinate_path
+            {
+                bail!("内嵌 Forge 下载路径与 Maven 坐标冲突");
+            }
+            let embedded_entry = embedded_entries.get(&artifact.relative_path);
+            let embedded = embedded_entry.is_some();
+            artifact.url = if embedded {
+                // Legacy installers carry their runtime JAR; no fabricated external repair URL.
+                String::new()
+            } else {
+                legacy_library_url(&artifact.url)?
+            };
+            let mut expected = Vec::new();
+            if let Some(hash) = artifact.sha1.as_deref().or_else(|| {
+                (!artifact.native)
+                    .then(|| library["sha1"].as_str())
+                    .flatten()
+            }) {
+                expected.push(expected_hash(Some(hash))?.unwrap());
+            }
+            let primary_checksum = expected.first().cloned();
+            // Legacy top-level checksums describe the ordinary JAR, never its
+            // separately downloaded native classifier.
+            if let Some(checksums) = library.get("checksums").filter(|_| !artifact.native) {
+                for hash in checksums.as_array().context("旧版 checksums 必须是数组")? {
+                    expected.push(
+                        expected_hash(Some(hash.as_str().context("旧版 checksum 必须是字符串")?))?
+                            .unwrap(),
+                    );
+                }
+            }
+            if !embedded && expected.is_empty() {
+                expected.push(legacy_checksum(&fetch(
+                    &format!("{}.sha1", artifact.url),
+                    None,
+                )?)?);
+            }
+            let declared_size = artifact.size.or_else(|| {
+                (!artifact.native)
+                    .then(|| library["size"].as_u64())
+                    .flatten()
+            });
+            artifact.sha1 = expected.first().cloned();
+            artifact.size = declared_size;
+            progress(Progress {
+                message: format!("旧 Forge 支持库：{}", artifact.relative_path.display()),
+                completed: index as u64,
+                total: total as u64,
+                ..Default::default()
+            });
+            let target = safe_target(stage, &artifact.relative_path)?;
+            fs::create_dir_all(target.parent().context("旧版库路径无父目录")?)?;
+            if embedded {
+                fs::write(
+                    &target,
+                    zip_bytes(archive, embedded_entry.unwrap(), 256 * 1024 * 1024, cancel)?,
+                )?;
+                verify_generated_jar(&target, cancel).context("安装包内嵌 Forge JAR 无效")?;
+            } else {
+                let source = safe_target(root, &artifact.relative_path)?;
+                if install::cache_valid(&source, &artifact, cancel)? {
+                    fs::copy(source, &target)?;
+                } else {
+                    // request_bytes verifies this hash as it downloads. Multiple historical
+                    // checksums are handled below after receiving the bounded response.
+                    let bytes = fetch(
+                        &artifact.url,
+                        (expected.len() == 1).then(|| expected[0].as_str()),
+                    )?;
+                    cancelled(cancel)?;
+                    fs::write(&target, bytes)?;
+                }
+            }
+            let actual = file_artifact(stage, &target, cancel)?;
+            if (!expected.is_empty() && !expected.contains(actual.sha1.as_ref().unwrap()))
+                || primary_checksum
+                    .as_ref()
+                    .is_some_and(|hash| Some(hash) != actual.sha1.as_ref())
+            {
+                bail!(
+                    "旧 Forge 支持库 SHA1 校验失败：{}",
+                    artifact.relative_path.display()
                 );
             }
-        }
-        if !embedded && expected.is_empty() {
-            expected.push(legacy_checksum(&fetch(
-                &format!("{}.sha1", artifact.url),
-                None,
-            )?)?);
-        }
-        let declared_size = artifact.size.or_else(|| library["size"].as_u64());
-        artifact.sha1 = expected.first().cloned();
-        artifact.size = declared_size;
-        progress(Progress {
-            message: format!("旧 Forge 支持库：{}", artifact.relative_path.display()),
-            completed: index as u64,
-            total: total as u64,
-            ..Default::default()
-        });
-        let target = safe_target(stage, &artifact.relative_path)?;
-        fs::create_dir_all(target.parent().context("旧版库路径无父目录")?)?;
-        if embedded {
-            fs::write(
-                &target,
-                zip_bytes(archive, embedded_entry.unwrap(), 256 * 1024 * 1024, cancel)?,
-            )?;
-            verify_generated_jar(&target, cancel).context("安装包内嵌 Forge JAR 无效")?;
-        } else {
-            let source = safe_target(root, &artifact.relative_path)?;
-            if install::cache_valid(&source, &artifact, cancel)? {
-                fs::copy(source, &target)?;
+            if declared_size.is_some_and(|size| Some(size) != actual.size) {
+                bail!(
+                    "旧 Forge 支持库大小不匹配：{}",
+                    artifact.relative_path.display()
+                );
+            }
+            artifact.sha1 = actual.sha1;
+            artifact.size = actual.size;
+            let relative = artifact
+                .relative_path
+                .strip_prefix("libraries")?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let download = json!({"path":relative,"url":artifact.url,"sha1":artifact.sha1,"size":artifact.size});
+            if artifact.native {
+                let classifier = library["natives"][&platform.os]
+                    .as_str()
+                    .context("旧 Forge 原生库缺少平台分类")?
+                    .replace(
+                        "${arch}",
+                        if matches!(platform.arch.as_str(), "x86" | "i386" | "i686") {
+                            "32"
+                        } else {
+                            "64"
+                        },
+                    );
+                library["downloads"]["classifiers"][classifier] = download;
             } else {
-                // request_bytes verifies this hash as it downloads. Multiple historical
-                // checksums are handled below after receiving the bounded response.
-                let bytes = fetch(
-                    &artifact.url,
-                    (expected.len() == 1).then(|| expected[0].as_str()),
-                )?;
-                cancelled(cancel)?;
-                fs::write(&target, bytes)?;
+                library["downloads"]["artifact"] = download;
+            }
+            library["_pcl_checksum_source"] = if embedded && expected.is_empty() {
+                "verified-installer-embedded-local-sha1"
+            } else if embedded {
+                "official-installer-library-sha1"
+            } else {
+                "official-library-sha1"
+            }
+            .into();
+            if let Some(previous) = output
+                .iter()
+                .find(|previous| previous.relative_path == artifact.relative_path)
+            {
+                // The official 1.6.2 profile repeats LWJGL entries with OS rules.
+                // Validate each declaration before coalescing identical files;
+                // conflicting digests, source or native semantics still fail.
+                if previous.sha1 != artifact.sha1
+                    || previous.size != artifact.size
+                    || previous.url != artifact.url
+                    || previous.native != artifact.native
+                    || previous.excludes != artifact.excludes
+                {
+                    bail!(
+                        "旧 Forge 同一路径的库声明冲突：{}",
+                        artifact.relative_path.display()
+                    );
+                }
+            } else {
+                output.push(artifact);
             }
         }
-        let actual = file_artifact(stage, &target, cancel)?;
-        if (!expected.is_empty() && !expected.contains(actual.sha1.as_ref().unwrap()))
-            || primary_checksum
-                .as_ref()
-                .is_some_and(|hash| Some(hash) != actual.sha1.as_ref())
-        {
-            bail!(
-                "旧 Forge 支持库 SHA1 校验失败：{}",
-                artifact.relative_path.display()
-            );
-        }
-        if declared_size.is_some_and(|size| Some(size) != actual.size) {
-            bail!(
-                "旧 Forge 支持库大小不匹配：{}",
-                artifact.relative_path.display()
-            );
-        }
-        artifact.sha1 = actual.sha1;
-        artifact.size = actual.size;
-        let relative = artifact
-            .relative_path
-            .strip_prefix("libraries")?
-            .to_string_lossy()
-            .replace('\\', "/");
-        library["downloads"] = json!({"artifact":{"path":relative,"url":artifact.url,"sha1":artifact.sha1,"size":artifact.size}});
-        library["_pcl_checksum_source"] = if embedded && expected.is_empty() {
-            "verified-installer-embedded-local-sha1"
-        } else if embedded {
-            "official-installer-library-sha1"
-        } else {
-            "official-library-sha1"
-        }
-        .into();
-        output.push(artifact);
     }
     if !output
         .iter()
@@ -1991,6 +2041,291 @@ mod tests {
         }
     }
 
+    fn native_fixture_bytes(name: &str) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, bytes) in [
+            (name, b"synthetic native bytes".as_slice()),
+            ("META-INF/signature", b"ignored"),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    #[ignore = "requires PCL_HISTORICAL_SAMPLES and official library network access"]
+    fn official_historical_samples_validate_and_prepare_native_libraries() {
+        let samples =
+            PathBuf::from(std::env::var_os("PCL_HISTORICAL_SAMPLES").expect("sample directory"));
+        let cache = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let client = http_client().unwrap();
+        for (mc, loader) in [
+            ("1.6.1", "8.9.0.753"),
+            ("1.6.1", "8.9.0.775"),
+            ("1.6.2", "9.10.1.871"),
+        ] {
+            let html = fs::read_to_string(samples.join(format!("{mc}-index.html"))).unwrap();
+            let entry =
+                select_legacy_entry(parse_legacy_entries(&html, mc).unwrap(), loader).unwrap();
+            let file = samples.join(format!("forge-{mc}-{loader}-installer.jar"));
+            verify_legacy_installer(&entry, &fs::read(&file).unwrap()).unwrap();
+            for os in ["windows", "osx"] {
+                let stage = tempfile::tempdir().unwrap();
+                let mut archive = open_historical_installer(&file, &cancel).unwrap();
+                let profile: Value = serde_json::from_slice(
+                    &zip_bytes(
+                        &mut archive,
+                        "install_profile.json",
+                        16 * 1024 * 1024,
+                        &cancel,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                let mut version =
+                    legacy_profile(&profile, mc, loader, &entry.file_version).unwrap();
+                let platform = Platform {
+                    os: os.into(),
+                    arch: "x86_64".into(),
+                    version: "14.0".into(),
+                };
+                let artifacts = prepare_legacy_libraries(
+                    cache.path(),
+                    stage.path(),
+                    &mut archive,
+                    &profile,
+                    &mut version,
+                    &platform,
+                    &cancel,
+                    &|url, sha| request_bytes(&client, url, sha, None, &cancel),
+                    &|_| (),
+                )
+                .unwrap();
+                let native_dir = stage.path().join("natives");
+                for artifact in artifacts.iter().filter(|a| a.native) {
+                    install::extract_natives(
+                        &stage.path().join(&artifact.relative_path),
+                        &native_dir,
+                        &artifact.excludes,
+                        &cancel,
+                    )
+                    .unwrap();
+                }
+                assert!(artifacts.iter().any(|a| a.native));
+                assert!(fs::read_dir(&native_dir).unwrap().next().is_some());
+                commit_files(cache.path(), stage.path(), &artifacts, &cancel).unwrap();
+                eprintln!("official historical {mc} / {loader} / {os}: {} libraries, {} native archives, MD5 + SHA1 verified; no Java executed",artifacts.len(),artifacts.iter().filter(|a| a.native).count());
+            }
+        }
+    }
+    #[test]
+    fn historical_native_only_libraries_verify_classifiers_and_extract_for_each_platform() {
+        for os in ["windows", "osx"] {
+            let root = tempfile::tempdir().unwrap();
+            let stage = tempfile::tempdir().unwrap();
+            let mut profile = legacy_fixture();
+            let coordinate = "net.minecraftforge:minecraftforge:10.13.4.1614-1.7.10";
+            profile["install"]["path"] = coordinate.into();
+            profile["versionInfo"]["libraries"][0]["name"] = coordinate.into();
+            profile["versionInfo"]["libraries"].as_array_mut().unwrap().push(json!({
+                "name":"org.example:native-platform:1", "natives":{"windows":"natives-windows-${arch}","osx":"natives-osx"},
+                "checksums":["a".repeat(40)], "extract":{"exclude":["META-INF/"]}
+            }));
+            let mut archive = legacy_archive(stage.path(), &profile);
+            let mut version =
+                legacy_profile(&profile, "1.7.10", "10.13.4.1614", "10.13.4.1614-1.7.10").unwrap();
+            let native_name = if os == "windows" {
+                "fixture.dll"
+            } else {
+                "libfixture.dylib"
+            };
+            let native = native_fixture_bytes(native_name);
+            let native_sha = format!("{:x}", Sha1::digest(&native));
+            let platform = Platform {
+                os: os.into(),
+                arch: "x86_64".into(),
+                version: "14.0".into(),
+            };
+            let artifacts = prepare_legacy_libraries(
+                root.path(),
+                stage.path(),
+                &mut archive,
+                &profile,
+                &mut version,
+                &platform,
+                &AtomicBool::new(false),
+                &|url, hash| {
+                    if url.contains("/native-platform/") {
+                        assert!(
+                            url.contains("-natives-"),
+                            "must not fetch an invented ordinary JAR"
+                        );
+                        if url.ends_with(".sha1") {
+                            return Ok(native_sha.as_bytes().to_vec());
+                        }
+                        assert_eq!(hash, Some(native_sha.as_str()));
+                        return Ok(native.clone());
+                    }
+                    legacy_fetch(url, hash)
+                },
+                &|_| (),
+            )
+            .unwrap();
+            assert_eq!(artifacts.iter().filter(|a| a.native).count(), 1);
+            let native_library = version["libraries"].as_array().unwrap().last().unwrap();
+            assert!(native_library.pointer("/downloads/artifact").is_none());
+            let parent = legacy_parent(root.path());
+            let id = finish_legacy_install(
+                root.path(),
+                stage.path(),
+                &profile,
+                &mut version,
+                &artifacts,
+                &parent,
+                &platform,
+                &"a".repeat(32),
+                &"b".repeat(40),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(
+                    root.path()
+                        .join(format!("versions/{id}/natives/{native_name}"))
+                )
+                .unwrap(),
+                b"synthetic native bytes"
+            );
+            assert!(!root
+                .path()
+                .join(format!("versions/{id}/natives/META-INF"))
+                .exists());
+            assert_eq!(
+                library_artifacts(&version, &platform)
+                    .unwrap()
+                    .iter()
+                    .filter(|a| a.native)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn historical_repeated_rule_libraries_coalesce_only_when_content_agrees() {
+        for conflict in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let stage = tempfile::tempdir().unwrap();
+            let mut profile = legacy_fixture();
+            let mut repeated = profile["versionInfo"]["libraries"][1].clone();
+            repeated["rules"] = json!([{"action":"allow"}]);
+            if conflict {
+                repeated["sha1"] = "0".repeat(40).into();
+            }
+            profile["versionInfo"]["libraries"]
+                .as_array_mut()
+                .unwrap()
+                .push(repeated);
+            let mut archive = legacy_archive(stage.path(), &profile);
+            let mut version =
+                legacy_profile(&profile, "1.7.10", "10.13.4.1614", "10.13.4.1614-1.7.10").unwrap();
+            let result = prepare_legacy_libraries(
+                root.path(),
+                stage.path(),
+                &mut archive,
+                &profile,
+                &mut version,
+                &Platform::current(),
+                &AtomicBool::new(false),
+                &|url, hash| {
+                    if hash == Some(&"0".repeat(40)) {
+                        return Ok(b"synthetic launchwrapper dependency".to_vec());
+                    }
+                    legacy_fetch(url, hash)
+                },
+                &|_| (),
+            );
+            if conflict {
+                assert!(result.unwrap_err().to_string().contains("SHA1"));
+            } else {
+                assert_eq!(result.unwrap().len(), 2);
+            }
+            assert!(!root.path().join("versions").exists());
+        }
+    }
+    #[test]
+    fn historical_native_hash_and_unsafe_archive_do_not_register_a_profile() {
+        for corrupt_hash in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let stage = tempfile::tempdir().unwrap();
+            let mut profile = legacy_fixture();
+            let bytes = native_fixture_bytes(if corrupt_hash {
+                "fixture.dll"
+            } else {
+                "../escape.dll"
+            });
+            let hash = if corrupt_hash {
+                "0".repeat(40)
+            } else {
+                format!("{:x}", Sha1::digest(&bytes))
+            };
+            profile["versionInfo"]["libraries"].as_array_mut().unwrap().push(json!({
+                "name":"org.example:native-platform:1", "natives":{"windows":"natives-windows"},
+                "downloads":{"classifiers":{"natives-windows":{"path":"org/example/native-platform/1/native-platform-1-natives-windows.jar", "url":"https://libraries.minecraft.net/fixture-native.jar", "sha1":hash, "size":bytes.len()}}}
+            }));
+            let mut archive = legacy_archive(stage.path(), &profile);
+            let mut version =
+                legacy_profile(&profile, "1.7.10", "10.13.4.1614", "10.13.4.1614-1.7.10").unwrap();
+            let platform = Platform {
+                os: "windows".into(),
+                arch: "x86_64".into(),
+                version: "10.0".into(),
+            };
+            let result = prepare_legacy_libraries(
+                root.path(),
+                stage.path(),
+                &mut archive,
+                &profile,
+                &mut version,
+                &platform,
+                &AtomicBool::new(false),
+                &|url, hash| {
+                    if url.ends_with("fixture-native.jar") {
+                        Ok(bytes.clone())
+                    } else {
+                        legacy_fetch(url, hash)
+                    }
+                },
+                &|_| (),
+            );
+            if corrupt_hash {
+                assert!(result.unwrap_err().to_string().contains("SHA1"));
+            } else {
+                let parent = legacy_parent(root.path());
+                assert!(finish_legacy_install(
+                    root.path(),
+                    stage.path(),
+                    &profile,
+                    &mut version,
+                    &result.unwrap(),
+                    &parent,
+                    &platform,
+                    &"a".repeat(32),
+                    &"b".repeat(40),
+                    &AtomicBool::new(false)
+                )
+                .is_err());
+            }
+            assert!(!root
+                .path()
+                .join("versions/1.7.10-forge-10.13.4.1614/1.7.10-forge-10.13.4.1614.json")
+                .exists());
+            assert!(!root.path().join("escape.dll").exists());
+        }
+    }
     #[test]
     fn legacy_cached_library_is_verified_and_reused_without_fetching_its_bytes() {
         let root = tempfile::tempdir().unwrap();

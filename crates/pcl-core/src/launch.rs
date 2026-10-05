@@ -545,6 +545,18 @@ fn build_plan_with_instance(
         })?;
         let index: Value = serde_json::from_str(&index_text).context("资源索引 JSON 无效")?;
         if index
+            .get("map_to_resources")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            crate::install::prepare_mapped_resources(
+                &root,
+                &cwd,
+                &index,
+                &std::sync::atomic::AtomicBool::new(false),
+            )?;
+            game_assets = confined_path(&root, &cwd.strip_prefix(&root)?.join("resources"))?;
+        } else if index
             .get("virtual")
             .and_then(Value::as_bool)
             .unwrap_or(false)
@@ -553,12 +565,6 @@ fn build_plan_with_instance(
                 &root,
                 &safe_relative(&format!("assets/virtual/{assets_id}"))?,
             )?;
-        } else if index
-            .get("map_to_resources")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            game_assets = confined_path(&cwd, Path::new("resources"))?;
         }
     }
     let separator = if platform.os == "windows" { ";" } else { ":" };
@@ -1053,6 +1059,72 @@ mod tests {
         (directory, options, session, platform)
     }
 
+    #[test]
+    fn historical_resources_follow_named_instances_and_changed_isolation() {
+        use sha1::{Digest, Sha1};
+        let payload = b"historical sound";
+        let hash = format!("{:x}", Sha1::digest(payload));
+        // Remap has precedence when both historical flags are present, matching
+        // McAssetsListGet's map_to_resources then virtual source branches.
+        let index = serde_json::to_vec(&json!({"map_to_resources":true,"virtual":true,
+            "objects":{"sound/fixture.ogg":{"hash":hash,"size":payload.len()}}}))
+        .unwrap();
+        let value = json!({"id":"test","mainClass":"Main", "type":"release", "libraries":[],
+            "minecraftArguments":"--assetsDir ${game_assets}",
+            "downloads":{"client":{"url":"https://piston-data.mojang.com/fixture.jar", "sha1":format!("{:x}",Sha1::digest(b"test fixture jar")),"size":16}},
+            "assetIndex":{"id":"old","url":"https://piston-meta.mojang.com/old.json","sha1":format!("{:x}",Sha1::digest(&index)),"size":index.len()}});
+        let (_temp, mut options, session, platform) = fixture(value);
+        fs::create_dir_all(options.root.join("assets/indexes")).unwrap();
+        fs::write(options.root.join("assets/indexes/old.json"), index).unwrap();
+        let source = options
+            .root
+            .join(format!("assets/objects/{}/{hash}", &hash[..2]));
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, payload).unwrap();
+        let original = fs::read(options.root.join("versions/test/test.json")).unwrap();
+        crate::install::install_vanilla_instance(
+            &options.root,
+            "test",
+            "named",
+            &platform,
+            &std::sync::atomic::AtomicBool::new(false),
+            |_| (),
+        )
+        .unwrap();
+        options.version_id = "named".into();
+        let plan = build_plan(&options, &session, &platform).unwrap();
+        assert_eq!(
+            plan.cwd,
+            options.root.canonicalize().unwrap().join("instances/named")
+        );
+        assert_eq!(
+            fs::read(plan.cwd.join("resources/sound/fixture.ogg")).unwrap(),
+            payload
+        );
+        assert!(plan
+            .args
+            .contains(&plan.cwd.join("resources").to_string_lossy().into_owned()));
+        crate::config::save_instance_settings(
+            &options.root,
+            "named",
+            &crate::config::InstanceSettings {
+                isolated: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let shared = build_plan(&options, &session, &platform).unwrap();
+        assert_eq!(shared.cwd, options.root.canonicalize().unwrap());
+        assert_eq!(
+            fs::read(shared.cwd.join("resources/sound/fixture.ogg")).unwrap(),
+            payload
+        );
+        assert_eq!(fs::read(&source).unwrap(), payload);
+        assert_eq!(
+            fs::read(options.root.join("versions/test/test.json")).unwrap(),
+            original
+        );
+    }
     #[test]
     fn globals_apply_and_explicit_instance_choices_override_without_changing_files() {
         let (_root, options, session, platform) = fixture(json!({

@@ -5,10 +5,13 @@ use crate::ui_style;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 use pcl_core::{config, metadata, model::InstalledVersion, mods};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -39,7 +42,186 @@ struct CatalogCache {
     pending: Arc<Mutex<Option<Arc<Catalog>>>>,
 }
 
+type DetailResult = Result<Vec<mods::RemoteModDetails>, String>;
+#[derive(Clone)]
+struct ModDetailCache {
+    key: String,
+    instance: std::path::PathBuf,
+    stamp: String,
+    checked: Instant,
+    frame: u64,
+    cancel: Arc<AtomicBool>,
+    pending: Arc<Mutex<Option<DetailResult>>>,
+    entries: Arc<Vec<mods::RemoteModDetails>>,
+    icons: HashMap<String, egui::TextureHandle>,
+    loading: bool,
+    error: Option<String>,
+    refresh_local: bool,
+}
+fn mod_details_key() -> egui::Id {
+    egui::Id::new("local-mod-remote-details")
+}
+fn clear_mod_details(ctx: &egui::Context) {
+    if let Some(cache) = ctx.data(|data| data.get_temp::<ModDetailCache>(mod_details_key())) {
+        cache.cancel.store(true, Ordering::Relaxed);
+    }
+    ctx.data_mut(|data| data.remove::<ModDetailCache>(mod_details_key()));
+}
+fn mod_details(
+    ctx: &egui::Context,
+    instance: &Path,
+    mods: &[mods::LocalMod],
+    visible: &[mods::LocalMod],
+) -> ModDetailCache {
+    let eligible: Vec<_> = mods
+        .iter()
+        .filter(|m| m.error.is_none() && m.metadata.inspected)
+        .cloned()
+        .collect();
+    let key = format!(
+        "{instance:?}/{:?}",
+        eligible
+            .iter()
+            .map(|m| (&m.file_name, &m.mod_ids, &m.version))
+            .collect::<Vec<_>>()
+    );
+    let previous = ctx.data(|data| data.get_temp::<ModDetailCache>(mod_details_key()));
+    let mut cache = previous.filter(|p| p.key == key);
+    let stamp = if cache
+        .as_ref()
+        .is_none_or(|c| c.checked.elapsed() >= Duration::from_secs(2))
+    {
+        Some(mods::remote_snapshot(instance, &eligible).map_err(|e| format!("{e:#}")))
+    } else {
+        None
+    };
+    let checked = stamp.is_some();
+    let mut refresh_local = false;
+    if let (Some(old), Some(current)) = (&cache, &stamp) {
+        if current.as_ref().ok() != Some(&old.stamp) {
+            old.cancel.store(true, Ordering::Relaxed);
+            refresh_local = true;
+            cache = None;
+        }
+    }
+    if cache.is_none() {
+        clear_mod_details(ctx);
+        let pending = Arc::new(Mutex::new(None));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let initial = stamp.unwrap_or_else(|| {
+            mods::remote_snapshot(instance, &eligible).map_err(|e| format!("{e:#}"))
+        });
+        let error = initial.as_ref().err().cloned();
+        let value = ModDetailCache {
+            key,
+            instance: instance.to_owned(),
+            stamp: initial.unwrap_or_default(),
+            checked: Instant::now(),
+            frame: ctx.cumulative_frame_nr(),
+            cancel: cancel.clone(),
+            pending: pending.clone(),
+            entries: Arc::new(vec![]),
+            icons: HashMap::new(),
+            loading: false,
+            error,
+            refresh_local,
+        };
+        cache = Some(value);
+    }
+    let mut cache = cache.unwrap();
+    if checked {
+        cache.checked = Instant::now();
+    }
+    let result = cache.pending.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(result) = result {
+        cache.loading = false;
+        // A response can finish between periodic filesystem checks. Revalidate
+        // its exact file snapshot before publishing even a read-only title.
+        let result =
+            if mods::remote_snapshot(instance, &eligible).as_ref().ok() != Some(&cache.stamp) {
+                cache.refresh_local = true;
+                Err("Mod 文件已经改变，正在重新读取本地信息".into())
+            } else {
+                result
+            };
+        match result {
+            Ok(entries) => {
+                for value in &entries {
+                    if let Some(bytes) = &value.icon {
+                        if let Ok(image) = image::load_from_memory(bytes) {
+                            let rgba = image.into_rgba8();
+                            cache.icons.insert(
+                                value.file_name.clone(),
+                                ctx.load_texture(
+                                    format!("local-mod-icon-{}", value.file_name),
+                                    egui::ColorImage::from_rgba_unmultiplied(
+                                        [rgba.width() as usize, rgba.height() as usize],
+                                        rgba.as_raw(),
+                                    ),
+                                    egui::TextureOptions::LINEAR,
+                                ),
+                            );
+                        }
+                    }
+                }
+                let mut combined = cache.entries.as_ref().clone();
+                for entry in entries {
+                    combined.retain(|old| old.file_name != entry.file_name);
+                    combined.push(entry);
+                }
+                cache.entries = Arc::new(combined);
+                cache.error = None;
+            }
+            Err(error) => cache.error = Some(error),
+        }
+    }
+    if !cache.loading && cache.error.is_none() && !cache.refresh_local {
+        let batch: Vec<_> = visible
+            .iter()
+            .filter(|m| {
+                m.error.is_none()
+                    && m.metadata.inspected
+                    && !cache
+                        .entries
+                        .iter()
+                        .any(|entry| entry.file_name == m.file_name)
+            })
+            .take(32)
+            .cloned()
+            .collect();
+        if !batch.is_empty() {
+            cache.loading = true;
+            let root = instance.to_owned();
+            let cancel = cache.cancel.clone();
+            let pending = cache.pending.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let result =
+                    mods::load_remote_details(&root, &batch, &cancel).map_err(|e| format!("{e:#}"));
+                if !cancel.load(Ordering::Relaxed) {
+                    if let Ok(mut slot) = pending.lock() {
+                        *slot = Some(result);
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
+    }
+    cache.frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|data| data.insert_temp(mod_details_key(), cache.clone()));
+    cache
+}
+
 impl Launcher {
+    /// Call after the page has rendered. Navigation cancels only its metadata reader.
+    pub(super) fn mod_details_finish_frame(&mut self, ctx: &egui::Context) {
+        if ctx
+            .data(|data| data.get_temp::<ModDetailCache>(mod_details_key()))
+            .is_some_and(|cache| cache.frame != ctx.cumulative_frame_nr())
+        {
+            clear_mod_details(ctx);
+        }
+    }
     pub(super) fn versions_page(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 0.0;
         if self.versions.is_empty() {
@@ -794,7 +976,7 @@ impl Launcher {
                         egui::Stroke::new(1.5_f32, theme::palette(ui.ctx()).text),
                     );
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.mods_filter)
+                        ui_style::singleline(&mut self.mods_filter)
                             .hint_text("搜索 Mod 名称 / 文件名 / 标识")
                             .frame(false)
                             .desired_width(ui.available_width()),
@@ -806,8 +988,21 @@ impl Launcher {
             && self.busy.is_none()
             && !self.jobs.conflicts_with(&self.settings.game_root);
         let filter = self.mods_filter.to_lowercase();
+        let known = ui
+            .ctx()
+            .data(|data| data.get_temp::<ModDetailCache>(mod_details_key()))
+            .filter(|cache| cache.instance == instance)
+            .map(|cache| cache.entries)
+            .unwrap_or_default();
         let matches = |value: &&mods::LocalMod| {
             value.name.to_lowercase().contains(&filter)
+                || known
+                    .iter()
+                    .find(|entry| entry.file_name == value.file_name)
+                    .is_some_and(|entry| {
+                        entry.title.to_lowercase().contains(&filter)
+                            || entry.description.to_lowercase().contains(&filter)
+                    })
                 || value.file_name.to_lowercase().contains(&filter)
                 || value
                     .mod_ids
@@ -915,19 +1110,68 @@ impl Launcher {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("刷新").clicked() {
+                            clear_mod_details(ui.ctx());
                             self.refresh_mods();
                         }
                     });
                 });
+                // MyLocalModItem loads its project on first entry into the viewport.
+                // Include two nearby rows, never start one request per off-screen file.
+                let first_y = ui.cursor().top() + 7.0;
+                let visible: Vec<_> = self
+                    .local_mods
+                    .iter()
+                    .filter(matches)
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        let row = Rect::from_min_size(
+                            egui::pos2(ui.cursor().left(), first_y + *index as f32 * 44.0),
+                            Vec2::new(ui.available_width(), 44.0),
+                        );
+                        row.intersects(ui.clip_rect().expand(88.0))
+                    })
+                    .map(|(_, value)| value.clone())
+                    .collect();
+                let details = mod_details(ui.ctx(), instance, &self.local_mods, &visible);
+                if details.refresh_local {
+                    clear_mod_details(ui.ctx());
+                    self.refresh_mods();
+                }
+                if details.loading {
+                    super::loading_ui::inline(ui, "正在获取 Mod 信息");
+                } else if let Some(error) = &details.error {
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new("Mod 信息获取失败，点击重试")
+                                    .color(Color32::DARK_RED),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(error)
+                        .clicked()
+                    {
+                        clear_mod_details(ui.ctx());
+                    }
+                }
                 ui.add_space(7.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for value in self.local_mods.iter().filter(matches) {
+                    let remote = details
+                        .entries
+                        .iter()
+                        .find(|d| d.file_name == value.file_name && !d.title.is_empty());
+                    let title = remote.map(|d| d.title.as_str()).unwrap_or(&value.name);
+                    let description = remote
+                        .map(|d| d.description.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&value.metadata.description);
                     let (row, response) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), 44.0),
                         egui::Sense::click(),
                     );
                     response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, mutable, &value.name)
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, mutable, title)
                     });
                     if response.contains_pointer() || selection.contains(&value.file_name) {
                         ui.painter()
@@ -937,12 +1181,40 @@ impl Launcher {
                         selection.insert(value.file_name.clone());
                     }
                     let icon = loader_icon(&value.loader);
-                    self.assets.icon(
-                        ui,
-                        icon,
-                        Rect::from_min_size(row.min + Vec2::new(10.0, 6.0), Vec2::splat(30.0)),
-                        icon_tint(ui.ctx(), icon),
-                    );
+                    let logo_rect =
+                        Rect::from_min_size(row.min + Vec2::new(6.0, 5.0), Vec2::splat(34.0));
+                    if let Some(texture) = details.icons.get(&value.file_name) {
+                        ui.painter().image(
+                            texture.id(),
+                            logo_rect,
+                            Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    } else {
+                        self.assets
+                            .icon(ui, icon, logo_rect, icon_tint(ui.ctx(), icon));
+                    }
+                    let has_problem =
+                        value.error.is_some() || value.metadata.diagnostics.iter().any(|d| d.error);
+                    if !value.enabled || has_problem || !value.metadata.diagnostics.is_empty() {
+                        let center = logo_rect.right_bottom() - Vec2::splat(3.0);
+                        ui.painter().circle_filled(
+                            center,
+                            7.0,
+                            if has_problem {
+                                Color32::DARK_RED
+                            } else {
+                                MUTED
+                            },
+                        );
+                        ui.painter().text(
+                            center,
+                            egui::Align2::CENTER_CENTER,
+                            if !value.enabled { "−" } else { "!" },
+                            egui::FontId::proportional(11.0),
+                            Color32::WHITE,
+                        );
+                    }
                     let title_color = if value.enabled {
                         theme::palette(ui.ctx()).text
                     } else {
@@ -951,8 +1223,8 @@ impl Launcher {
                     let name_width = ui
                         .painter()
                         .layout_no_wrap(
-                            value.name.clone(),
-                            egui::FontId::proportional(13.0),
+                            title.to_owned(),
+                            egui::FontId::proportional(14.0),
                             title_color,
                         )
                         .size()
@@ -960,34 +1232,145 @@ impl Launcher {
                         .min((row.width() - 220.0).max(60.0));
                     row_text(
                         ui,
-                        row.min + Vec2::new(48.0, 5.0),
+                        row.min + Vec2::new(47.0, 5.0),
                         name_width,
-                        &value.name,
-                        13.0,
+                        title,
+                        14.0,
                         title_color,
                     );
-                    if let Some(version) = &value.version {
+                    if !value.enabled {
+                        ui.painter().line_segment(
+                            [
+                                row.min + Vec2::new(47.0, 13.0),
+                                row.min + Vec2::new(47.0 + name_width, 13.0),
+                            ],
+                            egui::Stroke::new(1.0_f32, MUTED),
+                        );
+                    }
+                    if let Some(version) = value
+                        .version
+                        .as_deref()
+                        .or_else(|| remote.map(|d| d.version.as_str()))
+                    {
                         row_text(
                             ui,
-                            row.min + Vec2::new(58.0 + name_width, 5.0),
+                            row.min + Vec2::new(57.0 + name_width, 6.0),
                             (row.width() - name_width - 145.0).max(0.0),
                             &format!("|  {version}"),
                             12.0,
                             MUTED,
                         );
                     }
-                    row_text(
-                        ui,
-                        row.min + Vec2::new(48.0, 24.0),
-                        row.width() - 135.0,
-                        value.error.as_deref().unwrap_or(&value.file_name),
-                        12.0,
-                        if value.error.is_some() {
-                            Color32::DARK_RED
-                        } else {
-                            MUTED
-                        },
+                    let diagnostic = value
+                        .metadata
+                        .diagnostics
+                        .first()
+                        .map(|d| d.message.as_str());
+                    let subtitle = if description.is_empty() {
+                        value.file_name.clone()
+                    } else {
+                        format!("{}：{}", value.file_name, description.replace('\n', " "))
+                    };
+                    let tags = remote.map(|d| d.tags.as_slice()).unwrap_or(&[]);
+                    // MyLocalModItem places tags before the description in its
+                    // second row; keep the action area available on narrow pages.
+                    let mut description_left = row.left() + 47.0;
+                    let tag_limit = row.left() + row.width() * 0.45;
+                    for tag in tags.iter().take(3) {
+                        let galley = ui.painter().layout_no_wrap(
+                            tag.clone(),
+                            egui::FontId::proportional(11.0),
+                            MUTED,
+                        );
+                        let width = galley.size().x + 6.0;
+                        if description_left + width > tag_limit {
+                            break;
+                        }
+                        let r = Rect::from_min_size(
+                            egui::pos2(
+                                description_left - 1.0,
+                                row.bottom() - 5.5 - galley.size().y - 1.0,
+                            ),
+                            Vec2::new(width, galley.size().y + 2.0),
+                        );
+                        ui.painter()
+                            .rect_filled(r, 3, Color32::from_black_alpha(10));
+                        ui.painter()
+                            .galley(r.min + Vec2::new(3.0, 1.0), galley, MUTED);
+                        description_left = r.right() + 4.0;
+                    }
+                    // Both source elements are bottom aligned. LabInfo has a
+                    // 1 DIP bottom margin, matching the tag's bottom padding.
+                    let mut description_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(
+                                egui::pos2(description_left, row.bottom() - 22.5),
+                                Vec2::new((row.right() - 85.0 - description_left).max(0.0), 17.0),
+                            ))
+                            .layout(egui::Layout::left_to_right(egui::Align::BOTTOM)),
                     );
+                    description_ui.style_mut().interaction.selectable_labels = false;
+                    description_ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                value.error.as_deref().or(diagnostic).unwrap_or(&subtitle),
+                            )
+                            .size(12.0)
+                            .color(if has_problem {
+                                Color32::DARK_RED
+                            } else {
+                                MUTED
+                            }),
+                        )
+                        .truncate(),
+                    );
+                    let mut tooltip = format!("{title}\n{}\n{description}", value.file_name);
+                    if let Some(remote) = remote {
+                        if remote.original_title != title {
+                            tooltip.push_str(&format!("\n{}", remote.original_title));
+                        }
+                        tooltip.push_str(&format!("\n标签：{}", remote.tags.join("、")));
+                    }
+                    if !value.metadata.authors.is_empty() {
+                        tooltip.push_str(&format!("\n作者：{}", value.metadata.authors.join("、")));
+                    }
+                    for issue in &value.metadata.diagnostics {
+                        tooltip.push_str(&format!("\n{}", issue.message));
+                    }
+                    for dependency in &value.metadata.dependencies {
+                        tooltip.push_str(&format!(
+                            "\n{:?}：{} {}",
+                            dependency.kind, dependency.id, dependency.requirement
+                        ));
+                    }
+                    if let Some(error) = details
+                        .entries
+                        .iter()
+                        .find(|d| d.file_name == value.file_name)
+                        .and_then(|d| d.error.as_ref())
+                    {
+                        tooltip.push_str(&format!("\n{error}"));
+                    }
+                    response.clone().on_hover_text(tooltip);
+                    response.context_menu(|ui| {
+                        if let Some(remote) = remote {
+                            if ui.button("打开项目页面").clicked() {
+                                ui.ctx()
+                                    .open_url(egui::OpenUrl::new_tab(&remote.project_url));
+                                ui.close();
+                            }
+                            if let Some(url) = &remote.wiki_url {
+                                if ui.button("在 MC 百科中查看").clicked() {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                                    ui.close();
+                                }
+                            }
+                        }
+                        if ui.button("复制文件名").clicked() {
+                            ui.ctx().copy_text(value.file_name.clone());
+                            ui.close();
+                        }
+                    });
                     let toggle = Rect::from_min_size(
                         row.right_top() + Vec2::new(-78.0, 10.0),
                         Vec2::new(72.0, 24.0),
@@ -1408,6 +1791,128 @@ fn button(
 #[cfg(test)]
 mod management_tests {
     use super::*;
+    #[test]
+    fn navigating_away_cancels_metadata_and_late_reply_cannot_update_next_instance() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(directory.path());
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let ctx = ui_context();
+        let mut old = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            old = Some(mod_details(ctx, &first, &[], &[]));
+            app.mod_details_finish_frame(ctx);
+        });
+        let old = old.unwrap();
+        assert!(!old.cancel.load(Ordering::Relaxed));
+        let _ = ctx.run(Default::default(), |ctx| app.mod_details_finish_frame(ctx));
+        assert!(old.cancel.load(Ordering::Relaxed));
+        *old.pending.lock().unwrap() = Some(Ok(vec![mods::RemoteModDetails {
+            file_name: "stale.jar".into(),
+            title: "Stale project".into(),
+            ..Default::default()
+        }]));
+        let _ = ctx.run(Default::default(), |ctx| {
+            let next = mod_details(ctx, &second, &[], &[]);
+            assert!(next.entries.is_empty());
+            assert!(next.error.is_none());
+            assert!(!Arc::ptr_eq(&old.pending, &next.pending));
+        });
+    }
+
+    #[test]
+    fn mod_row_uses_remote_title_tags_description_and_preserves_controls_in_narrow_page() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(directory.path());
+        let instance = app.settings.game_root.clone();
+        std::fs::create_dir_all(instance.join("mods")).unwrap();
+        app.local_mods = vec![mods::LocalMod {
+            file_name: "fixture.jar.disabled".into(),
+            path: instance.join("mods/fixture.jar.disabled"),
+            enabled: false,
+            name: "Local title".into(),
+            version: Some("1.0".into()),
+            mod_ids: vec![],
+            loader: "fabric".into(),
+            error: None,
+            metadata: mods::ModMetadata {
+                description: "Local fallback".into(),
+                ..Default::default()
+            },
+        }];
+        let ctx = ui_context();
+        let _ = ctx.run(Default::default(), |ctx| {
+            let mut cache = mod_details(ctx, &instance, &app.local_mods, &[]);
+            cache.entries = Arc::new(vec![mods::RemoteModDetails {
+                file_name: "fixture.jar.disabled".into(),
+                title: "Verified project title".into(),
+                description: "Remote description is visible and never replaces the file".into(),
+                tags: vec!["optimization".into()],
+                ..Default::default()
+            }]);
+            ctx.data_mut(|d| d.insert_temp(mod_details_key(), cache));
+        });
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(570.0, 500.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| app.instance_mods(ui, "fixture", &instance));
+            },
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    Some((text, shape.clip_rect))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(texts
+            .iter()
+            .any(|(t, _)| t.galley.text().contains("Verified project")));
+        assert!(texts.iter().any(|(t, _)| t.galley.text() == "optimization"));
+        let tag = texts
+            .iter()
+            .find(|(t, _)| t.galley.text() == "optimization")
+            .unwrap()
+            .0;
+        let description = texts
+            .iter()
+            .find(|(t, _)| t.galley.text().starts_with("fixture.jar"))
+            .unwrap()
+            .0;
+        assert!(tag.pos.x + tag.galley.size().x < description.pos.x);
+        println!(
+            "tag pos={:?} size={:?}; description pos={:?} size={:?}",
+            tag.pos,
+            tag.galley.size(),
+            description.pos,
+            description.galley.size()
+        );
+        assert!(
+            (tag.pos.y + tag.galley.size().y - description.pos.y - description.galley.size().y)
+                .abs()
+                <= 0.1,
+            "the source tag padding and description margin share the same text bottom"
+        );
+        for (text, clip) in texts.iter().filter(|(text, _)| {
+            text.galley.text().contains("Verified") || text.galley.text() == "optimization"
+        }) {
+            assert!(clip.contains_rect(Rect::from_min_size(text.pos, text.galley.size())));
+        }
+        assert!(
+            !instance.join("mods/fixture.jar.disabled").exists(),
+            "rendering cannot create/rename a mod"
+        );
+    }
     fn ui_context() -> egui::Context {
         let ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::default();
@@ -1547,6 +2052,7 @@ mod management_tests {
             mod_ids: vec![],
             loader: "fabric".into(),
             error: None,
+            metadata: Default::default(),
         }];
         let ctx = ui_context();
         let draw = |app: &mut Launcher, events| {

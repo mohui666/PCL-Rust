@@ -933,7 +933,7 @@ impl Launcher {
             );
             let name_response = ui.place(
                 Rect::from_min_size(Pos2::new(left_x, start.y), Vec2::new(field_width, 28.0)),
-                egui::TextEdit::singleline(&mut self.resource_browser.query)
+                crate::ui_style::singleline(&mut self.resource_browser.query)
                     .id_salt("resource-search-name"),
             );
             crate::ui_style::place_left(
@@ -1788,7 +1788,7 @@ impl Launcher {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 ui.add_sized(
                     Vec2::new(ui.available_width(), 28.0),
-                    egui::TextEdit::singleline(&mut self.resource_browser.pack_name)
+                    crate::ui_style::singleline(&mut self.resource_browser.pack_name)
                         .char_limit(100),
                 );
                 crate::ui_style::checkbox(

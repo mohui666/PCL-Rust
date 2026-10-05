@@ -18,7 +18,6 @@ use std::{
 
 #[derive(Default)]
 pub(super) struct SetupSystemState {
-    reset_open: bool,
     debug_open: bool,
     show_update_result: bool,
     receiver: Option<Receiver<SystemMessage>>,
@@ -427,7 +426,7 @@ impl Launcher {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.add_sized(
                     [field_width, 28.0],
-                    egui::TextEdit::singleline(&mut text)
+                    crate::ui_style::singleline(&mut text)
                         .hint_text("默认")
                         .interactive(false),
                 )
@@ -457,15 +456,6 @@ impl Launcher {
                 open_cache = ui
                     .add_sized([140.0, 35.0], egui::Button::new("打开缓存文件夹"))
                     .clicked();
-                if ui
-                    .add_enabled(
-                        !self.jobs.is_active() && self.game_pid.is_none(),
-                        egui::Button::new("初始化设置…").min_size(Vec2::new(140.0, 35.0)),
-                    )
-                    .clicked()
-                {
-                    self.setup_system.reset_open = true;
-                }
                 if self.setup_system.loading && ui.button("取消").clicked() {
                     self.setup_system.cancel.store(true, Ordering::Relaxed);
                 }
@@ -649,7 +639,7 @@ impl Launcher {
                 system_row(ui, "CurseForge", |ui| {
                     ui.add_sized(
                         [ui.available_width().max(60.0), 28.0],
-                        egui::TextEdit::singleline(&mut self.setup_system.key_input)
+                        crate::ui_style::singleline(&mut self.setup_system.key_input)
                             .password(true)
                             .hint_text("CurseForge 开发者 API Key"),
                     )
@@ -702,12 +692,6 @@ impl Launcher {
         .on_hover_text(self.setup_system.key_message.as_deref().unwrap_or(KEY_HELP));
         if let Some(action) = key_action {
             self.start_key_action(action);
-        }
-        if self.setup_system.reset_open {
-            if let Some(action)=super::modal_ui::account_modal_with_options(ui.ctx(),"reset-launcher-preferences","初始化设置","恢复默认设置前会保留原 JSON 备份。不会删除游戏目录或系统安全存储中的账号；已登记目录、当前版本及账号相关输入保留。",&["仅此页","全部偏好","取消"],super::modal_ui::ModalOptions::warning()) {
-                self.setup_system.reset_open=false;
-                if action<2 && !self.jobs.is_active() && self.game_pid.is_none(){match config::reset_launcher_settings(&self.settings_path,&self.settings,action==1){Ok((next,backup))=>{self.settings=next;system::configure_debug(&self.settings.system);let _=pcl_core::network::configure(&self.settings.downloads);self.instance_setup=Default::default();self.status=format!("设置已初始化；原设置备份：{}",backup.display());},Err(e)=>self.error=Some(format!("初始化失败：{e:#}"))}}
-            }
         }
         if open_cache {
             let path = system::cache_directory(&self.settings.system);
@@ -937,7 +921,7 @@ fn download_slider(
     }
     let editor = ui.add_sized(
         [number_width, 24.0],
-        egui::TextEdit::singleline(&mut text)
+        crate::ui_style::singleline(&mut text)
             .id(id)
             .horizontal_align(egui::Align::RIGHT),
     );

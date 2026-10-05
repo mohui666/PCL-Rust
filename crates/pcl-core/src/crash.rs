@@ -15,6 +15,8 @@ use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 const FILE_LIMIT: u64 = 8 * 1024 * 1024;
 const TOTAL_LIMIT: usize = 32 * 1024 * 1024;
 const COUNT_LIMIT: usize = 32;
+#[path = "crash_analysis.rs"]
+mod analysis;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogEvidence {
     pub name: String,
@@ -400,7 +402,7 @@ struct Rule {
 const RULES:&[Rule]=&[
  Rule{code:"java-arguments",title:"Java 虚拟机参数无效",explanation:"日志明确拒绝了 Java 参数。检查自定义 JVM 参数是否适用于所选 Java；不要靠重复添加相同参数修复。",patterns:&["Unrecognized option:","Unrecognized VM option"]},
  Rule{code:"java-too-old",title:"Java 或字节码版本不兼容",explanation:"游戏或 Mod 使用了当前 Java/ASM 无法识别的字节码。按该游戏与加载器要求选择 Java，并检查 Mod 对应的 Minecraft 版本。",patterns:&["UnsupportedClassVersionError","Unsupported class file major version","Unsupported major.minor version","Level is not supported by the active JRE or ASM version"]},
- Rule{code:"java-too-new",title:"旧组件访问了当前 Java 不开放的内部接口",explanation:"检查旧加载器/Mod 与 Java 的兼容范围。通常应选择该版本要求的 Java，或更新相关组件。",patterns:&["because module java.base does not export","java.lang.NoSuchFieldException: ucp","jdk.nashorn.api.scripting.NashornScriptEngineFactory","Unable to make protected final java.lang.Class java.lang.ClassLoader.defineClass"]},
+ Rule{code:"java-too-new",title:"旧组件访问了当前 Java 不开放的内部接口",explanation:"检查旧加载器/Mod 与 Java 的兼容范围。通常应选择该版本要求的 Java，或更新相关组件。",patterns:&["because module java.base does not export","java.lang.NoSuchFieldException: ucp","jdk.nashorn.api.scripting.NashornScriptEngineFactory","java.lang.ClassNotFoundException: java.lang.invoke.LambdaMetafactory","Unable to make protected final java.lang.Class java.lang.ClassLoader.defineClass"]},
  Rule{code:"openj9",title:"发现 OpenJ9 兼容性线索",explanation:"日志包含 OpenJ9 拒绝信息或内部调用栈。仅出现内部栈不能证明它是根因；请核对组件支持范围，必要时用同主版本 HotSpot Java 对照。",patterns:&["Open J9 is not supported","OpenJ9 is incompatible",".J9VMInternals."]},
  Rule{code:"heap-reserve",title:"JVM 无法保留所需堆内存",explanation:"确认使用 64 位 Java，并检查最大内存、系统空闲内存和虚拟内存。此日志本身不足以断言一定是 32 位 Java。",patterns:&["Invalid maximum heap size","Could not reserve enough space"]},
  Rule{code:"out-of-memory",title:"内存不足",explanation:"日志报告内存分配失败。区分 Java 堆、系统内存和原生内存；根据剩余内存调整游戏分配，关闭不需要的程序或降低资源包负载。",patterns:&["java.lang.OutOfMemoryError","The system is out of physical RAM or swap space","Out of Memory Error","an out of memory error"]},
@@ -411,7 +413,7 @@ const RULES:&[Rule]=&[
  Rule{code:"mod-dependencies",title:"Mod 依赖或版本组合不兼容",explanation:"优先阅读加载器提供的依赖版本要求与建议；同时确认 Minecraft、加载器和 Mod 三者版本。",patterns:&["Incompatible mods found!","Missing or unsupported mandatory dependencies","Mod resolution failed","A potential solution has been determined:","A potential solution has been determined, this may resolve your problem:"]},
  Rule{code:"mod-config",title:"Mod 配置文件无法读取",explanation:"备份日志中指出的配置文件后，核对格式或让对应 Mod 重新生成；不要直接删除整个 config 文件夹。",patterns:&["Failed loading config file ","com.electronwill.nightconfig.core.io.ParsingException"]},
  Rule{code:"mod-init",title:"加载器报告 Mod 初始化失败",explanation:"查看证据行和后续 Caused by，确定具体 Mod。初始化异常也可能来自依赖缺失，不能只凭堆栈中出现的 Mod 名称断言责任。",patterns:&["Caught exception from ","Failed to create mod instance.","Failure message:","due to errors, provided by '"]},
- Rule{code:"mixin",title:"Mixin 应用失败",explanation:"检查报错 Mixin 所属的 Mod、目标游戏版本及与其他修改同一类的 Mod 冲突。",patterns:&["Mixin apply failed","MixinApplyError","InvalidMixinException","InjectionError","Critical injection failure"]},
+ Rule{code:"mixin",title:"Mixin 应用失败",explanation:"检查报错 Mixin 所属的 Mod、目标游戏版本及与其他修改同一类的 Mod 冲突。",patterns:&["Mixin prepare failed","Mixin apply failed","MixinApplyError","MixinTransformerError","mixin.injection.throwables.",".json] FAILED during","InvalidMixinException","InjectionError","Critical injection failure"]},
  Rule{code:"mixin-missing",title:"Mixin 启动组件缺失",explanation:"日志无法找到 MixinTweaker。核对旧版 Mod 所要求的 MixinBootstrap 或对应加载器依赖。",patterns:&["ClassNotFoundException: org.spongepowered.asm.launch.MixinTweaker"]},
  Rule{code:"extracted-mod",title:"Mod JAR 被解压",explanation:"Mod 通常应保持原始 JAR 文件，不要解压放入 mods 目录。",patterns:&["The directories below appear to be extracted jar files","Extracted mod jars found"]},
  Rule{code:"forge-incomplete",title:"Forge 安装或启动配置不完整",explanation:"按对应版本重新校验/安装 Forge 所需支持库；保留原版本与用户文件，不覆盖未知修改。",patterns:&["Cannot find launch target fmlclient, unable to launch"]},
@@ -450,6 +452,7 @@ fn analyze(report: &mut CrashReport) {
             });
         }
     }
+    analysis::enrich(report);
     if report.files.iter().any(|file| file.truncated) {
         report
             .warnings

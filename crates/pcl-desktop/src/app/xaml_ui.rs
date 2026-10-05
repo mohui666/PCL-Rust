@@ -33,6 +33,16 @@ pub(super) struct Action {
     pub(super) kind: String,
     pub(super) data: String,
 }
+pub(super) fn declared_closeable_hint(nodes: &[Node], key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && nodes.iter().any(|node| {
+            (node.tag == "MyHint"
+                && node.attr("CanClose") == "True"
+                && node.attr("RelativeSetup") == key)
+                || declared_closeable_hint(&node.children, key)
+        })
+}
 
 /// The origin controls relative images; a network page cannot reference local files.
 #[derive(Clone, Debug, Default)]
@@ -200,6 +210,11 @@ fn parse_node(node: roxmltree::Node<'_, '_>, depth: usize, count: &mut usize) ->
                 bail!("图片地址不能绑定输入或私有变量");
             }
         }
+        let name = if tag == "MyCheckBox" && name == "IsChecked" {
+            "Checked"
+        } else {
+            name
+        };
         attrs.insert(
             name.strip_prefix("CustomEventService.")
                 .unwrap_or(name)
@@ -259,11 +274,22 @@ fn parse_node(node: roxmltree::Node<'_, '_>, depth: usize, count: &mut usize) ->
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum BindingMode {
+    #[default]
+    Default,
+    OneWay,
+    TwoWay,
+    OneWayToSource,
+    OneTime,
+}
 #[derive(Debug)]
 struct Binding {
     path: String,
     element: Option<String>,
     fallback: String,
+    mode: BindingMode,
+    update_on_change: Option<bool>,
 }
 fn parse_binding(text: &str) -> Result<Binding> {
     let body = text
@@ -275,6 +301,8 @@ fn parse_binding(text: &str) -> Result<Binding> {
         path: String::new(),
         element: None,
         fallback: String::new(),
+        mode: BindingMode::Default,
+        update_on_change: None,
     };
     for (index, part) in body.split(',').map(str::trim).enumerate() {
         if part.is_empty() {
@@ -286,8 +314,21 @@ fn parse_binding(text: &str) -> Result<Binding> {
                 "Path" => binding.path = value.into(),
                 "ElementName" => binding.element = Some(value.into()),
                 "FallbackValue" => binding.fallback = value.into(),
-                "Mode" if value == "OneWay" => (),
-                _ => bail!("Binding 仅支持 Path、ElementName、FallbackValue 与单向模式"),
+                "Mode" => binding.mode = match value {
+                    "Default" => BindingMode::Default,
+                    "OneWay" => BindingMode::OneWay,
+                    "TwoWay" => BindingMode::TwoWay,
+                    "OneWayToSource" => BindingMode::OneWayToSource,
+                    "OneTime" => BindingMode::OneTime,
+                    _ => bail!("Binding 模式无效"),
+                },
+                "UpdateSourceTrigger" => binding.update_on_change = match value {
+                    "Default" => None,
+                    "PropertyChanged" => Some(true),
+                    "LostFocus" => Some(false),
+                    _ => bail!("Binding 仅支持 PropertyChanged、LostFocus 或默认更新时机"),
+                },
+                _ => bail!("Binding 不支持转换器或外部对象；可使用 Path、ElementName、FallbackValue、Mode、UpdateSourceTrigger"),
             }
         } else if index == 0 {
             binding.path = part.into();
@@ -327,7 +368,7 @@ fn validate_trigger(trigger: &Node) -> Result<()> {
         if setter.tag != "Setter"
             || !setter.children.is_empty()
             || !setter.triggers.is_empty()
-            || !setter.attr("TargetName").is_empty()
+            || setter.attr("TargetName").len() > 128
             || !matches!(
                 setter.attr("Property"),
                 "Visibility"
@@ -342,7 +383,7 @@ fn validate_trigger(trigger: &Node) -> Result<()> {
                     | "FontSize"
             )
         {
-            bail!("Trigger 只能修改自身的显示、文本、颜色或尺寸；不能执行事件、读取文件或联网");
+            bail!("Trigger 只能修改页面控件的显示、文本、颜色或尺寸；不能执行事件、读取文件或联网");
         }
     }
     Ok(())
@@ -363,6 +404,10 @@ fn resource_name(value: &str, kind: &str) -> Option<String> {
         .strip_prefix(&format!("{{{kind} "))
         .and_then(|s| s.strip_suffix('}'))
         .map(|s| s.trim().to_owned())
+}
+fn style_target(value: &str) -> String {
+    let value = resource_name(value, "x:Type").unwrap_or_else(|| value.into());
+    value.strip_prefix("local:").unwrap_or(&value).into()
 }
 fn materialize(
     mut node: Node,
@@ -388,10 +433,34 @@ fn materialize(
                         .insert(entry.attr("Key").into(), plain_text(entry));
                 }
                 "Style" => {
-                    if !entry.attr("BasedOn").is_empty() {
-                        bail!("暂不支持 Style.BasedOn 继承");
-                    }
                     let mut attrs = HashMap::new();
+                    let mut triggers = Vec::new();
+                    if !entry.attr("BasedOn").is_empty() {
+                        let name = resource_name(entry.attr("BasedOn"), "StaticResource")
+                            .context("Style.BasedOn 需要已经声明的 StaticResource 样式")?;
+                        let base = if name.starts_with("{x:Type ") {
+                            let target = style_target(&name);
+                            triggers.extend(
+                                resources
+                                    .implicit_triggers
+                                    .get(&target)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            );
+                            resources.implicit.get(&target)
+                        } else {
+                            triggers.extend(
+                                resources
+                                    .named_triggers
+                                    .get(&name)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            );
+                            resources.named.get(&name)
+                        }
+                        .with_context(|| format!("Style.BasedOn 未找到先前声明的样式：{name}"))?;
+                        attrs.extend(base.clone());
+                    }
                     for setter in &entry.children {
                         if setter.tag != "Setter" || !setter.children.is_empty() {
                             bail!("样式仅支持静态 Setter 值");
@@ -410,19 +479,15 @@ fn materialize(
                         }
                         attrs.insert(property.into(), setter.attr("Value").into());
                     }
+                    triggers.extend(entry.triggers.clone());
                     if entry.attr("Key").is_empty() {
-                        let target = entry
-                            .attr("TargetType")
-                            .strip_prefix("local:")
-                            .unwrap_or(entry.attr("TargetType"));
-                        resources
-                            .implicit_triggers
-                            .insert(target.into(), entry.triggers.clone());
-                        resources.implicit.insert(target.into(), attrs);
+                        let target = style_target(entry.attr("TargetType"));
+                        resources.implicit_triggers.insert(target.clone(), triggers);
+                        resources.implicit.insert(target, attrs);
                     } else {
                         resources
                             .named_triggers
-                            .insert(entry.attr("Key").into(), entry.triggers.clone());
+                            .insert(entry.attr("Key").into(), triggers);
                         resources.named.insert(entry.attr("Key").into(), attrs);
                     }
                 }
@@ -473,6 +538,8 @@ fn materialize(
         "FontStyle",
         "Foreground",
         "FontFamily",
+        "LineHeight",
+        "TextAlignment",
     ] {
         if let Some(value) = attrs.get(name) {
             resources.text.insert(name.into(), value.clone());
@@ -563,10 +630,18 @@ pub(super) fn replace(text: &str, values: &HashMap<String, String>) -> String {
 
 #[derive(Default)]
 pub(super) struct Renderer {
+    list_assets: Option<ui_style::Assets>,
     images: HashMap<String, Picture>,
     inputs: HashMap<String, String>,
     checks: HashMap<String, bool>,
     bound_values: HashMap<String, String>,
+    named_nodes: HashMap<String, Node>,
+    local_properties: HashMap<(String, String), String>,
+    visual_overrides: HashMap<(String, String), String>,
+    data_values: HashMap<String, String>,
+    named_rects: HashMap<String, egui::Rect>,
+    one_time_values: std::cell::RefCell<HashMap<String, String>>,
+    closed_hints: std::collections::BTreeSet<String>,
 }
 enum Picture {
     Pending(mpsc::Receiver<Result<egui::ColorImage>>),
@@ -575,28 +650,203 @@ enum Picture {
 }
 impl Renderer {
     fn binding_value(&self, text: &str, values: &HashMap<String, String>) -> String {
+        if let Ok(binding) = parse_binding(text) {
+            if binding.mode == BindingMode::OneWayToSource {
+                return binding.fallback;
+            }
+            if binding.mode == BindingMode::OneTime {
+                if let Some(value) = self.one_time_values.borrow().get(text) {
+                    return value.clone();
+                }
+                let value = self.binding_value_inner(text, values, &mut Vec::new());
+                self.one_time_values
+                    .borrow_mut()
+                    .insert(text.into(), value.clone());
+                return value;
+            }
+        }
+        self.binding_value_inner(text, values, &mut Vec::new())
+    }
+    fn binding_value_inner(
+        &self,
+        text: &str,
+        values: &HashMap<String, String>,
+        visiting: &mut Vec<(String, String)>,
+    ) -> String {
         let Ok(binding) = parse_binding(text) else {
             return replace(text, values);
         };
         if let Some(element) = binding.element {
-            match binding.path.as_str() {
-                "Text" | "Content" | "SelectedItem" => self
-                    .inputs
-                    .get(&element)
-                    .cloned()
-                    .unwrap_or(binding.fallback),
-                "IsChecked" | "Checked" => self
-                    .checks
-                    .get(&element)
-                    .map(|checked| if *checked { "True" } else { "False" }.into())
-                    .unwrap_or(binding.fallback),
-                _ => binding.fallback,
-            }
+            self.element_property(&element, &binding.path, values, visiting)
+                .unwrap_or(binding.fallback)
         } else {
-            values
+            self.data_values
                 .get(&binding.path)
+                .or_else(|| values.get(&binding.path))
                 .cloned()
                 .unwrap_or(binding.fallback)
+        }
+    }
+    fn element_property(
+        &self,
+        element: &str,
+        property: &str,
+        values: &HashMap<String, String>,
+        visiting: &mut Vec<(String, String)>,
+    ) -> Option<String> {
+        let property = match property {
+            "IsChecked" => "Checked",
+            "SelectedItem" => "Text",
+            other => other,
+        };
+        let key = (element.to_owned(), property.to_owned());
+        if visiting.len() >= 40 || visiting.contains(&key) {
+            return None;
+        }
+        if let Some(value) = self
+            .visual_overrides
+            .get(&key)
+            .or_else(|| self.local_properties.get(&key))
+        {
+            return Some(value.clone());
+        }
+        if property == "Text" {
+            if let Some(value) = self.inputs.get(element) {
+                return Some(value.clone());
+            }
+        }
+        if property == "Checked" {
+            if let Some(value) = self.checks.get(element) {
+                return Some(if *value { "True" } else { "False" }.into());
+            }
+        }
+        if let Some(rect) = self.named_rects.get(element) {
+            match property {
+                "ActualWidth" => return Some(rect.width().to_string()),
+                "ActualHeight" => return Some(rect.height().to_string()),
+                _ => (),
+            }
+        }
+        let node = self.named_nodes.get(element)?;
+        let raw = node
+            .attrs
+            .get(property)
+            .map(String::as_str)
+            .unwrap_or(match property {
+                "Visibility" => "Visible",
+                "IsEnabled" => "True",
+                "Opacity" => "1",
+                "Checked" => "False",
+                _ => "",
+            });
+        visiting.push(key);
+        let result = self.binding_value_inner(raw, values, visiting);
+        visiting.pop();
+        Some(result)
+    }
+    fn write_binding(&mut self, expression: &str, value: String) {
+        let Ok(binding) = parse_binding(expression) else {
+            return;
+        };
+        if !matches!(
+            binding.mode,
+            BindingMode::Default | BindingMode::TwoWay | BindingMode::OneWayToSource
+        ) {
+            return;
+        }
+        if let Some(element) = binding.element {
+            if !self.named_nodes.contains_key(&element) {
+                return;
+            }
+            let property = match binding.path.as_str() {
+                "IsChecked" => "Checked",
+                "SelectedItem" => "Text",
+                other => other,
+            };
+            // Writes remain data on the current page; they never invoke CLR,
+            // events, file/network sources, or launcher/account configuration.
+            if !matches!(
+                property,
+                "Text"
+                    | "Content"
+                    | "Checked"
+                    | "Visibility"
+                    | "IsEnabled"
+                    | "Foreground"
+                    | "Background"
+                    | "Opacity"
+                    | "Width"
+                    | "Height"
+                    | "FontSize"
+            ) {
+                return;
+            }
+            if property == "Text" && self.inputs.contains_key(&element) {
+                self.inputs.insert(element.clone(), value);
+            } else if property == "Checked" && self.checks.contains_key(&element) {
+                self.checks
+                    .insert(element.clone(), value.eq_ignore_ascii_case("true"));
+            } else {
+                self.local_properties
+                    .insert((element, property.into()), value);
+            }
+        } else {
+            self.data_values.insert(binding.path, value);
+        }
+    }
+    fn sync_input_binding(&mut self, node: &Node, property: &str, key: &str, value: &str) {
+        let Ok(binding) = parse_binding(node.attr(&format!("_PclBinding{property}"))) else {
+            return;
+        };
+        if binding.mode == BindingMode::OneWayToSource {
+            return;
+        }
+        let cache_key = format!("{key}.{property}");
+        if binding.mode == BindingMode::OneTime && self.bound_values.contains_key(&cache_key) {
+            return;
+        }
+        if self
+            .bound_values
+            .get(&cache_key)
+            .is_some_and(|old| old == value)
+        {
+            return;
+        }
+        self.bound_values.insert(cache_key, value.into());
+        if property == "Checked" {
+            self.checks
+                .insert(key.into(), value.eq_ignore_ascii_case("true"));
+        } else {
+            self.inputs.insert(key.into(), value.into());
+        }
+    }
+    fn update_input_binding(
+        &mut self,
+        node: &Node,
+        property: &str,
+        key: &str,
+        default_on_change: bool,
+        changed: bool,
+        lost_focus: bool,
+    ) {
+        let expression = node.attr(&format!("_PclBinding{property}"));
+        let Ok(binding) = parse_binding(expression) else {
+            return;
+        };
+        if (binding.update_on_change.unwrap_or(default_on_change) && changed)
+            || (!binding.update_on_change.unwrap_or(default_on_change) && lost_focus)
+        {
+            let value = if property == "Checked" {
+                if self.checks.get(key).copied().unwrap_or(false) {
+                    "True"
+                } else {
+                    "False"
+                }
+                .into()
+            } else {
+                self.inputs.get(key).cloned().unwrap_or_default()
+            };
+            self.write_binding(expression, value);
         }
     }
     fn resolved_node(
@@ -607,16 +857,21 @@ impl Renderer {
         pressed: bool,
     ) -> Node {
         let mut resolved = node.clone();
+        for (property, value) in &mut resolved.attrs {
+            if !property.starts_with("_Pcl") && value.starts_with("{Binding") {
+                *value = self.binding_value(value, values);
+            }
+        }
         for property in ["Text", "Checked"] {
             if node.attr(property).starts_with("{Binding") {
                 resolved
                     .attrs
-                    .insert(format!("_PclBinding{property}"), "True".into());
+                    .insert(format!("_PclBinding{property}"), node.attr(property).into());
             }
         }
-        for value in resolved.attrs.values_mut() {
-            if value.starts_with("{Binding") {
-                *value = self.binding_value(value, values);
+        for ((name, property), value) in &self.local_properties {
+            if name == node.attr("Name") {
+                resolved.attrs.insert(property.clone(), value.clone());
             }
         }
         for trigger in &node.triggers {
@@ -649,6 +904,9 @@ impl Renderer {
             };
             if actual.eq_ignore_ascii_case(trigger.attr("Value")) {
                 for setter in &trigger.children {
+                    if !setter.attr("TargetName").is_empty() {
+                        continue;
+                    }
                     resolved.attrs.insert(
                         setter.attr("Property").into(),
                         self.binding_value(setter.attr("Value"), values),
@@ -656,23 +914,113 @@ impl Renderer {
                 }
             }
         }
+        for ((name, property), value) in &self.visual_overrides {
+            if name == node.attr("Name") {
+                resolved.attrs.insert(property.clone(), value.clone());
+            }
+        }
         resolved
     }
+    fn resolved_text_tree(&self, node: &Node, values: &HashMap<String, String>) -> Node {
+        let mut resolved = self.resolved_node(node, values, false, false);
+        resolved.children = node
+            .children
+            .iter()
+            .map(|child| self.resolved_text_tree(child, values))
+            .collect();
+        resolved
+    }
+    fn index_named_nodes(&mut self, nodes: &[Node]) {
+        for node in nodes {
+            if !node.attr("Name").is_empty() {
+                self.named_nodes
+                    .insert(node.attr("Name").into(), node.clone());
+            }
+            self.index_named_nodes(&node.children);
+        }
+    }
     fn seed_named_inputs(&mut self, nodes: &[Node], values: &HashMap<String, String>) {
+        self.index_named_nodes(nodes);
         for node in nodes {
             if !node.attr("Name").is_empty() {
                 if matches!(node.tag.as_str(), "MyTextBox" | "MyComboBox") {
-                    self.inputs
-                        .entry(node.attr("Name").into())
-                        .or_insert_with(|| replace(node.attr("Text"), values));
+                    let text = self.binding_value(node.attr("Text"), values);
+                    self.inputs.entry(node.attr("Name").into()).or_insert(text);
                 }
                 if node.tag == "MyCheckBox" {
+                    let checked = self
+                        .binding_value(node.attr("Checked"), values)
+                        .eq_ignore_ascii_case("true");
                     self.checks
                         .entry(node.attr("Name").into())
-                        .or_insert(node.attr("Checked") == "True");
+                        .or_insert(checked);
                 }
             }
             self.seed_named_inputs(&node.children, values);
+        }
+    }
+    fn visual_targets(
+        &mut self,
+        nodes: &[Node],
+        values: &HashMap<String, String>,
+        ctx: &egui::Context,
+    ) {
+        fn collect(
+            renderer: &Renderer,
+            nodes: &[Node],
+            values: &HashMap<String, String>,
+            ctx: &egui::Context,
+            out: &mut HashMap<(String, String), String>,
+        ) {
+            for node in nodes {
+                let hovered = renderer
+                    .named_rects
+                    .get(node.attr("Name"))
+                    .is_some_and(|rect| {
+                        ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| rect.contains(p)))
+                    });
+                for trigger in &node.triggers {
+                    let actual = if trigger.tag == "DataTrigger" {
+                        renderer.binding_value(trigger.attr("Binding"), values)
+                    } else {
+                        match trigger.attr("Property") {
+                            "IsMouseOver" => hovered.to_string(),
+                            "IsPressed" => {
+                                (hovered && ctx.input(|i| i.pointer.primary_down())).to_string()
+                            }
+                            property => renderer
+                                .element_property(
+                                    node.attr("Name"),
+                                    property,
+                                    values,
+                                    &mut Vec::new(),
+                                )
+                                .unwrap_or_default(),
+                        }
+                    };
+                    if actual.eq_ignore_ascii_case(trigger.attr("Value")) {
+                        for setter in &trigger.children {
+                            let target = setter.attr("TargetName");
+                            if !target.is_empty() && renderer.named_nodes.contains_key(target) {
+                                out.insert(
+                                    (target.into(), setter.attr("Property").into()),
+                                    renderer.binding_value(setter.attr("Value"), values),
+                                );
+                            }
+                        }
+                    }
+                }
+                collect(renderer, &node.children, values, ctx, out);
+            }
+        }
+        self.visual_overrides.clear();
+        for _ in 0..40 {
+            let mut next = HashMap::new();
+            collect(self, nodes, values, ctx, &mut next);
+            if next == self.visual_overrides {
+                break;
+            }
+            self.visual_overrides = next;
         }
     }
     pub(super) fn clear(&mut self) {
@@ -680,6 +1028,13 @@ impl Renderer {
         self.inputs.clear();
         self.checks.clear();
         self.bound_values.clear();
+        self.named_nodes.clear();
+        self.named_rects.clear();
+        self.local_properties.clear();
+        self.visual_overrides.clear();
+        self.data_values.clear();
+        self.one_time_values.get_mut().clear();
+        self.closed_hints.clear();
     }
     pub(super) fn render(
         &mut self,
@@ -689,12 +1044,18 @@ impl Renderer {
         values: &HashMap<String, String>,
     ) -> Vec<Action> {
         self.seed_named_inputs(nodes, values);
+        self.visual_targets(nodes, values, ui.ctx());
         let mut actions = Vec::new();
+        // WPF panels use child Margin for spacing; they do not add egui's
+        // default 8/10 DIP gap on top of each explicit source margin.
+        let spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         for (index, node) in nodes.iter().enumerate() {
             ui.push_id(index, |ui| {
                 self.node(ui, node, origin, values, &mut actions)
             });
         }
+        ui.spacing_mut().item_spacing = spacing;
         if let Some(base) = origin.url.as_deref().and_then(|url| http_url(url).ok()) {
             for action in &mut actions {
                 if action.kind == "打开帮助" && !action.data.contains("://") {
@@ -727,12 +1088,23 @@ impl Renderer {
         );
         let node = &resolved;
         let value = |key: &str| replace(node.attr(key), values);
-        if matches!(value("Visibility").as_str(), "Collapsed" | "Hidden") {
+        if value("Visibility") == "Collapsed" {
             return;
         }
         let margin = edges(node.attr("Margin"));
-        ui.add_space(margin[1].max(0.0));
-        let rendered=egui::Frame::NONE.fill(brush(&value("Background"),ui.ctx()).unwrap_or(Color32::TRANSPARENT)).inner_margin(egui::Margin{left:margin[0].clamp(0.0,127.0) as i8,right:margin[2].clamp(0.0,127.0) as i8,top:0,bottom:0}).show(ui,|ui| {
+        ui.add_space(margin[1]);
+        let horizontal = [
+            f32::from(margin[0].clamp(-128.0, 127.0) as i8),
+            f32::from(margin[2].clamp(-128.0, 127.0) as i8),
+        ];
+        let rendered=egui::Frame::NONE.fill(brush(&value("Background"),ui.ctx()).unwrap_or(Color32::TRANSPARENT)).inner_margin(egui::Margin{left:horizontal[0] as i8,right:horizontal[1] as i8,top:0,bottom:0}).show(ui,|ui| {
+            // egui Frame margins are i8; WPF help uses 220/250 DIP to place
+            // illustrations beside 200 DIP text. Preserve the remaining offset.
+            let mut content = ui.available_rect_before_wrap();
+            content.min.x += margin[0] - horizontal[0];
+            content.max.x = (content.max.x - (margin[2] - horizontal[1])).max(content.min.x);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+            if node.attr("Visibility")=="Hidden" { ui.set_invisible(); }
             if node.attr("IsEnabled")=="False"{ui.disable();}
             if let Some(opacity)=number(node.attr("Opacity")) {ui.multiply_opacity(opacity.clamp(0.0,1.0));}
             if let Some(width)=number(node.attr("Width")) {ui.set_width(width.min(ui.available_width()));}
@@ -746,16 +1118,37 @@ impl Renderer {
                         ui.horizontal_wrapped(|ui| self.inline(ui,node,&format,origin,values,actions));
                         return;
                     }
-                    text_job(node,&format,values,&mut job);
-                    let response=ui.add(egui::Label::new(job).wrap().selectable(true));
+                    let text_node=self.resolved_text_tree(node,values);
+                    text_job(&text_node,&format,values,ui.ctx(),&mut job);
+                    let align=match node.attr("TextAlignment") {"Center"=>egui::Align::Center,"Right"=>egui::Align::RIGHT,_=>egui::Align::LEFT};
+                    job.halign=align;
+                    job.justify=node.attr("TextAlignment")=="Justify";
+                    if node.attr("TextWrapping")=="NoWrap" {job.wrap.max_rows=1;job.wrap.break_anywhere=true;}
+                    let galley=ui.fonts_mut(|fonts|fonts.layout_job(job));
+                    let response=ui.allocate_ui_with_layout(Vec2::new(ui.available_width(),galley.size().y),egui::Layout::top_down(align),|ui|ui.add(egui::Label::new(galley).selectable(true))).inner;
                     if node.tag=="Hyperlink" && response.interact(egui::Sense::click()).clicked() {actions.push(Action{kind:"打开网页".into(),data:value("NavigateUri")});}
                 }
-                "MyHint"=> {egui::Frame::NONE.fill(if matches!(node.attr("Theme"),"Blue"|"Green") {theme::palette(ui.ctx()).light} else {Color32::from_rgb(255,241,223)}).inner_margin(10).corner_radius(3).show(ui,|ui| {let response=ui.add(egui::Label::new(value("Text")).wrap());if response.interact(egui::Sense::click()).clicked(){collect_actions(node,values,actions);}});}
-                "MyButton"|"MyTextButton"|"MyIconButton"|"MyIconTextButton"|"MyListItem"=> {
+                "MyHint"=> {
+                    let relative=node.attr("RelativeSetup");
+                    let yellow=node.attr("IsWarn")!="False" && !matches!(node.attr("Theme"),"Blue"|"Green");
+                    if node.attr("CanClose")=="True" {
+                        let persistent=!relative.is_empty() && relative.len()<=128;
+                        let key=if persistent{relative.to_owned()}else{format!("anonymous-hint:{:?}",ui.id())};
+                        if persistent && values.get(&format!("__pcl_hint_closed:{relative}")).is_some_and(|value|value=="true"){self.closed_hints.insert(key.clone());}
+                        if super::hint_ui::dismissible_inline(ui,&mut self.closed_hints,&key,&value("Text"),yellow) && persistent {
+                            actions.push(Action{kind:"关闭提示".into(),data:relative.into()});
+                        }
+                    }else{
+                        let response=ui.scope(|ui|super::hint_ui::inline(ui,&value("Text"),yellow)).response;
+                        if response.interact(egui::Sense::click()).clicked(){collect_actions(node,values,actions);}
+                    }
+                }
+                "MyListItem"=>self.list_item(ui,node,values,actions),
+                "MyButton"|"MyTextButton"|"MyIconButton"|"MyIconTextButton"=> {
                     let text=if node.attr("Text").is_empty(){if node.attr("Title").is_empty(){value("Content")}else{value("Title")}}else{value("Text")};
                     let text=if text.is_empty(){let content=plain_text(node);if content.is_empty(){"↻".into()}else{content}}else{text};
-                    let height=number(node.attr("Height")).unwrap_or(if node.tag=="MyListItem" {42.0}else{35.0});
-                    let width=number(node.attr("Width")).or_else(||number(node.attr("MinWidth"))).unwrap_or(if node.tag=="MyListItem"{ui.available_width()}else{140.0});
+                    let height=number(node.attr("Height")).unwrap_or(35.0);
+                    let width=number(node.attr("Width")).or_else(||number(node.attr("MinWidth"))).unwrap_or(140.0);
                     let response=if node.tag=="MyTextButton" {
                         ui.add_enabled(node.attr("IsEnabled")!="False",egui::Button::new(RichText::new(text).size(number(node.attr("FontSize")).unwrap_or(14.0)).color(theme::palette(ui.ctx()).accent)).frame(false).min_size(Vec2::new(0.0,18.0)))
                     }else{ui.add_enabled(node.attr("IsEnabled")!="False",egui::Button::new(text).min_size(Vec2::new(width.min(ui.available_width()),height)))};
@@ -774,36 +1167,38 @@ impl Renderer {
                 "WrapPanel"=>{ui.horizontal_wrapped(|ui|self.children(ui,node,origin,values,actions));}
                 "DockPanel"=>self.dock(ui,node,origin,values,actions),
                 "Grid"=>self.grid(ui,node,origin,values,actions),
-                "Border"=>{egui::Frame::NONE.fill(brush(&value("Background"),ui.ctx()).unwrap_or(Color32::TRANSPARENT)).corner_radius(number(node.attr("CornerRadius")).unwrap_or(0.0) as u8).inner_margin(number(node.attr("Padding")).unwrap_or(0.0) as i8).show(ui,|ui|self.children(ui,node,origin,values,actions));}
+                "Border"=>{let padding=edges(node.attr("Padding"));egui::Frame::NONE.fill(brush(&value("Background"),ui.ctx()).unwrap_or(Color32::TRANSPARENT)).corner_radius(number(node.attr("CornerRadius")).unwrap_or(0.0) as u8).inner_margin(egui::Margin{left:padding[0].clamp(0.0,127.0) as i8,top:padding[1].clamp(0.0,127.0) as i8,right:padding[2].clamp(0.0,127.0) as i8,bottom:padding[3].clamp(0.0,127.0) as i8}).show(ui,|ui|self.children(ui,node,origin,values,actions));}
                 "ScrollViewer"|"MyScrollViewer"|"FlowDocumentScrollViewer"=>{egui::ScrollArea::vertical().id_salt(ui.id().with("xaml-scroll")).max_height(number(node.attr("Height")).unwrap_or(400.0)).show(ui,|ui|self.children(ui,node,origin,values,actions));}
                 "MyTextBox"=>{
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
                     let text=value("Text");
-                    if node.attr("_PclBindingText")=="True" && self.bound_values.get(&key)!=Some(&text) {
-                        self.bound_values.insert(key.clone(),text.clone());self.inputs.insert(key.clone(),text.clone());
-                    }
-                    let input=self.inputs.entry(key).or_insert(text);
-                    ui.add_sized([number(node.attr("Width")).unwrap_or(ui.available_width()),28.0],egui::TextEdit::singleline(input));
+                    self.sync_input_binding(node,"Text",&key,&text);
+                    let input=self.inputs.entry(key.clone()).or_insert(text);
+                    let response=ui.add_sized([number(node.attr("Width")).unwrap_or(ui.available_width()),28.0],crate::ui_style::singleline(input));
+                    self.update_input_binding(node,"Text",&key,false,response.changed(),response.lost_focus());
+                    if response.changed(){ui.ctx().request_repaint();}
                 }
                 "MyCheckBox"=>{
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
                     let text=value("Checked");
-                    if node.attr("_PclBindingChecked")=="True" && self.bound_values.get(&key)!=Some(&text) {
-                        self.bound_values.insert(key.clone(),text.clone());self.checks.insert(key.clone(),text=="True");
-                    }
-                    let checked=self.checks.entry(key).or_insert(text=="True");
-                    if ui_style::checkbox(ui,checked,&value("Text"),"").changed(){collect_actions(node,values,actions);}
+                    self.sync_input_binding(node,"Checked",&key,&text);
+                    let checked=self.checks.entry(key.clone()).or_insert(text.eq_ignore_ascii_case("true"));
+                    let response=ui_style::checkbox(ui,checked,&value("Text"),"");
+                    self.update_input_binding(node,"Checked",&key,true,response.changed(),response.lost_focus());
+                    if response.changed(){collect_actions(node,values,actions);ui.ctx().request_repaint();}
                 }
                 "MyComboBox"=>{
                     let key=if node.attr("Name").is_empty(){format!("{:?}",ui.id())}else{node.attr("Name").into()};
                     let text=value("Text");
-                    if node.attr("_PclBindingText")=="True" && self.bound_values.get(&key)!=Some(&text) {
-                        self.bound_values.insert(key.clone(),text.clone());self.inputs.insert(key.clone(),text.clone());
-                    }
-                    let selected=self.inputs.entry(key).or_insert(text);
-                    ui_style::PclComboBox::from_id_salt(ui.id()).width(ui.available_width()).selected_text(selected.clone()).show_ui(ui,|ui|{
+                    self.sync_input_binding(node,"Text",&key,&text);
+                    let selected=self.inputs.entry(key.clone()).or_insert(text);
+                    let before=selected.clone();
+                    let response=ui_style::PclComboBox::from_id_salt(ui.id()).width(ui.available_width()).selected_text(selected.clone()).show_ui(ui,|ui|{
                         for item in &node.children {let text=replace(item.attr("Content"),values);if ui.selectable_value(selected,text.clone(),text).clicked(){collect_actions(item,values,actions);}}
                     });
+                    let changed=before!=*selected;
+                    self.update_input_binding(node,"Text",&key,true,changed,response.response.lost_focus());
+                    if changed {ui.ctx().request_repaint();}
                 }
                 "MyLoading"=>{super::loading_ui::control(ui, &value("Text"),Vec2::new(number(node.attr("Width")).unwrap_or(ui.available_width()),number(node.attr("Height")).unwrap_or(77.0)));}
                 "Line"=>{let width=number(node.attr("Width")).unwrap_or(ui.available_width());let thickness=number(node.attr("StrokeThickness")).unwrap_or(1.0);let(rect,_)=ui.allocate_exact_size(Vec2::new(width,thickness.max(2.0)),egui::Sense::hover());ui.painter().line_segment([rect.left_center(),rect.right_center()],egui::Stroke::new(thickness,brush(&value("Stroke"),ui.ctx()).unwrap_or(theme::palette(ui.ctx()).border)));}
@@ -815,10 +1210,15 @@ impl Renderer {
                 "Grid.RowDefinitions"|"Grid.ColumnDefinitions"|"RowDefinition"|"ColumnDefinition"|"CustomEventService.Events"|"CustomEventCollection"|"CustomEvent"=>(),
                 _=>self.children(ui,node,origin,values,actions),
             }
+            });
         });
         ui.ctx()
             .data_mut(|data| data.insert_temp(region, rendered.response.rect));
-        ui.add_space(margin[3].max(0.0));
+        if !node.attr("Name").is_empty() {
+            self.named_rects
+                .insert(node.attr("Name").into(), rendered.response.rect);
+        }
+        ui.add_space(margin[3]);
     }
     fn inline(
         &mut self,
@@ -829,6 +1229,8 @@ impl Renderer {
         values: &HashMap<String, String>,
         actions: &mut Vec<Action>,
     ) {
+        let resolved = self.resolved_node(node, values, false, false);
+        let node = &resolved;
         if matches!(
             node.tag.as_str(),
             "MyTextButton" | "MyButton" | "MyIconTextButton" | "Hyperlink"
@@ -836,16 +1238,7 @@ impl Renderer {
             self.node(ui, node, origin, values, actions);
             return;
         }
-        let mut format = format.clone();
-        if node.tag == "Bold" {
-            format.font_id.family = egui::FontFamily::Name("PCL Bold".into());
-        }
-        if node.tag == "Italic" {
-            format.italics = true;
-        }
-        if node.tag == "Underline" {
-            format.underline = egui::Stroke::new(1.0_f32, format.color);
-        }
+        let format = text_format(node, format, ui.ctx());
         if !node.attr("Text").is_empty() {
             let mut job = egui::text::LayoutJob::default();
             job.append(&replace(node.attr("Text"), values), 0.0, format.clone());
@@ -867,6 +1260,96 @@ impl Renderer {
             ui.push_id(index, |ui| self.node(ui, child, origin, values, actions));
         }
     }
+    fn list_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &Node,
+        values: &HashMap<String, String>,
+        actions: &mut Vec<Action>,
+    ) {
+        let mut title = ["Title", "Text", "Content"]
+            .into_iter()
+            .find_map(|key| {
+                let value = replace(node.attr(key), values);
+                (!value.is_empty()).then_some(value)
+            })
+            .unwrap_or_else(|| plain_text(node));
+        if title.is_empty() && node.attr("EventType") == "打开帮助" {
+            title = "打开帮助".into();
+        }
+        let info = replace(node.attr("Info"), values);
+        let height = number(node.attr("Height")).unwrap_or(42.0);
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), height),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &title)
+        });
+        if response.contains_pointer() || response.has_focus() {
+            ui.painter()
+                .rect_filled(rect, 3, theme::palette(ui.ctx()).light);
+        }
+        let icon = match node.attr("__pcl_help_icon") {
+            "block-grass" => Some("block-grass"),
+            "block-command" => Some("block-command"),
+            "block-path" => Some("block-path"),
+            _ => None,
+        };
+        if let Some(icon) = icon {
+            self.list_assets
+                .get_or_insert_with(|| ui_style::Assets::new(ui.ctx()))
+                .icon(
+                    ui,
+                    icon,
+                    egui::Rect::from_min_size(
+                        rect.min + Vec2::new(6.0, 5.0),
+                        Vec2::new(31.0, 32.0),
+                    ),
+                    Color32::WHITE,
+                );
+        }
+        let left = rect.left() + if icon.is_some() { 44.0 } else { 10.0 };
+        let title_rect = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top() + if info.is_empty() { 0.0 } else { 2.0 }),
+            egui::pos2(
+                rect.right() - 5.0,
+                rect.top() + if info.is_empty() { height } else { 23.0 },
+            ),
+        );
+        ui_style::place_left(
+            ui,
+            title_rect,
+            egui::Label::new(
+                RichText::new(&title)
+                    .size(14.0)
+                    .color(theme::palette(ui.ctx()).text),
+            )
+            .truncate(),
+        );
+        if !info.is_empty() {
+            ui_style::place_left(
+                ui,
+                egui::Rect::from_min_max(
+                    egui::pos2(left, rect.top() + 22.0),
+                    egui::pos2(rect.right() - 5.0, rect.bottom() - 1.0),
+                ),
+                egui::Label::new(RichText::new(&info).size(12.0).color(super::MUTED)).truncate(),
+            );
+        }
+        if response.clicked() {
+            collect_actions(node, values, actions);
+        }
+        let tooltip = if node.attr("ToolTip").is_empty() {
+            info
+        } else {
+            replace(node.attr("ToolTip"), values)
+        };
+        if !tooltip.is_empty() {
+            response.on_hover_text(tooltip);
+        }
+    }
+
     fn card(
         &mut self,
         ui: &mut egui::Ui,
@@ -937,7 +1420,7 @@ impl Renderer {
             rect.min + Vec2::new(15.0, 12.0),
             egui::Align2::LEFT_TOP,
             replace(node.attr("Title"), values),
-            egui::FontId::proportional(13.0),
+            egui::FontId::new(13.0, egui::FontFamily::Name("PCL Bold".into())),
             theme::palette(ui.ctx()).text,
         );
         if can_swap {
@@ -951,16 +1434,9 @@ impl Renderer {
                     replace(node.attr("Title"), values),
                 )
             });
-            let center = egui::pos2(rect.right() - 21.0, rect.top() + 20.0);
-            let sign = if open { 1.0 } else { -1.0 };
-            painter.add(egui::Shape::line(
-                vec![
-                    center + Vec2::new(-4.0, -2.0 * sign),
-                    center + Vec2::new(0.0, 2.0 * sign),
-                    center + Vec2::new(4.0, -2.0 * sign),
-                ],
-                egui::Stroke::new(1.5_f32, theme::palette(ui.ctx()).text),
-            ));
+            // MyCard.vb: 10 × 6 path, right margin 16, top 17;
+            // IsSwapped uses 0° (down), expanded uses 180° (up).
+            ui_style::card_chevron(ui, rect, open, theme::palette(ui.ctx()).text);
             if response.clicked() {
                 open = !open;
                 ui.data_mut(|data| data.insert_temp(id, open));
@@ -1156,7 +1632,7 @@ impl Renderer {
                         .clamp(1, count - column);
                     let width = widths[column..column + span].iter().sum::<f32>();
                     let rect = egui::Rect::from_min_size(
-                        egui::pos2(origin_pos.x + left, cell_y),
+                        egui::pos2(origin_pos.x + left, origin_pos.y),
                         Vec2::new(width, ui.available_height().max(1000.0)),
                     );
                     let mut child = ui.new_child(
@@ -1166,7 +1642,7 @@ impl Renderer {
                     );
                     child.spacing_mut().item_spacing.y = 0.0;
                     self.node(&mut child, node, origin, values, actions);
-                    cell_y = child.min_rect().bottom();
+                    cell_y = cell_y.max(child.min_rect().bottom());
                 }
                 height = height.max(cell_y - origin_pos.y);
             }
@@ -1250,7 +1726,20 @@ impl Renderer {
                     .min(ui.available_width())
                     .max(1.0);
                 let height = number(node.attr("Height")).unwrap_or(width * native.y / native.x);
-                ui.add(egui::Image::new(texture).fit_to_exact_size(Vec2::new(width, height)));
+                let align = match node.attr("HorizontalAlignment") {
+                    "Center" => egui::Align::Center,
+                    "Right" => egui::Align::RIGHT,
+                    _ => egui::Align::LEFT,
+                };
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), height),
+                    egui::Layout::top_down(align),
+                    |ui| {
+                        ui.add(
+                            egui::Image::new(texture).fit_to_exact_size(Vec2::new(width, height)),
+                        )
+                    },
+                );
             }
             Some(Picture::Error(error)) => {
                 let error = error.clone();
@@ -1381,32 +1870,60 @@ fn inline_actions(node: &Node) -> bool {
     })
 }
 
-fn text_job(
-    node: &Node,
-    inherited: &egui::TextFormat,
-    values: &HashMap<String, String>,
-    job: &mut egui::text::LayoutJob,
-) {
+fn text_format(node: &Node, inherited: &egui::TextFormat, ctx: &egui::Context) -> egui::TextFormat {
     let mut format = inherited.clone();
     if let Some(size) = number(node.attr("FontSize")) {
         format.font_id.size = size.clamp(6.0, 96.0);
     }
-    if matches!(node.tag.as_str(), "Bold") || node.attr("FontWeight") == "Bold" {
+    if let Some(color) = brush(node.attr("Foreground"), ctx) {
+        format.color = color;
+    }
+    if let Some(color) = brush(node.attr("Background"), ctx) {
+        format.background = color;
+    }
+    if let Some(height) = number(node.attr("LineHeight")) {
+        format.line_height = Some(height.clamp(6.0, 256.0));
+    }
+    let family = node.attr("FontFamily").to_ascii_lowercase();
+    if ["consolas", "courier", "monospace", "menlo"]
+        .iter()
+        .any(|name| family.contains(name))
+    {
+        format.font_id.family = egui::FontFamily::Monospace;
+    } else if !family.is_empty() {
+        format.font_id.family = egui::FontFamily::Proportional;
+    }
+    if node.tag == "Bold" || matches!(node.attr("FontWeight"), "Bold" | "SemiBold" | "DemiBold") {
         format.font_id.family = egui::FontFamily::Name("PCL Bold".into());
     }
-    if node.tag == "Italic" {
+    if node.tag == "Italic" || matches!(node.attr("FontStyle"), "Italic" | "Oblique") {
         format.italics = true;
     }
-    if matches!(node.tag.as_str(), "Underline" | "Hyperlink") {
+    if matches!(node.tag.as_str(), "Underline" | "Hyperlink")
+        || node.attr("TextDecorations").contains("Underline")
+    {
         format.underline = egui::Stroke::new(1.0_f32, format.color);
     }
+    if node.attr("TextDecorations").contains("Strikethrough") {
+        format.strikethrough = egui::Stroke::new(1.0_f32, format.color);
+    }
+    format
+}
+fn text_job(
+    node: &Node,
+    inherited: &egui::TextFormat,
+    values: &HashMap<String, String>,
+    ctx: &egui::Context,
+    job: &mut egui::text::LayoutJob,
+) {
+    let format = text_format(node, inherited, ctx);
     if node.tag == "LineBreak" {
         job.append("\n", 0.0, format);
         return;
     }
     job.append(&replace(node.attr("Text"), values), 0.0, format.clone());
     for child in &node.children {
-        text_job(child, &format, values, job);
+        text_job(child, &format, values, ctx, job);
     }
 }
 fn collect_actions(node: &Node, values: &HashMap<String, String>, actions: &mut Vec<Action>) {
@@ -1474,12 +1991,29 @@ fn brush(value: &str, ctx: &egui::Context) -> Option<Color32> {
     if value.contains("ColorBrush5") {
         return Some(palette.hover);
     }
+    if value.contains("ColorBrush6") {
+        return Some(palette.pale);
+    }
+    if value.contains("ColorBrush8") {
+        return Some(palette.lightest);
+    }
+    if value.contains("ColorBrushGray") {
+        return Some(Color32::from_gray(if value.ends_with("1}") {
+            64
+        } else {
+            140
+        }));
+    }
 
     match value.to_ascii_lowercase().as_str() {
         "white" => Some(Color32::WHITE),
         "black" => Some(Color32::BLACK),
         "transparent" => Some(Color32::TRANSPARENT),
         "red" => Some(Color32::RED),
+        "green" => Some(Color32::from_rgb(0, 128, 0)),
+        "blue" => Some(Color32::BLUE),
+        "gray" | "grey" => Some(Color32::GRAY),
+        "yellow" => Some(Color32::YELLOW),
         _ => {
             let hex = value.strip_prefix('#')?;
             let int = u32::from_str_radix(hex, 16).ok()?;
@@ -1568,6 +2102,381 @@ fn read_picture(source: &str) -> Result<egui::ColorImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn help_context_with_source_fonts() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "PCL English".into(),
+            egui::FontData::from_static(include_bytes!("../../assets/upstream/Resources/Font.ttf"))
+                .into(),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "PCL English".into());
+        let mut regular = vec![PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-output/fonts/PingFang-Regular.otf"
+        ))];
+        let mut bold = vec![PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-output/fonts/PingFang-Semibold.otf"
+        ))];
+        if let Some(windows) = std::env::var_os("WINDIR") {
+            regular.insert(0, PathBuf::from(&windows).join("Fonts/msyh.ttc"));
+            bold.insert(0, PathBuf::from(windows).join("Fonts/msyhbd.ttc"));
+        }
+        let mut has_cjk = false;
+        for path in regular {
+            if let Ok(bytes) = std::fs::read(path) {
+                assert!(
+                    ttf_parser::Face::parse(&bytes, 0)
+                        .unwrap()
+                        .glyph_index('装')
+                        .is_some(),
+                    "the geometry fixture must use real Chinese glyphs"
+                );
+                fonts.font_data.insert(
+                    "Fixture CJK".into(),
+                    egui::FontData::from_owned(bytes).into(),
+                );
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .insert(1, "Fixture CJK".into());
+                has_cjk = true;
+                break;
+            }
+        }
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            assert!(
+                has_cjk,
+                "Chinese system/fixture font required on supported desktop targets"
+            );
+        }
+        let mut family = fonts.families[&egui::FontFamily::Proportional].clone();
+        for path in bold {
+            if let Ok(bytes) = std::fs::read(path) {
+                fonts.font_data.insert(
+                    "Fixture Bold".into(),
+                    egui::FontData::from_owned(bytes).into(),
+                );
+                family.insert(0, "Fixture Bold".into());
+                break;
+            }
+        }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), family);
+        ctx.set_fonts(fonts);
+        ctx
+    }
+
+    #[test]
+    fn original_forge_help_wraps_chinese_steps_without_image_overlap() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../assets/help/catalog.json")).unwrap();
+        let source = catalog["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "Minecraft/安装 Mod")
+            .unwrap()["xaml"]
+            .as_str()
+            .unwrap();
+        let parsed = parse(source).unwrap();
+        let mut card = parsed
+            .into_iter()
+            .find(|node| node.attr("Title") == "安装 Mod 加载器（Forge）")
+            .unwrap();
+        card.attrs.insert("IsSwapped".into(), "False".into());
+        fn prepare(
+            nodes: &mut [Node],
+            ctx: &egui::Context,
+            renderer: &mut Renderer,
+            texts: &mut Vec<String>,
+            pictures: &mut Vec<egui::TextureId>,
+        ) {
+            for node in nodes {
+                if node.tag == "TextBlock" && node.attr("Width") == "200" {
+                    assert_eq!(node.attr("TextWrapping"), "Wrap");
+                    node.attrs
+                        .insert("Name".into(), format!("step{}", texts.len()));
+                    texts.push(node.attr("Text").into());
+                }
+                if node.tag == "MyImage" {
+                    assert_eq!(node.attr("Margin"), "250,0,0,0");
+                    let key = resolve_image(node.attr("Source"), &Origin::default()).unwrap();
+                    let texture = ctx.load_texture(
+                        format!("fixture-help-image-{}", pictures.len()),
+                        egui::ColorImage::filled([400, 200], Color32::BLUE),
+                        Default::default(),
+                    );
+                    pictures.push(texture.id());
+                    renderer.images.insert(key, Picture::Ready(texture));
+                }
+                prepare(&mut node.children, ctx, renderer, texts, pictures);
+            }
+        }
+        for width in [611.0, 790.0] {
+            let ctx = help_context_with_source_fonts();
+            let mut renderer = Renderer::default();
+            let mut nodes = vec![card.clone()];
+            let mut texts = Vec::new();
+            let mut pictures = Vec::new();
+            prepare(&mut nodes, &ctx, &mut renderer, &mut texts, &mut pictures);
+            assert_eq!(texts.len(), 2);
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 1000.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            renderer.render(ui, &nodes, &Origin::default(), &HashMap::new());
+                        });
+                },
+            );
+            for (index, text) in texts.iter().enumerate() {
+                let rendered = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(value) if value.galley.text() == text => Some(value),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(
+                    rendered.galley.rows.len() > 1,
+                    "Chinese step must wrap in its 200 DIP column"
+                );
+                let bounds = rendered.galley.rect.translate(rendered.pos.to_vec2());
+                assert!(bounds.width() <= 200.1);
+                let picture = output
+                    .shapes
+                    .iter()
+                    .find(|shape| shape.shape.texture_id() == pictures[index])
+                    .map(|shape| shape.shape.visual_bounding_rect())
+                    .unwrap();
+                assert!(
+                    picture.left() >= bounds.left() + 249.9,
+                    "250 DIP source margin was truncated: {bounds:?} / {picture:?}"
+                );
+                assert!(bounds.right() < picture.left());
+                assert!(picture.right() <= width + 0.1);
+            }
+        }
+    }
+
+    #[test]
+    fn help_list_item_keeps_source_row_negative_margin_and_original_click_action() {
+        let nodes = parse(r#"<StackPanel Name="holder" Margin="25,0,23,0"><local:MyListItem Name="entry" Margin="-5,0,-5,8" Title="安装 Mod 加载器与模组" Info="查看安装教程和当前版本的兼容说明，按步骤完成安装。" __pcl_help_icon="block-grass" EventType="打开帮助" EventData="Minecraft/安装 Mod.json"/><local:MyListItem EventType="打开帮助" EventData="Minecraft/新手教程.json"/></StackPanel>"#).unwrap();
+        let ctx = help_context_with_source_fonts();
+        let mut renderer = Renderer::default();
+        let mut actions = Vec::new();
+        let mut draw = |renderer: &mut Renderer, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(340.0, 180.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            actions.extend(renderer.render(
+                                ui,
+                                &nodes,
+                                &Origin::default(),
+                                &HashMap::new(),
+                            ));
+                        });
+                },
+            )
+        };
+        let output = draw(&mut renderer, vec![]);
+        let texture = renderer.list_assets.as_ref().unwrap().icons["block-grass"].id();
+        let icon = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.calc_bounds()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            icon,
+            egui::Rect::from_min_size(egui::pos2(26.0, 5.5), Vec2::new(31.0, 31.0))
+        );
+        let row = egui::Rect::from_min_max(egui::pos2(20.0, 0.0), egui::pos2(322.0, 42.0));
+        let title = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "安装 Mod 加载器与模组" => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!((title.left() - (row.left() + 44.0)).abs() < 0.1);
+        assert!(row.contains_rect(title));
+        let info = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("查看安装教程") => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(info.galley.elided && info.galley.rows.len() == 1);
+        assert!(
+            !output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.rect == row)),
+            "normal list row has no persistent button border/background"
+        );
+        let missing = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "打开帮助" => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
+                }
+                _ => None,
+            })
+            .expect("unresolved source help link remains readable");
+        for point in [
+            title.center(),
+            egui::pos2(row.right() - 8.0, row.center().y),
+            missing,
+        ] {
+            for pressed in [true, false] {
+                draw(
+                    &mut renderer,
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        }
+        assert_eq!(actions.len(), 3);
+        assert!(actions[..2]
+            .iter()
+            .all(|action| action.kind == "打开帮助" && action.data == "Minecraft/安装 Mod.json"));
+        assert_eq!(actions[2].kind, "打开帮助");
+        assert_eq!(actions[2].data, "Minecraft/新手教程.json");
+    }
+
+    #[test]
+    fn help_card_clicks_preserve_source_bold_title_and_expanded_chevron_geometry() {
+        let nodes = parse(r#"<local:MyCard Name="card" Title="Help card" CanSwap="True" IsSwapped="True"><TextBlock Text="Body text" Margin="25,40,23,15"/></local:MyCard>"#).unwrap();
+        for width in [300.0, 700.0] {
+            let ctx = help_context_with_source_fonts();
+            let mut renderer = Renderer::default();
+            let draw = |renderer: &mut Renderer, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            Vec2::new(width, 250.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            assert!(renderer
+                                .render(ui, &nodes, &Origin::default(), &HashMap::new())
+                                .is_empty());
+                        });
+                    },
+                )
+            };
+            for open in [false, true, false] {
+                let output = draw(&mut renderer, vec![]);
+                let rect = renderer.named_rects["card"];
+                let title = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "Help card" => Some(text),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(title.pos, rect.min + Vec2::new(15.0, 12.0));
+                assert!(title
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .all(|section| section.format.font_id
+                        == egui::FontId::new(13.0, egui::FontFamily::Name("PCL Bold".into()))));
+                let chevron = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh)
+                            if mesh.vertices.len() == 6 && mesh.indices.len() == 12 =>
+                        {
+                            Some(mesh)
+                        }
+                        _ => None,
+                    })
+                    .expect("the source chevron uses the shared filled path");
+                let bounds = chevron.calc_bounds();
+                assert_eq!(bounds.size(), Vec2::new(10.0, 6.0));
+                assert_eq!(
+                    bounds.min,
+                    egui::pos2(rect.right() - 26.0, rect.top() + 17.0)
+                );
+                assert_eq!(
+                    chevron.vertices[2].pos.y,
+                    if open { bounds.top() } else { bounds.bottom() },
+                    "expanded points up and collapsed points down"
+                );
+                assert_eq!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Body text")), open);
+                assert_eq!(rect.height() > 40.0, open);
+                let point = title.pos + Vec2::new(8.0, 6.0);
+                for pressed in [true, false] {
+                    draw(
+                        &mut renderer,
+                        vec![
+                            egui::Event::PointerMoved(point),
+                            egui::Event::PointerButton {
+                                pos: point,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn unnamed_combo_displays_initial_text_and_keeps_the_changed_selection() {
         let ctx = egui::Context::default();
@@ -1672,6 +2581,291 @@ mod tests {
             assert!(parse(text).is_err(), "{text}");
         }
     }
+    #[test]
+    fn help_text_keeps_inline_formats_line_height_alignment_and_four_sided_padding() {
+        let nodes=parse(r#"<StackPanel><Border Name="border" Padding="10,6,14,8" Background="Yellow"><TextBlock Name="body" Width="180" FontSize="13" LineHeight="23" TextWrapping="Wrap" TextAlignment="Center"><Run Foreground="Red" Text="RED"/><Bold Text="BOLD"/><LineBreak/><Span FontFamily="Consolas" FontStyle="Italic" Text="code"/></TextBlock></Border><TextBlock Name="nowrap" Width="90" TextWrapping="NoWrap" Text="a long line that cannot possibly fit on a single line"/></StackPanel>"#).unwrap();
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        let mut renderer = Renderer::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(400.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    renderer.render(ui, &nodes, &Origin::default(), &HashMap::new());
+                });
+            },
+        );
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "REDBOLD\ncode" => Some(text),
+                _ => None,
+            })
+            .expect("mixed text stays one paragraph");
+        assert_eq!(text.galley.rows.len(), 2);
+        assert!(text
+            .galley
+            .rows
+            .iter()
+            .all(|row| (row.rect().height() - 23.0).abs() < 0.1));
+        let sections = &text.galley.job.sections;
+        assert!(sections.iter().any(|s| s.format.color == Color32::RED));
+        assert!(sections
+            .iter()
+            .any(|s| s.format.font_id.family == egui::FontFamily::Name("PCL Bold".into())));
+        assert!(sections
+            .iter()
+            .any(|s| s.format.font_id.family == egui::FontFamily::Monospace && s.format.italics));
+        let glyph_bounds = text.galley.rect.translate(text.pos.to_vec2());
+        assert!((glyph_bounds.center().x - renderer.named_rects["body"].center().x).abs() < 0.1);
+        let border = renderer.named_rects["border"];
+        let body = renderer.named_rects["body"];
+        assert!((body.left() - border.left() - 10.0).abs() < 0.1);
+        assert!((body.top() - border.top() - 6.0).abs() < 0.1);
+        assert!((border.right() - body.right() - 14.0).abs() < 0.1);
+        assert!((border.bottom() - body.bottom() - 8.0).abs() < 0.1);
+        assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text().starts_with("a long line") && text.galley.rows.len()==1 && text.galley.elided)));
+    }
+
+    #[test]
+    fn help_grid_overlays_same_cell_children_instead_of_stacking_illustration_below_text() {
+        let nodes=parse(r#"<StackPanel><Grid><Rectangle Name="left" Width="200" Height="40" Fill="Red"/><Rectangle Name="right" Margin="220,0,0,0" Width="100" Height="80" Fill="Blue"/></Grid><Rectangle Name="below" Height="4" Fill="Green"/></StackPanel>"#).unwrap();
+        let ctx = egui::Context::default();
+        let mut renderer = Renderer::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(500.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    renderer.render(ui, &nodes, &Origin::default(), &HashMap::new());
+                });
+            },
+        );
+        let left = renderer.named_rects["left"];
+        let right = renderer.named_rects["right"];
+        let below = renderer.named_rects["below"];
+        assert_eq!(left.top(), right.top());
+        assert_eq!(
+            below.top() - left.top(),
+            80.0,
+            "same-cell siblings determine the row maximum, not the sum of their heights"
+        );
+    }
+
+    #[test]
+    fn based_on_inherits_setters_and_triggers_with_local_override_and_scoped_types() {
+        let nodes=parse(r#"<StackPanel><StackPanel.Resources><Style x:Key="Base" TargetType="TextBlock"><Setter Property="Foreground" Value="Blue"/><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="Red"/></Trigger></Style.Triggers></Style><Style x:Key="Derived" TargetType="TextBlock" BasedOn="{StaticResource Base}"><Setter Property="FontSize" Value="18"/></Style><Style TargetType="TextBlock"><Setter Property="FontSize" Value="14"/></Style></StackPanel.Resources><TextBlock Style="{StaticResource Derived}" Text="derived" FontSize="20"/><Border><Border.Resources><Style TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="Foreground" Value="Green"/></Style></Border.Resources><TextBlock Text="scoped"/></Border></StackPanel>"#).unwrap();
+        let derived = &nodes[0].children[0];
+        assert_eq!(derived.attr("Foreground"), "Blue");
+        assert_eq!(derived.attr("FontSize"), "20");
+        assert_eq!(
+            Renderer::default()
+                .resolved_node(derived, &HashMap::new(), true, false)
+                .attr("Foreground"),
+            "Red"
+        );
+        let scoped = &nodes[0].children[1].children[0];
+        assert_eq!(scoped.attr("FontSize"), "14");
+        assert_eq!(scoped.attr("Foreground"), "Green");
+        assert!(parse(r#"<StackPanel><StackPanel.Resources><Style x:Key="cycle" BasedOn="{StaticResource cycle}"/></StackPanel.Resources></StackPanel>"#).is_err());
+    }
+
+    #[test]
+    fn two_way_editor_writes_its_named_source_from_real_keyboard_input() {
+        let nodes=parse(r#"<StackPanel><MyTextBox Name="source" Text="first"/><MyTextBox Name="target" Text="{Binding Text, ElementName=source, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Name="mirror" Text="{Binding Text, ElementName=source}"/></StackPanel>"#).unwrap();
+        let ctx = egui::Context::default();
+        let mut renderer = Renderer::default();
+        let draw = |renderer: &mut Renderer, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(500.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        assert!(renderer
+                            .render(ui, &nodes, &Origin::default(), &HashMap::new())
+                            .is_empty());
+                    });
+                },
+            )
+        };
+        draw(&mut renderer, vec![]);
+        let point = renderer.named_rects["target"].center();
+        for pressed in [true, false] {
+            draw(
+                &mut renderer,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        draw(
+            &mut renderer,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        command: true,
+                        mac_cmd: true,
+                        ..Default::default()
+                    },
+                },
+                egui::Event::Text("second".into()),
+            ],
+        );
+        assert_eq!(renderer.inputs["target"], "second");
+        assert_eq!(renderer.inputs["source"], "second");
+        let output = draw(&mut renderer, vec![]);
+        assert!(output.shapes.iter().any(
+            |shape| matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()=="second")
+        ));
+        renderer.write_binding(
+            "{Binding Text, ElementName=source, Mode=OneWay}",
+            "forbidden".into(),
+        );
+        assert_eq!(renderer.inputs["source"], "second");
+    }
+
+    #[test]
+    fn named_display_bindings_targeted_triggers_and_hidden_layout_follow_live_data() {
+        let nodes=parse(r#"<StackPanel><TextBlock Name="label" Text="Caption" Foreground="Blue"/><TextBlock Name="copy" Text="{Binding Text, ElementName=label}" Foreground="{Binding Foreground, ElementName=label}"/><Rectangle Name="box" Width="100" Height="30" Fill="Red"/><MyCheckBox Name="toggle" Text="hide" IsChecked="False"><MyCheckBox.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="box" Property="Visibility" Value="Collapsed"/><Setter TargetName="copy" Property="Foreground" Value="Green"/></Trigger></MyCheckBox.Triggers></MyCheckBox><TextBlock Name="tail" Text="end"/></StackPanel>"#).unwrap();
+        let ctx = egui::Context::default();
+        let mut renderer = Renderer::default();
+        let draw = |renderer: &mut Renderer, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(500.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        assert!(renderer
+                            .render(ui, &nodes, &Origin::default(), &HashMap::new())
+                            .is_empty());
+                    });
+                },
+            )
+        };
+        draw(&mut renderer, vec![]);
+        assert_eq!(
+            renderer
+                .resolved_node(&nodes[0].children[1], &HashMap::new(), false, false)
+                .attr("Foreground"),
+            "Blue"
+        );
+        let before = renderer.named_rects["tail"].top();
+        let point = renderer.named_rects["toggle"].left_center() + Vec2::new(9.0, 0.0);
+        for pressed in [true, false] {
+            draw(
+                &mut renderer,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        draw(&mut renderer, vec![]);
+        assert!(renderer.checks["toggle"]);
+        assert_eq!(
+            renderer
+                .resolved_node(&nodes[0].children[1], &HashMap::new(), false, false)
+                .attr("Foreground"),
+            "Green"
+        );
+        assert!(renderer.named_rects["tail"].top() <= before - 30.0);
+        renderer.checks.insert("toggle".into(), false);
+        renderer
+            .local_properties
+            .insert(("box".into(), "Visibility".into()), "Hidden".into());
+        let output = draw(&mut renderer, vec![]);
+        assert_eq!(
+            renderer.named_rects["tail"].top(),
+            before,
+            "Hidden keeps layout space whereas Collapsed removes it"
+        );
+        assert!(!output.shapes.iter().any(
+            |shape| matches!(&shape.shape,egui::Shape::Rect(rect) if rect.fill==Color32::RED)
+        ));
+    }
+
+    #[test]
+    fn binding_update_modes_and_cycles_stay_local_and_bounded() {
+        let nodes=parse(r#"<StackPanel><TextBlock Name="source" Text="initial"/><MyTextBox Name="editor" Text="{Binding Text, ElementName=source, Mode=TwoWay}"/><TextBlock Name="a" Text="{Binding Text, ElementName=b, FallbackValue=cycle}"/><TextBlock Name="b" Text="{Binding Text, ElementName=a, FallbackValue=cycle}"/></StackPanel>"#).unwrap();
+        let mut renderer = Renderer::default();
+        let values = HashMap::new();
+        renderer.seed_named_inputs(&nodes, &values);
+        let target = renderer.resolved_node(&nodes[0].children[1], &values, false, false);
+        renderer.inputs.insert("editor".into(), "edited".into());
+        renderer.update_input_binding(&target, "Text", "editor", false, true, false);
+        assert_eq!(
+            renderer.binding_value("{Binding Text, ElementName=source}", &values),
+            "initial"
+        );
+        renderer.update_input_binding(&target, "Text", "editor", false, false, true);
+        assert_eq!(
+            renderer.binding_value("{Binding Text, ElementName=source}", &values),
+            "edited"
+        );
+        let expression = "{Binding Text, ElementName=source, Mode=OneTime}";
+        assert_eq!(renderer.binding_value(expression, &values), "edited");
+        renderer.write_binding(
+            "{Binding Text, ElementName=source, Mode=TwoWay}",
+            "later".into(),
+        );
+        assert_eq!(renderer.binding_value(expression, &values), "edited");
+        assert_eq!(
+            renderer.binding_value("{Binding Text, ElementName=a}", &values),
+            "cycle"
+        );
+        renderer.write_binding(
+            "{Binding Source, ElementName=source, Mode=TwoWay}",
+            "file:///secret".into(),
+        );
+        assert!(!renderer
+            .local_properties
+            .contains_key(&("source".into(), "Source".into())));
+    }
+
     #[test]
     fn static_styles_strings_and_templates_materialize_without_automatic_events() {
         let nodes=parse(r#"<StackPanel xmlns:sys="clr-namespace:System;assembly=mscorlib"><StackPanel.Triggers/><StackPanel.Resources><Style TargetType="TextBlock"><Setter Property="FontSize" Value="14"/></Style><Style x:Key="Action" TargetType="local:MyButton"><Setter Property="Text" Value="Visit"/><Setter Property="EventType" Value="打开网页"/></Style><sys:String x:Key="Icon">M0 0L1 1</sys:String><ControlTemplate x:Key="Sep"><TextBlock Text="{TemplateBinding Content}"/></ControlTemplate></StackPanel.Resources><local:MyButton Style="{StaticResource Action}" EventData="https://example.org" Logo="{StaticResource Icon}"/><ContentControl Template="{StaticResource Sep}" Content="Heading"/><FlowDocument FontSize="15"><Paragraph>Actual body</Paragraph></FlowDocument></StackPanel>"#).unwrap();

@@ -19,13 +19,16 @@ mod modal_ui;
 mod more_ui;
 mod offline_skin_ui;
 mod pack_export_ui;
+mod page_motion;
 mod resource_ui;
+mod settings_reset;
 mod setup_launch_ui;
 mod setup_system_ui;
 mod shell_ui;
 mod task_hub;
 mod task_ui;
 mod version_ui;
+mod window_state;
 mod xaml_ui;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use install_ui::InstallKind;
@@ -73,7 +76,7 @@ enum LaunchAction {
 pub(crate) enum Event {
     Job(job::JobMessage),
     JobStarted,
-    TaskPlan(Vec<String>),
+    TaskPlan(Vec<task_ui::TaskComponentSpec>),
     TaskPart(usize),
     TaskPartDone(usize),
     Resource(resource_ui::ResourceEvent),
@@ -241,6 +244,8 @@ pub struct Launcher {
     game_window: game_window_ui::GameWindowState,
     window_opacity: crate::native_window::WindowOpacity,
     last_viewport_size: Option<(u32, u32)>,
+    window_state: window_state::WindowState,
+    pending_settings_reset: Option<config::LauncherResetScope>,
     status: String,
     error: Option<String>,
     logs: VecDeque<String>,
@@ -467,6 +472,8 @@ impl Launcher {
             game_window: Default::default(),
             window_opacity: Default::default(),
             last_viewport_size: None,
+            window_state: Default::default(),
+            pending_settings_reset: None,
             status: "准备就绪".into(),
             error: initial_error,
             logs: VecDeque::new(),
@@ -1648,7 +1655,7 @@ impl Launcher {
             ));
             ui.horizontal(|ui| {
                 ui.label("新实例名称");
-                ui.add(egui::TextEdit::singleline(&mut self.pack_id).desired_width(300.0));
+                ui.add(crate::ui_style::singleline(&mut self.pack_id).desired_width(300.0));
             });
             ui.checkbox(&mut self.pack_optional, "安装可选客户端文件");
         });
@@ -1765,10 +1772,14 @@ impl Launcher {
 }
 
 impl eframe::App for Launcher {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.flush_window_size();
+    }
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.remember_window(ctx);
         theme::apply(ctx, &self.settings);
         if let Err(error) = crate::startup_splash::tick(ctx) {
             self.error = Some(format!("启动画面关闭失败：{error:#}"));
@@ -1849,7 +1860,7 @@ impl eframe::App for Launcher {
                     }
                 });
         }
-        let sidebar_edge = screen.left() + self.sidebar_width();
+        let sidebar_edge = screen.left() + page_motion::sidebar_width(ctx, self.sidebar_width());
         ui_style::gradient(
             &painter,
             egui::Rect::from_min_max(
@@ -1867,6 +1878,12 @@ impl eframe::App for Launcher {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                let motion = page_motion::begin(
+                    ui,
+                    "content",
+                    self.page_motion_key(),
+                    page_motion::Kind::Content,
+                );
                 // WPF puts PanMain's margin inside MyScrollViewer. The viewport
                 // must reach the window edge, including under the last card.
                 let content_style = ui.style().clone();
@@ -1925,6 +1942,7 @@ impl eframe::App for Launcher {
                                 Page::More => self.more_page(ui),
                             });
                     });
+                page_motion::finish(ui, motion);
             });
         if !self.task_view
             && self.page == Page::Download
@@ -1947,6 +1965,8 @@ impl eframe::App for Launcher {
         self.more_dialogs(ctx);
         self.crash_dialogs(ctx);
         self.launch_running_dialog(ctx);
+        self.mod_details_finish_frame(ctx);
+        self.settings_reset_dialog(ctx);
         modal_ui::finish_frame(ctx);
     }
 }
@@ -2313,6 +2333,8 @@ mod event_tests {
             game_window: Default::default(),
             window_opacity: Default::default(),
             last_viewport_size: None,
+            window_state: Default::default(),
+            pending_settings_reset: None,
             status: "准备就绪".into(),
             error: None,
             logs: VecDeque::new(),

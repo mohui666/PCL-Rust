@@ -102,7 +102,7 @@ impl Launcher {
                         ui.add_space(20.0);
                         let name = ui.add_sized(
                             Vec2::new(name_width, 28.0),
-                            egui::TextEdit::singleline(&mut state.options.name)
+                            crate::ui_style::singleline(&mut state.options.name)
                                 .hint_text(&id)
                                 .char_limit(100)
                                 .margin(Vec2::new(6.0, 5.0)),
@@ -115,7 +115,7 @@ impl Launcher {
                         ui.add_space(20.0);
                         ui.add_sized(
                             Vec2::new((remaining - name_width).max(50.0), 28.0),
-                            egui::TextEdit::singleline(&mut state.options.version)
+                            crate::ui_style::singleline(&mut state.options.version)
                                 .hint_text("1.0.0")
                                 .char_limit(100)
                                 .margin(Vec2::new(6.0, 5.0)),
@@ -403,11 +403,13 @@ impl Launcher {
                         checkbox(ui, &mut true, "仅从 Modrinth 下载资源文件", "", false);
                     });
                     ui.add_space(20.0);
-                    super::setup_launch_ui::hint(
-                        ui,
-                        "可保存当前导出选项，在下次导出时读取配置。\n仅支持当前可用的选项和存档。",
-                        false,
-                    );
+                    let dismissed = super::hint_ui::dismissible_inline(ui, &mut self.settings.dismissed_hints,
+                        "HintExportConfig", "配置文件中含有更多高级选项。要修改这些选项，请先点击“保存配置”，编辑配置文件后再导入。", false);
+                    if dismissed {
+                        if let Err(error) = pcl_core::config::save_settings(&self.settings_path, &self.settings) {
+                            self.error = Some(format!("保存提示状态失败：{error:#}"));
+                        }
+                    }
                     ui.add_space(2.0);
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {

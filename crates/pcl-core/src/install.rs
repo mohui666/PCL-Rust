@@ -525,6 +525,16 @@ fn copy_asset(
     destination: PathBuf,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    copy_asset_inner(root, artifact, destination, cancel, false)
+}
+
+fn copy_asset_inner(
+    root: &Path,
+    artifact: &Artifact,
+    destination: PathBuf,
+    cancel: &AtomicBool,
+    preserve_existing: bool,
+) -> Result<()> {
     let source = safe_target(root, &artifact.relative_path)?;
     let target = safe_target(root, &destination)?;
     let mapped = Artifact {
@@ -533,6 +543,12 @@ fn copy_asset(
     };
     if cache_valid(&target, &mapped, cancel)? {
         return Ok(());
+    }
+    if preserve_existing && target.try_exists()? {
+        bail!(
+            "历史资源目标已有不同内容，未覆盖，请检查后修复版本：{}",
+            target.display()
+        );
     }
     let parent = target.parent().context("资源路径缺少父目录")?;
     fs::create_dir_all(parent)?;
@@ -561,8 +577,75 @@ fn copy_asset(
     }
     cancelled(cancel)?;
     staged.as_file().sync_all()?;
-    staged.persist(target).map_err(|error| error.error)?;
+    if preserve_existing {
+        match staged.persist_noclobber(&target) {
+            Ok(_) => (),
+            Err(error)
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists
+                    && cache_valid(&target, &mapped, cancel)? => {}
+            Err(error) => return Err(error.error.into()),
+        }
+    } else {
+        staged.persist(target).map_err(|error| error.error)?;
+    }
     Ok(())
+}
+
+/// Map verified historical objects to the current instance directory. Resolve
+/// this at launch as well as install: isolation and custom names can change the
+/// game's working directory without changing its inherited asset index.
+pub(crate) fn prepare_mapped_resources(
+    root: &Path,
+    game_dir: &Path,
+    index: &Value,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    if index["map_to_resources"].as_bool() != Some(true) {
+        return Ok(());
+    }
+    let canonical_root = root.canonicalize()?;
+    let relative_dir = game_dir
+        .strip_prefix(&canonical_root)
+        .or_else(|_| game_dir.strip_prefix(root))
+        .context("历史资源目标不属于 Minecraft 根目录")?;
+    let mut mappings = Vec::new();
+    let mut targets = HashSet::new();
+    for (name, object) in index["objects"]
+        .as_object()
+        .context("资源索引缺少 objects")?
+    {
+        cancelled(cancel)?;
+        let logical = safe_relative(name)?;
+        let hash = expected_hash(object["hash"].as_str())?.context("资源缺少 SHA1")?;
+        let artifact = Artifact {
+            relative_path: format!("assets/objects/{}/{hash}", &hash[..2]).into(),
+            url: String::new(),
+            sha1: Some(hash),
+            size: Some(object["size"].as_u64().context("资源缺少大小")?),
+            native: false,
+            excludes: vec![],
+        };
+        let destination = relative_dir.join("resources").join(logical);
+        if !targets.insert(destination.to_string_lossy().to_lowercase()) {
+            bail!("历史资源路径存在大小写冲突");
+        }
+        let source = safe_target(root, &artifact.relative_path)?;
+        let target = safe_target(root, &destination)?;
+        if !cache_valid(&source, &artifact, cancel)? {
+            bail!("历史资源缺失或损坏，请先修复版本：{name}");
+        }
+        if target.try_exists()? && !cache_valid(&target, &artifact, cancel)? {
+            bail!(
+                "历史资源目标已有不同内容，未覆盖，请检查后修复版本：{}",
+                target.display()
+            );
+        }
+        mappings.push((artifact, destination));
+    }
+    for (artifact, destination) in mappings {
+        copy_asset_inner(root, &artifact, destination, cancel, true)?;
+    }
+    cancelled(cancel)
 }
 
 pub(crate) fn commit_native_directory(staged: &Path, target: &Path, backup: &Path) -> Result<()> {
@@ -934,9 +1017,6 @@ pub(crate) fn verify_vanilla_parent(
         bail!("原版资源索引缺失或损坏，请先修复原版：{id}");
     }
     let index: Value = serde_json::from_slice(&fs::read(index_path)?)?;
-    if index["map_to_resources"].as_bool() == Some(true) {
-        bail!("该历史原版需要独立 resources 布局，当前加载器安装尚不支持此布局");
-    }
     let mut seen = HashSet::new();
     for (name, object) in index["objects"]
         .as_object()
@@ -1076,9 +1156,11 @@ pub fn register_instance_id(
             &PathBuf::from(format!("assets/indexes/{index_id}.json")),
         )?;
         let index: Value = serde_json::from_slice(&fs::read(path)?)?;
-        if index["map_to_resources"].as_bool() == Some(true) {
-            bail!("此历史版本使用独立 resources 布局，暂不支持自定义实例名称；原版安装已保留");
-        }
+        index["objects"]
+            .as_object()
+            .context("资源索引缺少 objects")?;
+        // Historical resources are materialized against the effective game
+        // directory by the launch planner, including after isolation changes.
     }
     let artifacts = library_artifacts(&version, platform)?;
     let profile = serde_json::json!({"id":id,"inheritsFrom":source_id,"type":version["type"].as_str().unwrap_or("release")});
@@ -1110,6 +1192,93 @@ pub fn register_instance_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_resources_preflight_hash_conflicts_and_cancellation_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"historical sound fixture";
+        let hash = format!("{:x}", Sha1::digest(bytes));
+        let source = root
+            .path()
+            .join(format!("assets/objects/{}/{hash}", &hash[..2]));
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, bytes).unwrap();
+        let game = root.path().join("instances/named");
+        let index = serde_json::json!({"map_to_resources":true,"objects":{"sound/a.ogg":{"hash":hash,"size":bytes.len()}}});
+        assert!(
+            prepare_mapped_resources(root.path(), &game, &index, &AtomicBool::new(true)).is_err()
+        );
+        assert!(!game.exists());
+        fs::write(&source, b"corrupt").unwrap();
+        assert!(
+            prepare_mapped_resources(root.path(), &game, &index, &AtomicBool::new(false)).is_err()
+        );
+        assert!(!game.exists());
+        fs::write(&source, bytes).unwrap();
+        let target = game.join("resources/sound/a.ogg");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"user replacement").unwrap();
+        assert!(
+            prepare_mapped_resources(root.path(), &game, &index, &AtomicBool::new(false)).is_err()
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"user replacement");
+        fs::remove_file(&target).unwrap();
+        prepare_mapped_resources(root.path(), &game, &index, &AtomicBool::new(false)).unwrap();
+        prepare_mapped_resources(root.path(), &game, &index, &AtomicBool::new(false)).unwrap();
+        assert_eq!(fs::read(target).unwrap(), bytes);
+    }
+
+    #[test]
+    fn mapped_resources_reject_unsafe_and_case_colliding_logical_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"asset";
+        let hash = format!("{:x}", Sha1::digest(bytes));
+        let source = root
+            .path()
+            .join(format!("assets/objects/{}/{hash}", &hash[..2]));
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(source, bytes).unwrap();
+        for names in [
+            vec!["../escape"],
+            vec!["sound\\escape"],
+            vec!["sound/A", "sound/a"],
+        ] {
+            let objects: serde_json::Map<String, Value> = names
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        serde_json::json!({"hash":hash,"size":bytes.len()}),
+                    )
+                })
+                .collect();
+            let index = serde_json::json!({"map_to_resources":true,"objects":objects});
+            assert!(prepare_mapped_resources(
+                root.path(),
+                &root.path().join("instances/new"),
+                &index,
+                &AtomicBool::new(false)
+            )
+            .is_err());
+            assert!(!root.path().join("instances").exists());
+        }
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            fs::create_dir_all(root.path().join("instances/new")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.path().join("instances/new/resources"))
+                .unwrap();
+            let index = serde_json::json!({"map_to_resources":true,"objects":{"a":{"hash":hash,"size":bytes.len()}}});
+            assert!(prepare_mapped_resources(
+                root.path(),
+                &root.path().join("instances/new"),
+                &index,
+                &AtomicBool::new(false)
+            )
+            .is_err());
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        }
+    }
     #[test]
     fn custom_instance_id_inherits_and_never_overwrites_existing_data() {
         let root = tempfile::tempdir().unwrap();

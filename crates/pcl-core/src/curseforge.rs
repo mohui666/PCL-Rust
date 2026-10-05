@@ -270,6 +270,8 @@ struct Author {
 #[derive(Deserialize)]
 struct Category {
     id: u64,
+    #[serde(default)]
+    name: String,
 }
 #[derive(Deserialize)]
 struct Logo {
@@ -326,6 +328,11 @@ pub fn get_project(id: u64, cancel: &AtomicBool) -> Result<ModrinthProject> {
         slug: p.slug,
         title: p.name,
         description: p.summary,
+        categories: p
+            .categories
+            .iter()
+            .map(|category| category.name.clone())
+            .collect(),
         body,
         project_type: kind.web_type().into(),
         icon_url: p.logo.map(|l| l.url),

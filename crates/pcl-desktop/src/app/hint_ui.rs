@@ -254,6 +254,27 @@ fn draw_hint(ctx: &egui::Context, screen: Rect, hint: &Hint, layout: &HintLayout
 }
 
 pub(super) fn inline(ui: &mut egui::Ui, text: &str, yellow: bool) {
+    inline_control(ui, text, yellow, None);
+}
+
+pub(super) fn dismissible_inline(
+    ui: &mut egui::Ui,
+    closed: &mut std::collections::BTreeSet<String>,
+    key: &str,
+    text: &str,
+    yellow: bool,
+) -> bool {
+    if closed.contains(key) {
+        return false;
+    }
+    if inline_control(ui, text, yellow, Some(key)) {
+        closed.insert(key.into());
+        return true;
+    }
+    false
+}
+
+fn inline_control(ui: &mut egui::Ui, text: &str, yellow: bool, key: Option<&str>) -> bool {
     let (fill, border, foreground) = if yellow {
         (
             Color32::from_rgb(255, 235, 215),
@@ -271,7 +292,7 @@ pub(super) fn inline(ui: &mut egui::Ui, text: &str, yellow: bool) {
         text.into(),
         FontId::proportional(13.0),
         foreground,
-        (ui.available_width() - 27.0).max(1.0),
+        (ui.available_width() - 27.0 - if key.is_some() { 28.0 } else { 0.0 }).max(1.0),
     );
     for section in &mut job.sections {
         section.format.line_height = Some(16.0);
@@ -289,11 +310,120 @@ pub(super) fn inline(ui: &mut egui::Ui, text: &str, yellow: bool) {
     );
     ui.painter()
         .galley(rect.min + Vec2::new(15.0, 9.0), galley, foreground);
+    if let Some(key) = key {
+        let button = Rect::from_center_size(
+            egui::pos2(rect.right() - 18.0, rect.center().y),
+            Vec2::splat(20.0),
+        );
+        let response = ui.interact(
+            button,
+            ui.id().with(("close-hint", key)),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                format!("不再提示：{text}"),
+            )
+        });
+        let stroke = egui::Stroke::new(
+            1.4_f32,
+            if response.hovered() {
+                border
+            } else {
+                foreground
+            },
+        );
+        let center = button.center();
+        ui.painter().line_segment(
+            [center - Vec2::splat(3.5), center + Vec2::splat(3.5)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [center + Vec2::new(-3.5, 3.5), center + Vec2::new(3.5, -3.5)],
+            stroke,
+        );
+        return response.on_hover_text("不再提示").clicked();
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn close_button_persists_only_its_hint_and_next_visit_has_no_gap() {
+        let ctx = egui::Context::default();
+        let mut closed = std::collections::BTreeSet::new();
+        let mut clicked = false;
+        let mut rect = Rect::NOTHING;
+        for pressed in [None, Some(true), Some(false)] {
+            let events = pressed
+                .map(|pressed| {
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(rect.right() - 18.0, rect.center().y)),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2(rect.right() - 18.0, rect.center().y),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]
+                })
+                .unwrap_or_default();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(500.0, 200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let before = ui.cursor().min;
+                        clicked |=
+                            dismissible_inline(ui, &mut closed, "HintIndieSetup", "read me", false);
+                        rect = Rect::from_min_max(
+                            before,
+                            egui::pos2(
+                                ui.max_rect().right(),
+                                ui.cursor().top() - ui.spacing().item_spacing.y,
+                            ),
+                        );
+                    });
+                },
+            );
+        }
+        assert!(clicked);
+        assert_eq!(closed.len(), 1);
+        assert!(!closed.contains("HintMoreAdvancedSetup"));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let settings = pcl_core::config::Settings {
+            dismissed_hints: closed,
+            ..Default::default()
+        };
+        pcl_core::config::save_settings(&path, &settings).unwrap();
+        let mut restored = pcl_core::config::load_settings(&path)
+            .unwrap()
+            .dismissed_hints;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let before = ui.cursor();
+                assert!(!dismissible_inline(
+                    ui,
+                    &mut restored,
+                    "HintIndieSetup",
+                    "read me",
+                    false
+                ));
+                assert_eq!(before, ui.cursor());
+            });
+        });
+    }
     #[test]
     fn debug_animation_off_keeps_real_reading_time_and_no_motion() {
         let now = Instant::now();
@@ -410,7 +540,7 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut value = String::new();
-                        ui.add(egui::TextEdit::singleline(&mut value).id(focus));
+                        ui.add(crate::ui_style::singleline(&mut value).id(focus));
                     });
                     if frame == 0 {
                         ctx.memory_mut(|memory| memory.request_focus(focus));

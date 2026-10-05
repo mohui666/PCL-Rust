@@ -50,6 +50,46 @@ impl Launcher {
             self.version_tools = false;
         }
     }
+    pub(super) fn page_motion_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{:?}",
+            self.page as u8,
+            self.task_view,
+            self.version_view,
+            self.version_tools,
+            self.tools_tab,
+            self.settings_tab,
+            self.download_tab,
+            self.resource_browser.scroll_key(),
+            self.more_scroll_key(),
+            self.download_selection
+        )
+    }
+    fn sidebar_motion_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.page as u8,
+            self.task_view,
+            self.version_view,
+            self.version_tools,
+            self.launch_ui.visible()
+        )
+    }
+    fn title_motion_key(&self) -> String {
+        if self.task_view {
+            "任务管理".into()
+        } else if self.page == Page::More {
+            self.more_detail_title().unwrap_or("").into()
+        } else if self.page == Page::Download {
+            self.resource_detail_title().unwrap_or("").into()
+        } else if self.version_tools {
+            format!("版本设置{:?}", self.settings.selected_version)
+        } else if self.version_view {
+            "版本选择".into()
+        } else {
+            String::new()
+        }
+    }
     pub(super) fn settings_page(&mut self, ui: &mut egui::Ui) {
         if self.settings_tab == 1 {
             self.appearance_page(ui);
@@ -151,6 +191,12 @@ impl Launcher {
                 if drag.drag_started() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
+                let motion = super::page_motion::begin(
+                    ui,
+                    "title",
+                    self.title_motion_key(),
+                    super::page_motion::Kind::Title,
+                );
                 let resource_title = if self.page == Page::Download {
                     self.resource_detail_title().map(str::to_owned)
                 } else {
@@ -306,6 +352,7 @@ impl Launcher {
                         }
                     }
                 }
+                super::page_motion::finish(ui, motion);
                 for (offset, close) in [(26.0, true), (58.0, false)] {
                     let r = egui::Rect::from_center_size(
                         egui::pos2(rect.right() - offset, rect.center().y),
@@ -356,7 +403,7 @@ impl Launcher {
             });
     }
     pub(super) fn sidebar(&mut self, ctx: &egui::Context) {
-        let width = self.sidebar_width();
+        let width = super::page_motion::sidebar_width(ctx, self.sidebar_width());
         egui::SidePanel::left("sidebar")
             .exact_width(width)
             .resizable(false)
@@ -373,6 +420,16 @@ impl Launcher {
                         se: 0,
                     },
                     Color32::from_white_alpha(241),
+                );
+                let motion = super::page_motion::begin(
+                    ui,
+                    "sidebar",
+                    self.sidebar_motion_key(),
+                    if self.page == Page::Launch && !self.version_tools {
+                        super::page_motion::Kind::SidebarScale
+                    } else {
+                        super::page_motion::Kind::SidebarRows
+                    },
                 );
                 if self.task_view {
                     self.task_sidebar(ui);
@@ -486,6 +543,7 @@ impl Launcher {
                 } else {
                     self.navigation_sidebar(ui, rect);
                 }
+                super::page_motion::finish(ui, motion);
             });
     }
     fn navigation_sidebar(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
@@ -574,6 +632,9 @@ impl Launcher {
             if self.page == Page::Launch && tab == 2 {
                 self.instance_settings_sidebar_action(ui, r, &response);
             }
+            if self.page == Page::Settings {
+                self.settings_sidebar_action(ui, r, &response, tab);
+            }
             if response.clicked() && enabled {
                 match self.page {
                     Page::Launch => {
@@ -654,6 +715,74 @@ impl Launcher {
                 egui::FontId::proportional(14.0),
                 color,
             );
+        }
+    }
+
+    fn settings_sidebar_action(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: egui::Rect,
+        row_response: &egui::Response,
+        tab: usize,
+    ) {
+        use pcl_core::config::LauncherResetScope;
+        let scope = match tab {
+            0 => LauncherResetScope::Launch,
+            1 => LauncherResetScope::Personalization,
+            _ => LauncherResetScope::Other,
+        };
+        let enabled = self.busy.is_none() && !self.jobs.is_active() && self.game_pid.is_none();
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(row.right() - 17.5, row.center().y),
+            Vec2::splat(25.0),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        if !enabled {
+            child.disable();
+        }
+        let response = child.interact(
+            rect,
+            ui.id().with(("settings-page-reset", tab)),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                enabled,
+                format!("初始化{}设置", scope.label()),
+            )
+        });
+        let mut all = false;
+        response.context_menu(|ui| {
+            if ui
+                .add_enabled(enabled, egui::Button::new("初始化全部偏好…"))
+                .clicked()
+            {
+                all = true;
+                ui.close();
+            }
+        });
+        if row_response.contains_pointer()
+            || row_response.has_focus()
+            || response.has_focus()
+            || response.context_menu_opened()
+        {
+            let palette = theme::palette(ui.ctx());
+            paint_instance_reset(
+                ui,
+                rect.shrink(5.75),
+                if enabled {
+                    palette.accent
+                } else {
+                    super::MUTED
+                },
+            );
+        }
+        if response.on_hover_text("初始化").clicked() {
+            self.request_settings_reset(scope);
+        }
+        if all {
+            self.request_settings_reset(LauncherResetScope::All);
         }
     }
 

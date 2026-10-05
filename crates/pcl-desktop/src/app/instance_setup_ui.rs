@@ -112,6 +112,23 @@ impl JavaPreview {
 }
 
 impl Launcher {
+    pub(super) fn open_selected_instance_settings(&mut self) {
+        if self.settings.selected_version.is_none() {
+            return;
+        }
+        // PageSetupLaunch.BtnSwitch loads McInstanceSelected and the instance
+        // page reloads its settings on every entry, including the same version.
+        self.instance_setup = InstanceSetupState {
+            advanced_open: self.instance_setup.advanced_open,
+            ..Default::default()
+        };
+        self.page = super::Page::Launch;
+        self.task_view = false;
+        self.version_view = false;
+        self.version_tools = true;
+        self.tools_tab = 2;
+    }
+
     pub(super) fn instance_setup_page(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.settings.selected_version.clone() else {
             return;
@@ -141,6 +158,18 @@ impl Launcher {
             }
         }
         let writable = self.game_pid.is_none() && !self.jobs.conflicts_with(&root);
+        if !self.settings.dismissed_hints.contains("HintIndieSetup") {
+            if super::hint_ui::dismissible_inline(
+                ui,
+                &mut self.settings.dismissed_hints,
+                "HintIndieSetup",
+                "这些设置只对该游戏版本生效，不影响其他版本。",
+                false,
+            ) {
+                self.persist();
+            }
+            ui.add_space(15.0);
+        }
         let state = &mut self.instance_setup;
         if state
             .memory_updated
@@ -162,18 +191,6 @@ impl Launcher {
             }
         }
         let previous = state.value.clone();
-        egui::Frame::new()
-            .fill(theme::palette(ui.ctx()).light)
-            .corner_radius(3)
-            .inner_margin(egui::Margin::symmetric(14, 10))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new("这些设置只对该游戏版本生效，不影响其他版本。")
-                        .color(theme::palette(ui.ctx()).accent),
-                );
-            });
-        ui.add_space(15.0);
         ui.add_enabled_ui(self.busy.is_none() && writable && !state.load_failed, |ui| {
             titled_card(ui, "启动选项", |ui| {
                 row(ui, "版本隔离", |ui| {
@@ -213,7 +230,7 @@ impl Launcher {
                         });
                     if has_range {
                         ui.add_space(7.0);
-                        ui.add_sized(Vec2::new(200.0, 28.0), egui::TextEdit::singleline(&mut state.value.java_range).hint_text("版本区间…").char_limit(100).margin(Vec2::new(6.0, 5.0)))
+                        ui.add_sized(Vec2::new(200.0, 28.0), ui_style::singleline(&mut state.value.java_range).hint_text("版本区间…").char_limit(100).margin(Vec2::new(6.0, 5.0)))
                             .on_hover_text("例如 [17.0.1,25.0)。方括号包含端点，圆括号不包含；留空的一侧表示不限制。Java 8u81 写作 8.0.81。");
                     }
                 });
@@ -372,19 +389,19 @@ impl Launcher {
         // CardAdvance already supplies its 15 DIP bottom margin; BtnSwitch
         // follows with Margin="0,-5,0,0" in PageInstanceSetup.xaml.
         ui.add_space(-5.0);
-        if global_settings_button(ui).clicked() {
+        if settings_switch_button(ui, "全局设置").clicked() {
             self.page = super::Page::Settings;
             self.settings_tab = 0;
         }
     }
 }
 
-fn global_settings_button(ui: &mut egui::Ui) -> egui::Response {
+pub(super) fn settings_switch_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     // MyExtraTextButton.xaml: 52 high, content top 10, horizontal padding 20,
     // 18 high logo with a 0.9 transform, 12 before the 16-point label.
     let colors = theme::palette(ui.ctx());
     let text = ui.painter().layout_no_wrap(
-        "全局设置".into(),
+        label.into(),
         egui::FontId::proportional(16.0),
         colors.lightest,
     );
@@ -395,10 +412,12 @@ fn global_settings_button(ui: &mut egui::Ui) -> egui::Response {
     let rect = egui::Rect::from_center_size(row.center(), Vec2::new(width, 52.0));
     let response = ui.interact(
         rect,
-        ui.id().with("instance-global-settings"),
+        ui.id().with(("settings-page-switch", label)),
         egui::Sense::click(),
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "全局设置"));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
     if ui.is_rect_visible(rect) {
         let body = egui::Rect::from_min_max(rect.min + Vec2::new(0.0, 10.0), rect.max);
         ui.painter().add(
@@ -625,7 +644,7 @@ pub(super) fn row(ui: &mut egui::Ui, label: &str, contents: impl FnOnce(&mut egu
 pub(super) fn text_edit(ui: &mut egui::Ui, value: &mut String, hint: &str) -> egui::Response {
     ui.add_sized(
         Vec2::new(ui.available_width(), 28.0),
-        egui::TextEdit::singleline(value)
+        ui_style::singleline(value)
             .hint_text(hint)
             .margin(Vec2::new(6.0, 5.0)),
     )
@@ -635,6 +654,173 @@ pub(super) fn text_edit(ui: &mut egui::Ui, value: &mut String, hint: &str) -> eg
 mod tests {
     use super::*;
     use egui::{Pos2, Rect};
+
+    #[test]
+    fn global_footer_opens_selected_instance_and_reloads_its_saved_fields_on_reentry() {
+        fn draw(
+            app: &mut Launcher,
+            ctx: &egui::Context,
+            width: f32,
+            offset: f32,
+            events: Vec<egui::Event>,
+        ) -> (egui::FullOutput, f32) {
+            let mut max_scroll = 0.0;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 517.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::TopBottomPanel::top("title")
+                        .exact_height(48.0)
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |_| {});
+                    egui::SidePanel::left("sidebar")
+                        .exact_width(if app.page == super::super::Page::Settings {
+                            121.0
+                        } else {
+                            138.0
+                        })
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |_| {});
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            let scroll = egui::ScrollArea::vertical()
+                                .id_salt(("footer-navigation", app.page as u8))
+                                .auto_shrink([false, false])
+                                .vertical_scroll_offset(offset)
+                                .show(ui, |ui| {
+                                    egui::Frame::NONE.inner_margin(25).show(ui, |ui| {
+                                        if app.page == super::super::Page::Settings {
+                                            app.launch_settings_page(ui);
+                                        } else {
+                                            app.version_tools_page(ui);
+                                        }
+                                    });
+                                });
+                            max_scroll =
+                                (scroll.content_size.y - scroll.inner_rect.height()).max(0.0);
+                        });
+                },
+            );
+            (output, max_scroll)
+        }
+        for width in [810.0, 989.0] {
+            let temporary = tempfile::tempdir().unwrap();
+            let mut app = super::super::event_tests::fixture(temporary.path());
+            let root = app.settings.game_root.clone();
+            for id in ["selected-a", "selected-b"] {
+                let directory = root.join("versions").join(id);
+                std::fs::create_dir_all(&directory).unwrap();
+                std::fs::write(directory.join(format!("{id}.json")), format!(r#"{{"id":"{id}","type":"release","mainClass":"net.minecraft.client.main.Main","arguments":{{"game":[]}},"libraries":[]}}"#)).unwrap();
+            }
+            app.settings.game_window_title = "GLOBAL-TITLE".into();
+            app.settings.memory_mb = 1024;
+            app.instance_setup.target = Some((root.clone(), "selected-a".into()));
+            let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            if let Ok(data) = std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../test-output/fonts/PingFang-Regular.otf"
+            )) {
+                fonts.font_data.insert(
+                    "Fixture CJK".into(),
+                    egui::FontData::from_owned(data).into(),
+                );
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .insert(0, "Fixture CJK".into());
+            }
+            fonts.families.insert(
+                egui::FontFamily::Name("PCL Bold".into()),
+                fonts.families[&egui::FontFamily::Proportional].clone(),
+            );
+            ctx.set_fonts(fonts);
+            ctx.style_mut(|style| {
+                style.spacing.item_spacing = Vec2::new(10.0, 8.0);
+                style.spacing.interact_size.y = 28.0;
+                style.spacing.button_padding = Vec2::new(12.0, 6.0);
+                for text in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                    style
+                        .text_styles
+                        .insert(text, egui::FontId::proportional(13.0));
+                }
+            });
+            for (id, title, memory_mb) in [
+                ("selected-a", "INSTANCE-A", 3072),
+                ("selected-b", "INSTANCE-B", 4096),
+                ("selected-b", "INSTANCE-B-RELOADED", 5120),
+            ] {
+                let saved = InstanceSettings {
+                    game_window_title: title.into(),
+                    custom_info: format!("Info-{title}"),
+                    memory_mb: Some(memory_mb),
+                    memory_auto: false,
+                    java_mode: Some(JavaSelectionMode::VersionFolder),
+                    ..Default::default()
+                };
+                config::save_instance_settings(&root, id, &saved).unwrap();
+                let file = config::instance_settings_path(&root, id).unwrap();
+                let before = std::fs::read(&file).unwrap();
+                app.settings.selected_version = Some(id.into());
+                app.page = super::super::Page::Settings;
+                app.settings_tab = 0;
+                let (_, bottom) = draw(&mut app, &ctx, width, 0.0, vec![]);
+                let (output, _) = draw(&mut app, &ctx, width, bottom, vec![]);
+                let label = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "版本独立设置" => {
+                            Some(Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    })
+                    .expect("the original footer label is visible at the bottom");
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.rect.height() == 42.0 && rect.rect.contains_rect(label) && shape.clip_rect.contains_rect(rect.rect))), "the source footer must remain fully visible at {width}");
+                let point = label.center();
+                for pressed in [true, false] {
+                    draw(
+                        &mut app,
+                        &ctx,
+                        width,
+                        bottom,
+                        vec![
+                            egui::Event::PointerMoved(point),
+                            egui::Event::PointerButton {
+                                pos: point,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+                assert!(
+                    app.page == super::super::Page::Launch
+                        && app.version_tools
+                        && !app.version_view
+                );
+                assert_eq!(app.tools_tab, 2);
+                assert_eq!(app.settings.selected_version.as_deref(), Some(id));
+                let (output, _) = draw(&mut app, &ctx, width, 0.0, vec![]);
+                assert_eq!(app.instance_setup.target, Some((root.clone(), id.into())));
+                assert_eq!(app.instance_setup.value, saved);
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == title)), "the independent title must be drawn, including same-version reentry");
+                assert_eq!(
+                    std::fs::read(file).unwrap(),
+                    before,
+                    "navigation must not overwrite per-version fields"
+                );
+                assert_eq!(app.settings.game_window_title, "GLOBAL-TITLE");
+                assert_eq!(app.settings.memory_mb, 1024);
+            }
+        }
+    }
 
     #[test]
     fn instance_rows_keep_source_spacing_and_memory_choices_share_the_control_column() {

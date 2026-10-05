@@ -8,14 +8,16 @@
 
 ## 本轮进展
 
-已逐一复查 31 个界面/容器文件，继续修复长列表、文字/按钮重叠、悬停操作消失、实例设置空位与错位等同类问题，见[复查清单](docs/ui-consistency-audit.md)。本机 **563 项测试通过**；构建和各平台证据见[验证记录](docs/validation.md)。另修复实例设置页尾及侧栏初始化入口，明确列出[仍未完整迁移的 9 类能力](docs/remaining-migration.md)。不宣称全页面像素等价。
+此前列出的九类能力已补入当前源码：窗口尺寸记忆、分设置页初始化、提示关闭记忆、页面切换动画、Mod 详情与诊断、结构化崩溃归因、XAML 局部绑定、显式权重任务和旧安装兼容，具体范围见[已补项与剩余边界](docs/remaining-migration.md)。内置帮助保留原始 XAML；另修复版本独立设置入口重入刷新和输入框文字垂直居中。
+
+本机 **616 项通过、0 失败、4 忽略**，200 个构建输入冻结，两端本地 release 包完成；最终 Mac 已检查帮助图标/标题/副标题、正确文档跳转、Forge 图文分离、初始化确认后取消、独立设置往返及 CurseForge 输入提示居中。未执行真实初始化、保存密钥或新增正版登录。构建哈希、自动/原生/网络探测边界见[验证记录](docs/validation.md)，不宣称全页面像素等价。此前31个界面/容器文件走查保留在[复查清单](docs/ui-consistency-audit.md)。
 
 ## 文档导航
 
 | 文档 | 内容 |
 | --- | --- |
 | [迁移矩阵](docs/migration-matrix.md) | 43 个上游页面/复用控件文件逐项对照、设置范围与剩余功能 |
-| [明确剩余项](docs/remaining-migration.md) | 9 类未完整迁移能力、截图漏项与验证欠账分别列明 |
+| [已补项与剩余边界](docs/remaining-migration.md) | 九类能力的当前实现、原版范围纠正与仍需实机/像素验收的部分 |
 | [UI 缺口清单](docs/ui-gap-audit.md) | 下载、设置和全部灰色控件的静态核对与剩余范围 |
 | [验证记录](docs/validation.md) | 最新测试、两端构建哈希、Mac 实测与尚未验证的范围 |
 | [登录说明](docs/login.md) | 微软设备码流程、凭据存储、恢复语义和当前 HTTP 403 状态 |
@@ -26,14 +28,16 @@
 
 本次源码发布日期：**2026-10-05（Asia/Shanghai）**。仓库包含 Rust 源码、Cargo 配置与锁文件、构建脚本、必要资产、来源记录、文档和 CI 验证工作流。本次源码检出检查与此前开发批次的产物、实机证据分别记录。
 
-- 本批界面复查源码在 macOS arm64 通过 **563 项测试（0 失败、3 忽略）**与全部目标严格 Clippy。历史音乐、联网主页和界面操作按原构建单独记录，详见[验证记录](docs/validation.md)。测试数不代表迁移完成率。
+- 本批冻结源码在 macOS arm64 通过 **616 项测试（0 失败、4 忽略）**，Mac 与 Windows 目标严格 Clippy、两端本地 release 构建通过；Windows 可执行文件未运行，本轮远端 CI 另行核对。历史音乐、联网主页和界面操作按原构建单独记录，详见[验证记录](docs/validation.md)。测试数不代表迁移完成率。
 - 输入与菜单修复包已在 Mac 用真实鼠标/键盘检查：离线姓名可编辑，账号弹层与字段等宽对齐，下载查询与分类可输入、选择。新一批完整功能包的运行记录另列，Windows 本地交叉构建不能替代实机验证。
 - 本批接入下载来源与限速、CurseForge 适配、MC 百科名称关联、OptiFine、继承版本补全、常见整合包格式、Mod 更新、离线皮肤、音乐/GIF/主页、崩溃分析与系统设置。各项支持范围不同，详见 [UI 缺口清单](docs/ui-gap-audit.md)；CurseForge 仍需开发者 API Key。
 - 此前已补入登录分类提示、三色提示队列、消息框颜色/焦点/动画、会话失效后的限次恢复、原账号操作绑定，以及披风选择后的确定/取消和 29 个中文名称。
 - Mac 消息框和提示使用生产渲染器、模拟登录数据完成原生检查；另已重新打开实际启动器核对中文与设置保留。这些检查不代表真实登录或披风修改成功。
 - Minecraft AppID 审核申请已提交并收到回执。上次真实登录在 Minecraft `login_with_xbox` 返回 HTTP 403，尚未确认审核通过，也未完成正版登录端到端验证。
 
-现有实现包含原版与部分加载器下载、Java 管理、Modrinth/CurseForge 资源入口、整合包导入导出、多账号设备登录和游戏进程管理。CurseForge 在线服务、大型整合包互通、部分加载器组合、EasyTier 联机、全部 WPF 主页语义与多任务调度仍有未实现或未验证部分；登录不属于本轮补齐范围。详见[逐项矩阵](docs/migration-matrix.md)。
+现有实现包含原版与受支持加载器安装、Java 管理、Modrinth/CurseForge 资源入口、常见整合包导入导出、多账号设备登录、游戏进程管理，以及冲突排队/最多4路独立任务/取消重试和显式权重进度。三款官方旧 Forge 样本完成库校验与两平台元数据的原生库提取，未执行 Java/游戏；universal/client ZIP 原版也跳过自动安装。Mod Menu 单样本真实 Modrinth 详情探测属于核心网络验证，无 GUI/CF/游戏结论。
+
+完整 WPF/CLR、任意自动事件、私有主题参数、有效资格下的 CurseForge/OptiFabric、全部整合包/加载器组合与 Windows 实机仍有明确边界；登录与联机不属于本轮补齐范围。详见[逐项矩阵](docs/migration-matrix.md)。
 
 完整像素对照、Windows 实机和多项实际游戏流程仍待验收，不提供没有统一验收依据的完成百分比。
 
@@ -69,4 +73,4 @@ The registered application display name is **PCL Rust**. Its public Application 
 
 The Microsoft sign-in implementation uses device authorization for personal Microsoft accounts, followed by Xbox Live, XSTS, and Minecraft Services authentication, entitlement and player profile checks. It does not collect Microsoft account passwords. Refresh credentials use the operating system credential store; Minecraft access sessions stay in memory. A separate offline-profile mode does not obtain Microsoft or Minecraft Services tokens.
 
-The AppID review request has been submitted and its receipt confirmed. Approval and end-to-end authenticated login have not been verified. The previous real attempt returned HTTP 403 from Minecraft Services. The source release dated 2026-10-05 includes Rust code, build scripts, required assets and validation CI. Downloadable application releases and locally derived system fonts are not published. The current source checkout was separately checked on macOS arm64: 563 tests passed, with three ignored, alongside formatting and strict Clippy. The development tree also produced a signed macOS application and a cross-compiled Windows executable, with limited native macOS UI checks. These results do not establish remote CI, Windows execution, complete pixel equivalence or authenticated login acceptance.
+The AppID review request has been submitted and its receipt confirmed. Approval and end-to-end authenticated login have not been verified. The previous real attempt returned HTTP 403 from Minecraft Services. The source release dated 2026-10-05 includes Rust code, build scripts, required assets and validation CI. Downloadable application releases and locally derived system fonts are not published. The current development source was checked on macOS arm64: 616 tests passed, with four ignored, alongside strict Clippy; 200 build inputs remained unchanged. The development tree also produced a signed macOS application and a cross-compiled Windows executable, with limited native macOS UI checks. These results do not establish remote CI, Windows execution, complete pixel equivalence or authenticated login acceptance.

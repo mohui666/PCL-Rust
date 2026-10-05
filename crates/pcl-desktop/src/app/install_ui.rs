@@ -1,6 +1,8 @@
 use super::{
     download_ui::{ListFailure, Phase, VersionListEvent},
-    loading_ui, Event, Launcher, MUTED,
+    loading_ui,
+    task_ui::TaskComponentSpec,
+    Event, Launcher, MUTED,
 };
 use crate::theme;
 use crate::ui_style;
@@ -16,6 +18,31 @@ use pcl_core::{
     metadata,
     model::Platform,
 };
+
+// ModDownloadLib.vb:1925–1984. The final library completion (8) is
+// performed inside the Rust loader operation rather than as another job.
+fn loader_work_weight(kind: InstallKind) -> f64 {
+    match kind {
+        InstallKind::Forge | InstallKind::NeoForge => 25.0 + 8.0,
+        InstallKind::LiteLoader => 1.0 + 8.0,
+        InstallKind::Fabric | InstallKind::Quilt => 2.0 + 8.0,
+    }
+}
+fn sequential_component_plan(parts: Vec<(String, f64, bool)>) -> Vec<TaskComponentSpec> {
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, weight, vanilla))| {
+            let part =
+                TaskComponentSpec::new(name, weight, index.checked_sub(1).into_iter().collect());
+            if vanilla {
+                part.with_vanilla()
+            } else {
+                part
+            }
+        })
+        .collect()
+}
 
 #[derive(Default)]
 pub(super) struct OptiFineState {
@@ -539,25 +566,37 @@ impl Launcher {
             };
             let mut parts = if kind == InstallKind::LiteLoader && optifine.is_some() {
                 vec![
-                    "安装 OptiFine 与 Minecraft".into(),
-                    "安装 LiteLoader".into(),
+                    ("安装 OptiFine 与 Minecraft".into(), 39.0 + 24.0 + 8.0, true),
+                    (
+                        "安装 LiteLoader".into(),
+                        loader_work_weight(InstallKind::LiteLoader),
+                        false,
+                    ),
                 ]
             } else {
-                vec![format!("安装 {} 与 Minecraft", kind.label())]
+                vec![(
+                    format!("安装 {} 与 Minecraft", kind.label()),
+                    39.0 + loader_work_weight(kind),
+                    true,
+                )]
             };
             if extra_lite.is_some() && kind != InstallKind::LiteLoader {
-                parts.push("安装 LiteLoader".into());
+                parts.push((
+                    "安装 LiteLoader".into(),
+                    loader_work_weight(InstallKind::LiteLoader),
+                    false,
+                ));
             }
-            parts.push("登记实例与启动设置".into());
+            parts.push(("登记实例与启动设置".into(), 2.0, false));
             parts.extend(
                 companions
                     .iter()
-                    .map(|entry| format!("安装 {}", entry.name)),
+                    .map(|entry| (format!("安装 {}", entry.name), 3.0, false)),
             );
             if optifine.is_some() && kind != InstallKind::LiteLoader {
-                parts.push("安装 OptiFine".into());
+                parts.push(("安装 OptiFine".into(), 16.0, false));
             }
-            let _ = tx.send(Event::TaskPlan(parts));
+            let _ = tx.send(Event::TaskPlan(sequential_component_plan(parts)));
             let mut part = 0usize;
             let _ = tx.send(Event::TaskPart(part));
             let result = if kind == InstallKind::LiteLoader {
@@ -715,11 +754,14 @@ impl Launcher {
         let registration = loaders::RetryRegistration::default();
         tx.spawn(move |tx| {
             let cancel = tx.cancel_token();
-            let _ = tx.send(Event::TaskPlan(if existed {
-                vec!["安装 Minecraft 与实例".into()]
+            let _ = tx.send(Event::TaskPlan(sequential_component_plan(if existed {
+                vec![("安装 Minecraft 与实例".into(), 39.0, true)]
             } else {
-                vec!["安装 Minecraft 与实例".into(), "初始化启动设置".into()]
-            }));
+                vec![
+                    ("安装 Minecraft 与实例".into(), 39.0, true),
+                    ("初始化启动设置".into(), 2.0, false),
+                ]
+            })));
             let _ = tx.send(Event::TaskPart(0));
             let progress = |p| {
                 let _ = tx.send(Event::Progress(p));
@@ -780,10 +822,10 @@ impl Launcher {
         let registration = loaders::RetryRegistration::default();
         tx.spawn(move |tx| {
             let cancel = tx.cancel_token();
-            let _ = tx.send(Event::TaskPlan(vec![
-                "安装 OptiFine 与 Minecraft".into(),
-                "登记实例与启动设置".into(),
-            ]));
+            let _ = tx.send(Event::TaskPlan(sequential_component_plan(vec![
+                ("安装 OptiFine 与 Minecraft".into(), 39.0 + 24.0 + 8.0, true),
+                ("登记实例与启动设置".into(), 2.0, false),
+            ])));
             let _ = tx.send(Event::TaskPart(0));
             let result = optifine::ensure_optifine(
                 &root,
@@ -868,7 +910,7 @@ impl Launcher {
                         if ui
                             .place(
                                 field,
-                                egui::TextEdit::singleline(&mut self.install_name)
+                                crate::ui_style::singleline(&mut self.install_name)
                                     .font(egui::FontId::proportional(15.0))
                                     .char_limit(70)
                                     .hint_text("实例名称")
@@ -1419,6 +1461,34 @@ mod optifine_ui_tests {
             )),
             _ => None,
         })
+    }
+
+    #[test]
+    fn component_plan_keeps_explicit_source_weights_and_runtime_dependency_order() {
+        for kind in [
+            InstallKind::Forge,
+            InstallKind::NeoForge,
+            InstallKind::Fabric,
+            InstallKind::Quilt,
+            InstallKind::LiteLoader,
+        ] {
+            let parts = sequential_component_plan(vec![
+                ("base".into(), 39.0 + loader_work_weight(kind), true),
+                ("register".into(), 2.0, false),
+                ("API".into(), 3.0, false),
+            ]);
+            assert_eq!(parts[0].vanilla_weight, 39.0);
+            assert!(parts[0].dependencies.is_empty());
+            assert_eq!(parts[1].dependencies, vec![0]);
+            assert_eq!(parts[2].dependencies, vec![1]);
+            assert_eq!(
+                parts.iter().map(|part| part.weight).sum::<f64>(),
+                44.0 + loader_work_weight(kind)
+            );
+        }
+        assert_eq!(loader_work_weight(InstallKind::Forge), 33.0);
+        assert_eq!(loader_work_weight(InstallKind::Fabric), 10.0);
+        assert_eq!(loader_work_weight(InstallKind::LiteLoader), 9.0);
     }
 
     #[test]

@@ -139,6 +139,8 @@ pub struct ModrinthProject {
     pub slug: String,
     pub title: String,
     pub description: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
     pub body: String,
     pub project_type: String,
     pub icon_url: Option<String>,

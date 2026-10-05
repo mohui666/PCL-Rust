@@ -859,9 +859,13 @@ mod tests {
         app.settings.selected_version = Some("fixture-game".into());
         let (request, _) = begin(&mut app);
         let ctx = egui::Context::default();
-        let frame = |app: &mut Launcher, events| {
+        let mut next_time = 0.0;
+        let mut frame = |app: &mut Launcher, events| {
+            let time = next_time;
+            next_time += 0.6;
             ctx.run(
                 egui::RawInput {
+                    time: Some(time),
                     screen_rect: Some(Rect::from_min_size(
                         egui::Pos2::ZERO,
                         Vec2::new(810.0, 470.0),
@@ -914,6 +918,9 @@ mod tests {
             pid: 714,
             visibility: LauncherVisibility::Keep,
         });
+        // Ready swaps the source sidebar through its exit/entry animation.
+        // Settle it before checking the normal button and its real hit target.
+        frame(&mut app, vec![]);
         let text = words(&frame(&mut app, vec![]));
         assert!(text.iter().any(|value| value == "启动游戏"));
         assert!(!text.iter().any(|value| value == "游戏运行中"));

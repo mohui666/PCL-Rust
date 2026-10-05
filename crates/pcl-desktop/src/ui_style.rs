@@ -9,6 +9,12 @@ mod combo_ui;
 #[allow(unused_imports)] // Also compiled by renderer-only examples.
 pub use combo_ui::{editable_combo, PclComboBox};
 
+/// MyTextBox centers its text in fixed-height fields. egui's default anchors
+/// to the top even when add_sized/place gives the editor a taller rectangle.
+pub fn singleline(value: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(value).vertical_align(egui::Align::Center)
+}
+
 pub fn card_title(text: &str) -> egui::RichText {
     egui::RichText::new(text).font(egui::FontId::new(
         13.0,
@@ -636,6 +642,75 @@ pub fn background(painter: &egui::Painter, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singleline_text_and_hints_are_centered_in_fixed_height_fields() {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "PCL English".into(),
+            egui::FontData::from_static(include_bytes!("../assets/upstream/Resources/Font.ttf"))
+                .into(),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "PCL English".into());
+        if let Ok(bytes) = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-output/fonts/PingFang-Regular.otf"
+        )) {
+            fonts
+                .font_data
+                .insert("PCL CJK".into(), egui::FontData::from_owned(bytes).into());
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Proportional)
+                .unwrap()
+                .insert(1, "PCL CJK".into());
+        }
+        ctx.set_fonts(fonts);
+        for height in [24.0, 28.0, 35.0] {
+            for (value, hint, password) in [
+                ("", "CurseForge 开发者 API Key", true),
+                ("Minecraft 中文标题", "", false),
+                ("1234abcd", "", true),
+            ] {
+                let mut value = value.to_owned();
+                let rect = Rect::from_min_size(Pos2::new(30.0, 30.0), Vec2::new(350.0, height));
+                let mut actual = None;
+                let output = ctx.run(egui::RawInput::default(), |ctx| {
+                    theme::apply(ctx, &pcl_core::config::Settings::default());
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        actual = Some(
+                            ui.place(
+                                rect,
+                                singleline(&mut value)
+                                    .font(egui::FontId::proportional(13.0))
+                                    .password(password)
+                                    .hint_text(hint),
+                            )
+                            .rect,
+                        );
+                    });
+                });
+                let text = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) => Some(text),
+                        _ => None,
+                    })
+                    .unwrap();
+                let center = text.pos.y + text.galley.size().y * 0.5;
+                assert!(
+                    (center - actual.unwrap().center().y).abs() <= 0.6,
+                    "height={height}, text center={center}, rect={actual:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn positioned_caption_does_not_steal_its_parent_row_click() {

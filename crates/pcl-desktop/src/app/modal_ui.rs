@@ -148,7 +148,7 @@ pub(super) fn account_input_modal_with_options(
             );
             ui.place(
                 rect,
-                egui::TextEdit::singleline(value)
+                crate::ui_style::singleline(value)
                     .id(input_id)
                     .char_limit(1000)
                     .font(egui::TextStyle::Body),

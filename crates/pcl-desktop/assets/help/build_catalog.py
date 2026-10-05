@@ -1,6 +1,6 @@
 """Rebuild the inert, offline help snapshot from the fixed local PCL source.
 
-No XAML is evaluated. Only display attributes and link data are retained.
+No XAML is evaluated. Original document markup is preserved for the safe Rust renderer.
 Run from the repository root: python3 crates/pcl-desktop/assets/help/build_catalog.py
 """
 from pathlib import Path, PurePosixPath
@@ -45,11 +45,12 @@ with zipfile.ZipFile(archive) as z:
         meta = json.loads(z.read(entry).decode("utf-8-sig"))
         xaml = str(path.with_suffix(".xaml"))
         nodes = []
+        text = ""
         if not meta.get("IsEvent", False):
             text = z.read(xaml).decode("utf-8-sig")
             root = ET.fromstring('<Root xmlns:local="local" xmlns:x="x">' + text + '</Root>')
             nodes = [node(n) for n in root]
-        entries.append({"id": str(path.with_suffix("")), "meta": meta, "nodes": nodes})
+        entries.append({"id": str(path.with_suffix("")), "meta": meta, "nodes": nodes, "xaml": text})
 
 about_file = SOURCE / "Pages/PageOther/PageOtherAbout.xaml"
 about = ET.parse(about_file).getroot()

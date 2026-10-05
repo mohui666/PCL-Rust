@@ -26,19 +26,20 @@ fn main() -> anyhow::Result<()> {
         height: icon.height(),
         rgba: icon.into_raw(),
     };
+    let saved =
+        pcl_core::config::load_settings(&pcl_core::config::settings_path()).unwrap_or_default();
+    let window = saved.launcher_window.bounded(None);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Plain Craft Launcher (PCL) Rust 第三方重构版")
             .with_icon(icon)
-            .with_inner_size([989.0, 517.0])
+            .with_inner_size([window.width, window.height])
             .with_min_inner_size([810.0, 470.0])
             .with_transparent(true)
             .with_decorations(false),
         ..Default::default()
     };
-    let splash_enabled = pcl_core::config::load_settings(&pcl_core::config::settings_path())
-        .map(|s| s.ui_launcher_logo)
-        .unwrap_or(false);
+    let splash_enabled = saved.ui_launcher_logo;
     if let Err(error) = startup_splash::show(splash_enabled) {
         eprintln!("启动画面无法显示：{error:#}");
     }

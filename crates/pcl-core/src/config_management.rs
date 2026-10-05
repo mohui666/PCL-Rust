@@ -244,11 +244,46 @@ pub fn restore_instance_settings(
     crate::install::cancelled(cancel)?;
     save_instance_settings(root, id, &settings)
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LauncherResetScope {
+    Launch,
+    Personalization,
+    Other,
+    All,
+}
+
+impl LauncherResetScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Launch => "启动",
+            Self::Personalization => "个性化",
+            Self::Other => "其他",
+            Self::All => "全部偏好",
+        }
+    }
+}
+
 /// Reset the chosen launcher preferences, preserving registered roots and account-related input.
 pub fn reset_launcher_settings(
     path: &Path,
     settings: &Settings,
     all: bool,
+) -> Result<(Settings, PathBuf)> {
+    reset_launcher_page(
+        path,
+        settings,
+        if all {
+            LauncherResetScope::All
+        } else {
+            LauncherResetScope::Other
+        },
+    )
+}
+
+pub fn reset_launcher_page(
+    path: &Path,
+    settings: &Settings,
+    scope: LauncherResetScope,
 ) -> Result<(Settings, PathBuf)> {
     let original = fs::read(path).context("读取原设置失败，未初始化")?;
     let saved: Settings = serde_json::from_slice(&original)?;
@@ -257,8 +292,9 @@ pub fn reset_launcher_settings(
         bail!("磁盘设置已改变，请重新加载后初始化");
     }
     let settings = &saved;
-    let mut next = if all {
+    let mut next = if scope == LauncherResetScope::All {
         Settings {
+            launcher_window: settings.launcher_window,
             game_root: settings.game_root.clone(),
             game_roots: settings.game_roots.clone(),
             game_root_names: settings.game_root_names.clone(),
@@ -275,9 +311,69 @@ pub fn reset_launcher_settings(
     } else {
         settings.clone()
     };
-    if !all {
-        next.system = Default::default();
-        next.downloads = Default::default();
+    let defaults = Settings::default();
+    macro_rules! reset_fields { ($($field:ident),+ $(,)?) => {{ $(next.$field = defaults.$field;)+ }}; }
+    match scope {
+        LauncherResetScope::Launch => reset_fields!(
+            java_path,
+            java_priority,
+            java_excluded,
+            memory_mb,
+            memory_auto,
+            game_window_title,
+            memory_optimize,
+            offline_skin_mode,
+            offline_skin_name,
+            offline_skin_path,
+            offline_skin_slim,
+            disable_java_wrapper,
+            disable_lwjgl_unsafe_agent,
+            prefer_high_performance_gpu,
+            custom_info,
+            jvm_arguments,
+            game_arguments,
+            pre_launch_command,
+            pre_launch_wait,
+            launcher_visibility,
+            process_priority,
+            window_mode,
+            width,
+            height,
+            default_isolation,
+            gc_mode
+        ),
+        LauncherResetScope::Personalization => reset_fields!(
+            ui_title_mode,
+            ui_title_left,
+            ui_title_text,
+            ui_title_logo,
+            ui_hidden_pages,
+            ui_background_folder,
+            ui_background_colorful,
+            ui_background_opacity,
+            ui_background_blur,
+            ui_background_fit,
+            ui_launcher_logo,
+            ui_launcher_opacity,
+            ui_music_volume,
+            ui_music_random,
+            ui_music_auto,
+            ui_music_start,
+            ui_music_stop,
+            ui_custom_type,
+            ui_custom_preset,
+            ui_custom_net,
+            ui_theme,
+            ui_theme_hue,
+            ui_theme_saturation,
+            ui_theme_lightness,
+            ui_theme_gradient
+        ),
+        LauncherResetScope::Other => {
+            next.system = defaults.system;
+            next.downloads = defaults.downloads;
+        }
+        LauncherResetScope::All => (),
     }
     let parent = path.parent().context("设置目录无效")?;
     let mut backup = tempfile::Builder::new()
@@ -296,6 +392,59 @@ pub fn reset_launcher_settings(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_resets_preserve_other_pages_accounts_geometry_hints_and_external_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let asset = directory.path().join("Custom.xaml");
+        fs::write(&asset, b"user home").unwrap();
+        let original = Settings {
+            game_root: directory.path().join("game"),
+            offline_name: "FixturePlayer".into(),
+            microsoft_client_id: "fixture-public-id".into(),
+            ui_theme: 13,
+            ui_title_text: "custom title".into(),
+            jvm_arguments: "-Dfixture=true".into(),
+            java_path: Some(directory.path().join("java")),
+            java_excluded: vec![directory.path().join("old-java")],
+            launcher_window: LauncherWindowSize {
+                width: 1200.0,
+                height: 800.0,
+            },
+            dismissed_hints: ["HintIndieSetup".into()].into(),
+            ..Default::default()
+        };
+        for scope in [
+            LauncherResetScope::Launch,
+            LauncherResetScope::Personalization,
+            LauncherResetScope::Other,
+        ] {
+            save_settings(&path, &original).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            let (next, backup) = reset_launcher_page(&path, &original, scope).unwrap();
+            assert_eq!(fs::read(backup).unwrap(), bytes);
+            assert_eq!(fs::read(&asset).unwrap(), b"user home");
+            assert_eq!(next.game_root, original.game_root);
+            assert_eq!(next.offline_name, original.offline_name);
+            assert_eq!(next.microsoft_client_id, original.microsoft_client_id);
+            assert_eq!(next.launcher_window, original.launcher_window);
+            assert_eq!(next.dismissed_hints, original.dismissed_hints);
+            if scope == LauncherResetScope::Launch {
+                assert!(next.jvm_arguments.is_empty());
+                assert!(next.java_excluded.is_empty());
+            } else {
+                assert_eq!(next.jvm_arguments, original.jvm_arguments);
+                assert_eq!(next.java_path, original.java_path);
+            }
+            if scope == LauncherResetScope::Personalization {
+                assert_eq!(next.ui_theme, Settings::default().ui_theme);
+                assert!(next.ui_title_text.is_empty());
+            } else {
+                assert_eq!(next.ui_theme, original.ui_theme);
+            }
+        }
+    }
+
     #[test]
     fn jpeg_icon_is_normalized_without_altering_source() {
         let d = tempfile::tempdir().unwrap();

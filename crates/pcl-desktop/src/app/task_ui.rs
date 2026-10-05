@@ -15,6 +15,7 @@ enum StepStatus {
     Running,
     Finished,
 }
+#[derive(Clone)]
 struct Step {
     stage: ProgressStage,
     state: StepStatus,
@@ -26,6 +27,69 @@ struct VisibleStep {
     state: StepStatus,
     fraction: Option<f64>,
     detail: String,
+}
+/// Explicit operation graph. Indices are stable within the owning job's plan;
+/// weights are the upstream LoaderCombo work estimates, not elapsed time.
+#[derive(Clone, Debug)]
+pub(crate) struct TaskComponentSpec {
+    pub(super) name: String,
+    pub(super) weight: f64,
+    pub(super) dependencies: Vec<usize>,
+    pub(super) vanilla_weight: f64,
+}
+impl TaskComponentSpec {
+    pub(super) fn new(name: impl Into<String>, weight: f64, dependencies: Vec<usize>) -> Self {
+        Self {
+            name: name.into(),
+            weight,
+            dependencies,
+            vanilla_weight: 0.0,
+        }
+    }
+    pub(super) fn with_vanilla(mut self) -> Self {
+        self.vanilla_weight = 39.0;
+        self
+    }
+}
+impl From<&str> for TaskComponentSpec {
+    fn from(name: &str) -> Self {
+        Self::new(name, 1.0, Vec::new())
+    }
+}
+impl From<String> for TaskComponentSpec {
+    fn from(name: String) -> Self {
+        Self::new(name, 1.0, Vec::new())
+    }
+}
+// ModDownloadLib.vb:17–67 maps JSON (2+3), libraries (1+13),
+// index (1+3), and assets (14) onto the backend's real phases. Its
+// 2-weight final install is split between native extraction and commit.
+fn stage_weight(stage: ProgressStage) -> f64 {
+    match stage {
+        ProgressStage::VersionMetadata => 5.0,
+        ProgressStage::CoreLibraries => 14.0,
+        ProgressStage::AssetIndex => 4.0,
+        ProgressStage::AssetFiles => 14.0,
+        ProgressStage::NativeLibraries
+        | ProgressStage::VersionCommit
+        | ProgressStage::ExistingVersionValidation => 1.0,
+    }
+}
+fn weighted_steps(steps: &[Step], require_known: bool) -> Option<f64> {
+    let total: f64 = steps.iter().map(|step| stage_weight(step.stage)).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut earned = 0.0;
+    for step in steps {
+        let fraction = match step_fraction(step) {
+            Some(value) => value,
+            None if require_known => return None,
+            None => 0.0,
+        };
+        earned += stage_weight(step.stage) * fraction;
+    }
+    Some((earned / total).clamp(0.0, 1.0))
 }
 const VANILLA_PLAN: [ProgressStage; 6] = [
     ProgressStage::VersionMetadata,
@@ -57,6 +121,10 @@ enum Status {
 
 struct Component {
     name: String,
+    weight: f64,
+    dependencies: Vec<usize>,
+    vanilla_weight: f64,
+    earned: f64,
     state: StepStatus,
     start: usize,
     end: Option<usize>,
@@ -123,13 +191,32 @@ impl TaskState {
             && self.plan.as_deref() == Some(VANILLA_PLAN.as_slice())
             && self.steps.len() == VANILLA_PLAN.len()
     }
-    pub(super) fn component_plan(&mut self, names: Vec<String>) {
+    pub(super) fn component_plan(&mut self, names: Vec<TaskComponentSpec>) {
+        if !self.is_running()
+            || names.len() > 128
+            || names.iter().enumerate().any(|(index, part)| {
+                !part.weight.is_finite()
+                    || part.weight <= 0.0
+                    || !part.vanilla_weight.is_finite()
+                    || part.vanilla_weight < 0.0
+                    || part.vanilla_weight > part.weight
+                    || part
+                        .dependencies
+                        .iter()
+                        .any(|&dependency| dependency >= index)
+            })
+        {
+            return;
+        }
         if self.steps.is_empty() && self.components.is_empty() {
             self.components = names
                 .into_iter()
-                .take(128)
-                .map(|name| Component {
-                    name,
+                .map(|part| Component {
+                    name: part.name,
+                    weight: part.weight,
+                    dependencies: part.dependencies,
+                    vanilla_weight: part.vanilla_weight,
+                    earned: 0.0,
                     state: StepStatus::Waiting,
                     start: 0,
                     end: None,
@@ -138,6 +225,17 @@ impl TaskState {
         }
     }
     pub(super) fn component_start(&mut self, index: usize) {
+        if !self.is_running()
+            || self.current_component.is_some()
+            || self.components.get(index).is_none_or(|part| {
+                part.state != StepStatus::Waiting
+                    || part.dependencies.iter().any(|&dependency| {
+                        self.components[dependency].state != StepStatus::Finished
+                    })
+            })
+        {
+            return;
+        }
         if let Some(part) = self.components.get_mut(index) {
             part.state = StepStatus::Running;
             part.start = self.steps.len();
@@ -145,11 +243,12 @@ impl TaskState {
         }
     }
     pub(super) fn component_done(&mut self, index: usize) {
-        if self.current_component != Some(index) {
+        if !self.is_running() || self.current_component != Some(index) {
             return;
         }
         if let Some(part) = self.components.get_mut(index) {
             part.state = StepStatus::Finished;
+            part.earned = part.weight;
             part.end = Some(self.steps.len());
             for step in &mut self.steps[part.start..] {
                 step.state = StepStatus::Finished;
@@ -167,12 +266,30 @@ impl TaskState {
                 name: part.name.clone(),
                 depth: 0,
                 state: part.state,
-                fraction: if part.state == StepStatus::Finished {
-                    Some(1.0)
-                } else {
-                    None
+                fraction: match part.state {
+                    StepStatus::Finished => Some(1.0),
+                    StepStatus::Running if part.earned > 0.0 => {
+                        Some((part.earned / part.weight).min(0.9999))
+                    }
+                    _ => None,
                 },
-                detail: String::new(),
+                detail: if part.dependencies.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "{}：{}",
+                        if part.state == StepStatus::Waiting {
+                            "等待"
+                        } else {
+                            "依赖"
+                        },
+                        part.dependencies
+                            .iter()
+                            .map(|&index| self.components[index].name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    )
+                },
             });
             if part.state != StepStatus::Waiting {
                 for step in self
@@ -220,11 +337,10 @@ impl TaskState {
                 };
                 // No completion is inferred from advancing to another group.
                 // Unknown running phases leave the group indeterminate.
-                let fraction = steps
-                    .iter()
-                    .map(|step| step_fraction(step))
-                    .collect::<Option<Vec<_>>>()
-                    .map(|parts| parts.iter().sum::<f64>() / stages.len() as f64);
+                let fraction = weighted_steps(
+                    &steps.iter().map(|step| (*step).clone()).collect::<Vec<_>>(),
+                    true,
+                );
                 let detail = steps
                     .iter()
                     .map(|step| {
@@ -247,9 +363,7 @@ impl TaskState {
                     depth: 0,
                     state,
                     fraction,
-                    detail: format!(
-                        "{detail}\n组内按真实阶段等权显示；原生库整理和版本登记属于本安装流程。"
-                    ),
+                    detail,
                 }
             })
             .collect()
@@ -270,7 +384,7 @@ impl TaskState {
         }
     }
     pub(super) fn update(&mut self, progress: &Progress) {
-        if !self.is_running() {
+        if !self.is_running() || (!self.components.is_empty() && self.current_component.is_none()) {
             return;
         }
         self.message = progress.message.clone();
@@ -331,6 +445,17 @@ impl TaskState {
             } else {
                 StepStatus::Running
             };
+        }
+        if let Some(index) = self.current_component {
+            let part = &mut self.components[index];
+            // Only explicitly declared, typed stage plans earn the vanilla
+            // share. Generic file counters can describe a sub-operation and
+            // must not incorrectly complete an entire loader component.
+            if self.plan.is_some() && self.plan_start >= part.start {
+                if let Some(fraction) = weighted_steps(&self.steps[self.plan_start..], false) {
+                    part.earned = part.earned.max(part.vanilla_weight * fraction);
+                }
+            }
         }
         if let Some(transfer) = &progress.transfer {
             if self.samples.back().is_some_and(|&(time, bytes)| {
@@ -469,17 +594,9 @@ impl TaskState {
             return Some(1.0);
         }
         if !self.components.is_empty() {
-            // A component completes only after its actual operation returns success.
-            // Unknown inner operations do not invent a fractional byte denominator.
-            return Some(
-                (self
-                    .components
-                    .iter()
-                    .filter(|c| c.state == StepStatus::Finished)
-                    .count() as f64
-                    / self.components.len() as f64)
-                    .min(0.9999),
-            );
+            let total: f64 = self.components.iter().map(|part| part.weight).sum();
+            let earned: f64 = self.components.iter().map(|part| part.earned).sum();
+            return Some((earned / total).clamp(0.0, 0.9999));
         }
         if self.untyped_progress || self.has_multiple_plans || !self.overall_plan_known {
             return None;
@@ -496,7 +613,7 @@ impl TaskState {
                 else {
                     return 0.0;
                 };
-                if step.state == StepStatus::Finished {
+                let fraction = if step.state == StepStatus::Finished {
                     1.0
                 } else {
                     step.counts
@@ -504,10 +621,12 @@ impl TaskState {
                         .map_or(0.0, |(done, total)| {
                             (done as f64 / total as f64).clamp(0.0, 1.0)
                         })
-                }
+                };
+                fraction * stage_weight(*stage)
             })
             .sum();
-        let percentage = ((sum / plan.len() as f64 * 10000.0).floor() / 100.0).min(99.99);
+        let total: f64 = plan.iter().map(|&stage| stage_weight(stage)).sum();
+        let percentage = ((sum / total * 10000.0).floor() / 100.0).min(99.99);
         Some(percentage / 100.0)
     }
     fn speed(&self, now: Instant) -> Option<f64> {
@@ -1132,7 +1251,7 @@ mod tests {
         });
         let rows = task.visible_steps();
         assert_eq!(rows[2].state, StepStatus::Running);
-        assert_eq!(rows[2].fraction, Some(0.5));
+        assert_eq!(rows[2].fraction, Some(4.0 / 18.0));
         task.update(&Progress {
             stage: Some(ProgressStage::AssetFiles),
             stage_progress: Some((0, 0)),
@@ -1188,7 +1307,7 @@ mod tests {
         });
         assert_eq!(task.overall_progress(), None);
         task.set_overall_plan_known(true);
-        assert_eq!(task.overall_progress(), Some(0.1666));
+        assert_eq!(task.overall_progress(), Some(0.1282));
         task.update(&Progress {
             message: "another uninstrumented operation".into(),
             ..Default::default()
@@ -1338,7 +1457,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(task.steps[0].state, StepStatus::Running);
-        assert_eq!(task.progress_text(), "50.00 %");
+        assert_eq!(task.progress_text(), "16.66 %");
         task.update(&Progress {
             stage: Some(ProgressStage::VersionMetadata),
             stage_progress: Some((1, 1)),
@@ -1428,6 +1547,101 @@ mod tests {
         assert!(task.is_finished());
         assert!(!task.is_failed());
     }
+    #[test]
+    fn declared_weights_accumulate_real_stage_work_and_gate_dependent_components() {
+        let mut task = TaskState::new("weighted installation");
+        task.component_plan(vec![
+            TaskComponentSpec::new("Minecraft and Fabric", 49.0, vec![]).with_vanilla(),
+            TaskComponentSpec::new("Instance registration", 2.0, vec![0]),
+            TaskComponentSpec::new("Fabric API", 3.0, vec![1]),
+        ]);
+        task.component_start(2);
+        assert_eq!(
+            task.current_component, None,
+            "a child cannot begin before its declared dependency succeeds"
+        );
+        task.component_start(0);
+        task.update(&Progress {
+            plan: Some(VANILLA_PLAN.to_vec()),
+            stage: Some(ProgressStage::CoreLibraries),
+            stage_progress: Some((1, 2)),
+            ..Default::default()
+        });
+        assert!(
+            (task.overall_progress().unwrap() - 7.0 / 54.0).abs() < 1e-9,
+            "half of the 14-weight libraries earns 7, not one equally sized phase"
+        );
+        let rows = task.visible_steps();
+        assert_eq!(rows[0].fraction, Some(7.0 / 49.0));
+        assert_eq!(rows.last().unwrap().detail, "等待：Instance registration");
+        for stage in VANILLA_PLAN {
+            task.update(&Progress {
+                stage: Some(stage),
+                stage_progress: Some((1, 1)),
+                ..Default::default()
+            });
+        }
+        assert!((task.overall_progress().unwrap() - 39.0 / 54.0).abs() < 1e-9);
+        task.update(&Progress {
+            completed: 1,
+            total: 1,
+            message: "an untyped loader substep".into(),
+            ..Default::default()
+        });
+        assert!(
+            (task.overall_progress().unwrap() - 39.0 / 54.0).abs() < 1e-9,
+            "one arbitrary substep must not finish a loader"
+        );
+        task.component_done(0);
+        assert!((task.overall_progress().unwrap() - 49.0 / 54.0).abs() < 1e-9);
+        task.component_start(1);
+        task.component_done(1);
+        task.component_start(2);
+        task.fail("cancelled", true);
+        let before = task.overall_progress();
+        task.component_done(2);
+        task.component_start(0);
+        assert_eq!(
+            task.overall_progress(),
+            before,
+            "late component events cannot rewrite a terminal task"
+        );
+        assert!(task.overall_progress().unwrap() < 1.0);
+    }
+
+    #[test]
+    fn invalid_or_replayed_component_graph_cannot_replace_job_identity() {
+        let mut task = TaskState::new("fixture");
+        task.component_plan(vec![TaskComponentSpec::new("cycle", 1.0, vec![0])]);
+        assert!(task.components.is_empty());
+        task.component_plan(vec![TaskComponentSpec::new("invalid", f64::NAN, vec![])]);
+        assert!(task.components.is_empty());
+        task.component_plan(vec![
+            TaskComponentSpec::new("first", 3.0, vec![]),
+            TaskComponentSpec::new("second", 2.0, vec![0]),
+        ]);
+        task.component_plan(vec![TaskComponentSpec::new("stale plan", 100.0, vec![])]);
+        task.component_start(0);
+        task.component_done(0);
+        let rows = task.visible_steps().len();
+        task.update(&Progress {
+            plan: Some(VANILLA_PLAN.to_vec()),
+            ..Default::default()
+        });
+        assert_eq!(
+            task.visible_steps().len(),
+            rows,
+            "progress between components must not attach to the completed parent"
+        );
+        task.component_start(0);
+        assert_eq!(
+            task.current_component, None,
+            "duplicate start must not reset completed state"
+        );
+        assert_eq!(task.components[0].name, "first");
+        assert_eq!(task.overall_progress(), Some(0.6));
+    }
+
     #[test]
     fn component_tree_preserves_prior_rows_and_never_finishes_before_terminal() {
         let mut task = TaskState::new("组合安装");
