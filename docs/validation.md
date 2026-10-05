@@ -10,7 +10,20 @@
 
 NeoForge 正式版映射同时支持旧 1.x 与新的年份版本，按官方规则为缺省 hotfix 补零（26.3 → 26.3.0.x），不混入 snapshot/pre 构建。本次生产列表函数从官方 Maven 返回 47 条 26.3 项，最新为 26.3.0.48-beta；官方模块元数据指向 NeoForm 26.3-1。本次未执行该安装器或 NeoForge 游戏，记录见 `test-output/neoforge-calver-validation.json`。
 
-本批冻结核心 **324**、桌面 **219**，共 **543 通过、0 失败、3 忽略**。本机格式与全部目标严格 Clippy 通过，194 个构建输入与公开副本逐一一致。最终安装包、CI 与原生界面记录将在构建后写入；以下首批结果不冒充列表修正后的结果。
+本批冻结核心 **324**、桌面 **219**，共 **543 通过、0 失败、3 忽略**。本机格式及 Mac/Windows 全部目标严格 Clippy 通过，194 个构建输入与公开副本逐一一致。[源码 bb495d4](https://github.com/mohui666/PCL-Rust/commit/bb495d4a908b5b06d452276ca23c93b153c94ef3) 的 [CI 37282355568](https://github.com/mohui666/PCL-Rust/actions/runs/37282355568) 在两端均通过格式、严格 Clippy、测试及 release 构建：Mac **543 通过、3 忽略**，Windows **515 通过、2 忽略**，均无失败。数量差异来自平台条件编译；CI 不代替 Windows GUI 或游戏实机验证。
+
+最终本地开发产物（未公开发行包）：
+
+| 平台主程序 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| macOS arm64，签名后 | 22,015,136 | `5739e0dbaf56e93c92d419a465c4e3c2fd84b2f16096c5a1608ac023c00c7433` |
+| Windows x86-64 GUI，交叉构建 | 25,160,192 | `2887f197e15205acdb7a6a6f1e9fc1fe49b283487608d8cf8949a8b46ae8c97c` |
+
+Mac 严格签名验证通过。Windows PE 为 AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；该本地 Windows 包未执行或经 Wine 运行。
+
+最终 Mac 应用原生已观察搜索字段左边界、NeoForge 26.3 实际列表、Quilt 同级展开卡片，以及 Fabric API 具体文件的图标/标题/副行。点击文件出现原生“选择保存位置”，原文件名已填入，可选择独立测试目录。确认保存时桌面工具超时，随后工具明确报告 Mac 已锁定；没有观察下载完成，也没有把此步骤算作保存成功。原生滚动操作另遇工具 `noWindowsAvailable`，因此长列表末行仍仅有布局/点击回归证据。当前构建的启动就绪→关闭流程和全页面成对像素检查未完成。未导出截图；用户的红色主题及本批基线设置保持不变。
+
+证据：`test-output/list-parity-{checks,source-snapshot,macos-validation,windows-validation,ci}.json`、对应日志与 `list-parity-gui/validation.json`。以下首批记录保留原时点，不冒充本次最终包验证。
 
 ## UI 反馈首批（2026-10-05，列表修正前）
 
