@@ -1122,7 +1122,7 @@ impl Launcher {
             }
         }
         if tutorial_home {
-            self.home.message=Some(("主页自定义教程".into(),"1. 点击生成教学文件。\n2. 用文本编辑器修改主页文件夹的 Custom.xaml 并保存。\n3. 点击刷新主页后返回启动页。\n\n支持卡片、文本、图片、按钮与常用布局；按钮操作只在点击时执行。文件、程序、下载和设置操作会显示确认内容。已有 Custom.xaml 不会被教学文件覆盖。".into()));
+            self.home.message=Some(("主页自定义教程".into(),"1. 点击生成教学文件。\n2. 用文本编辑器修改主页文件夹的 Custom.xaml 并保存。\n3. 点击刷新主页后返回启动页。\n\n支持卡片、文本、图片、按钮和常用布局。已有 Custom.xaml 不会被覆盖。".into()));
         }
     }
 

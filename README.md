@@ -1,76 +1,96 @@
-# Plain Craft Launcher (PCL) Rust 第三方重构版
+<p align="center">
+  <img src="docs/assets/pcl-rust-icon-v2.png" alt="PCL Rust" width="112" />
+</p>
+<h1 align="center">PCL Rust</h1>
 
-面向 **macOS 与 Windows** 的 Rust 原生桌面启动器重构，由 **mohui666** 开发。目标是完整迁移功能，并以 **Windows 官方 PCL 2.13.1.1 默认界面**为外观基准；macOS 使用苹方。项目仍在开发，尚未达到完整功能或像素等价。
+<p align="center">
+  <a href="https://github.com/mohui666/PCL-Rust/actions/workflows/build.yml"><img src="https://github.com/mohui666/PCL-Rust/actions/workflows/build.yml/badge.svg" alt="Build and tests" /></a>
+  <img src="https://img.shields.io/badge/Rust-2021-dea584?logo=rust&amp;logoColor=white" alt="Rust 2021" />
+  <img src="https://img.shields.io/badge/macOS%20%7C%20Windows-1687d9" alt="macOS and Windows" />
+  <img src="https://img.shields.io/badge/status-in%20development-6b8194" alt="In development" />
+</p>
 
-原版作者：**龙腾猫跃** · [官方 PCL](https://github.com/Meloong-Git/PCL) · [支持原作者](https://meloong.com/afd/a/LTCat)
+<p align="center">
+  <a href="#快速运行">快速运行</a> · <a href="docs/README.md">文档</a> · <a href="docs/migration-matrix.md">迁移进度</a> · <a href="docs/validation.md">验证记录</a>
+</p>
 
-本项目是第三方开发项目，不是 PCL、Mojang 或 Microsoft 的官方发布，也不代表其背书。
+由 **[mohui666](https://github.com/mohui666)** 开发的第三方 Minecraft 启动器，以 Rust 重构 PCL，面向 **macOS 与 Windows**。界面以 Windows 官方 **PCL 2.13.1.1** 为基准，macOS 使用苹方。
 
-## 本轮进展
+目前提供源码和构建脚本，尚未发布安装包。
 
-此前列出的九类能力已补入当前源码：窗口尺寸记忆、分设置页初始化、提示关闭记忆、页面切换动画、Mod 详情与诊断、结构化崩溃归因、XAML 局部绑定、显式权重任务和旧安装兼容，具体范围见[已补项与剩余边界](docs/remaining-migration.md)。内置帮助保留原始 XAML；另修复版本独立设置入口重入刷新和输入框文字垂直居中。
+## 功能
 
-本机 **616 项通过、0 失败、4 忽略**，200 个构建输入冻结，两端本地 release 包完成；最终 Mac 已检查帮助图标/标题/副标题、正确文档跳转、Forge 图文分离、初始化确认后取消、独立设置往返及 CurseForge 输入提示居中。未执行真实初始化、保存密钥或新增正版登录。构建哈希、自动/原生/网络探测边界见[验证记录](docs/validation.md)，不宣称全页面像素等价。此前31个界面/容器文件走查保留在[复查清单](docs/ui-consistency-audit.md)。
-
-## 文档导航
-
-| 文档 | 内容 |
+| 模块 | 支持内容 |
 | --- | --- |
-| [迁移矩阵](docs/migration-matrix.md) | 43 个上游页面/复用控件文件逐项对照、设置范围与剩余功能 |
-| [已补项与剩余边界](docs/remaining-migration.md) | 九类能力的当前实现、原版范围纠正与仍需实机/像素验收的部分 |
-| [UI 缺口清单](docs/ui-gap-audit.md) | 下载、设置和全部灰色控件的静态核对与剩余范围 |
-| [验证记录](docs/validation.md) | 最新测试、两端构建哈希、Mac 实测与尚未验证的范围 |
-| [登录说明](docs/login.md) | 微软设备码流程、凭据存储、恢复语义和当前 HTTP 403 状态 |
-| [开发说明](docs/development.md) | 源码结构、构建与验证命令、中文字体处理 |
-| [参考来源](docs/upstream.md) | Windows 外观基准、固定源码提交、署名与发布范围 |
+| 安装与资源 | Minecraft、加载器、Java 管理，Modrinth / CurseForge，整合包导入导出，Mod 更新 |
+| 启动与维护 | 全局与版本独立设置，离线账号、皮肤，游戏进程、日志与崩溃分析 |
+| 下载与任务 | 下载源、限速、哈希校验，冲突排队，最多 4 路独立任务，取消、重试与加权进度 |
+| 个性化 | 主题、背景 / GIF、音乐，自定义 XAML 主页、帮助文档与页面动画 |
 
-## 当前进展
+具体加载器、整合包格式和 XAML 支持范围见[迁移矩阵](docs/migration-matrix.md)。
 
-本次源码发布日期：**2026-10-05（Asia/Shanghai）**。仓库包含 Rust 源码、Cargo 配置与锁文件、构建脚本、必要资产、来源记录、文档和 CI 验证工作流。本次源码检出检查与此前开发批次的产物、实机证据分别记录。
+## 快速运行
 
-- 本批冻结源码在 macOS arm64 通过 **616 项测试（0 失败、4 忽略）**，Mac 与 Windows 目标严格 Clippy、两端本地 release 构建通过；Windows 可执行文件未运行，本轮远端 CI 另行核对。历史音乐、联网主页和界面操作按原构建单独记录，详见[验证记录](docs/validation.md)。测试数不代表迁移完成率。
-- 输入与菜单修复包已在 Mac 用真实鼠标/键盘检查：离线姓名可编辑，账号弹层与字段等宽对齐，下载查询与分类可输入、选择。新一批完整功能包的运行记录另列，Windows 本地交叉构建不能替代实机验证。
-- 本批接入下载来源与限速、CurseForge 适配、MC 百科名称关联、OptiFine、继承版本补全、常见整合包格式、Mod 更新、离线皮肤、音乐/GIF/主页、崩溃分析与系统设置。各项支持范围不同，详见 [UI 缺口清单](docs/ui-gap-audit.md)；CurseForge 仍需开发者 API Key。
-- 此前已补入登录分类提示、三色提示队列、消息框颜色/焦点/动画、会话失效后的限次恢复、原账号操作绑定，以及披风选择后的确定/取消和 29 个中文名称。
-- Mac 消息框和提示使用生产渲染器、模拟登录数据完成原生检查；另已重新打开实际启动器核对中文与设置保留。这些检查不代表真实登录或披风修改成功。
-- Minecraft AppID 审核申请已提交并收到回执。上次真实登录在 Minecraft `login_with_xbox` 返回 HTTP 403，尚未确认审核通过，也未完成正版登录端到端验证。
-
-现有实现包含原版与受支持加载器安装、Java 管理、Modrinth/CurseForge 资源入口、常见整合包导入导出、多账号设备登录、游戏进程管理，以及冲突排队/最多4路独立任务/取消重试和显式权重进度。三款官方旧 Forge 样本完成库校验与两平台元数据的原生库提取，未执行 Java/游戏；universal/client ZIP 原版也跳过自动安装。Mod Menu 单样本真实 Modrinth 详情探测属于核心网络验证，无 GUI/CF/游戏结论。
-
-完整 WPF/CLR、任意自动事件、私有主题参数、有效资格下的 CurseForge/OptiFabric、全部整合包/加载器组合与 Windows 实机仍有明确边界；登录与联机不属于本轮补齐范围。详见[逐项矩阵](docs/migration-matrix.md)。
-
-完整像素对照、Windows 实机和多项实际游戏流程仍待验收，不提供没有统一验收依据的完成百分比。
-
-## 从源码运行
-
-需要 Rust 工具链和对应平台的编译/链接环境。项目声明 Rust 1.88 起，上一批实际验证使用 Rust 1.99，最低版本尚未单独验收。
+安装 Rust 和平台编译工具：macOS 需要 Xcode Command Line Tools、Python 3；Windows 需要 C++ 构建工具、Windows SDK。
 
 ```sh
 git clone https://github.com/mohui666/PCL-Rust.git
 cd PCL-Rust
 ```
 
-macOS 还需要 Python 3、Xcode Command Line Tools（`xcrun swift`）和系统苹方；首次运行及新增中文文案后，先在本机生成字库：
+**macOS**：先从本机苹方生成字库，再运行。
 
 ```sh
 python3 scripts/build-local-pingfang-sfnt.py --style all
 cargo run --locked -p pcl-desktop
 ```
 
-Windows 在对应 Rust 构建环境中执行 `cargo run --locked -p pcl-desktop`。本地打包分别使用 `bash scripts/package-macos.sh` 或 PowerShell 中的 `./scripts/package-windows.ps1`；完整要求与检查命令见[开发说明](docs/development.md)。
+**Windows**：
 
-## 仓库与发布范围
+```powershell
+cargo run --locked -p pcl-desktop
+```
 
-本次提供可供本地构建的源码与脚本，**尚未上传可下载的应用发行包**。CI 进行格式、Clippy、测试和 release 构建检查，不打包或上传 `dist/`；工作流存在不等于远端运行已经通过。
+声明最低 Rust 1.88，当前测试使用 1.99；最低版本未单独验证。打包、测试和字库更新见[开发说明](docs/development.md)。
 
-上游自定义许可、作者署名和资产来源记录随源码保留，不改称 MIT/Apache。第三方材料的分发条件尚未全部核验，源码公开不代表其获得无限制的再分发授权。原始测试日志、审核表内容、个人账号资料、本地游戏文件及系统字体派生文件不随仓库发布；macOS 字体由使用者在本机生成。更多内容见[参考来源](docs/upstream.md)。
+## 文档
 
-## Project information for Minecraft AppID review
+| 内容 | 链接 |
+| --- | --- |
+| 运行、打包与配置 | [开发说明](docs/development.md) |
+| 功能与界面进度 | [迁移矩阵](docs/migration-matrix.md) · [剩余工作](docs/remaining-migration.md) · [UI 核对](docs/ui-gap-audit.md) |
+| 测试与实机记录 | [验证记录](docs/validation.md) · [界面复查](docs/ui-consistency-audit.md) |
+| 登录、服务与来源 | [微软登录](docs/login.md) · [外部服务与来源](docs/upstream.md) |
 
-**PCL Rust** is a third-party Rust desktop launcher project for Windows and macOS, maintained by **mohui666**. It is under development and is not an official PCL, Mojang, or Microsoft product.
+## 当前状态
 
-The registered application display name is **PCL Rust**. Its public Application (Client) ID is `2c86a114-ddd8-468b-82ca-441923527e09`.
+- **本机检查**：2026-10-05 共 616 项测试通过、4 项忽略；严格 Clippy 与两平台本地 release 构建通过。远端 CI 见页首徽章。
+- **界面验证**：已检查部分 Mac 页面；Windows 实机和全页面像素对照尚未完成。
+- **微软登录**：Minecraft AppID 审核已提交，未确认获批；此前登录返回 HTTP 403，完整登录流程未通过验证。
+- **CurseForge**：申请已提交、待审核，尚未取得 API Key，真实 API 流程未验证。
 
-The Microsoft sign-in implementation uses device authorization for personal Microsoft accounts, followed by Xbox Live, XSTS, and Minecraft Services authentication, entitlement and player profile checks. It does not collect Microsoft account passwords. Refresh credentials use the operating system credential store; Minecraft access sessions stay in memory. A separate offline-profile mode does not obtain Microsoft or Minecraft Services tokens.
+## 署名与许可
 
-The AppID review request has been submitted and its receipt confirmed. Approval and end-to-end authenticated login have not been verified. The previous real attempt returned HTTP 403 from Minecraft Services. The source release dated 2026-10-05 includes Rust code, build scripts, required assets and validation CI. Downloadable application releases and locally derived system fonts are not published. The current development source was checked on macOS arm64: 616 tests passed, with four ignored, alongside strict Clippy; 200 build inputs remained unchanged. The development tree also produced a signed macOS application and a cross-compiled Windows executable, with limited native macOS UI checks. These results do not establish remote CI, Windows execution, complete pixel equivalence or authenticated login acceptance.
+原版作者 **龙腾猫跃** · [官方 PCL](https://github.com/Meloong-Git/PCL) · [支持原作者](https://meloong.com/afd/a/LTCat)<br />
+Rust 跨平台版作者 **[mohui666](https://github.com/mohui666)**。图标基于 Patrick 设计的原版 PCL 图标改编，见[素材来源](docs/assets/README.md)。
+
+保留上游[许可原文](UPSTREAM-LICENCE)，第三方材料按各自条款使用。此项目不是 PCL、Mojang 或 Microsoft 的官方产品。字体在本机生成，不随仓库分发。
+
+<details>
+<summary><b>English · Minecraft AppID review</b></summary>
+
+**PCL Rust** is a third-party Minecraft launcher for Windows and macOS, written in Rust and maintained by **mohui666**. It is under development and is not an official PCL, Mojang, or Microsoft product.
+
+| Registration | Public value |
+| --- | --- |
+| Application name | PCL Rust |
+| Application (Client) ID | `2c86a114-ddd8-468b-82ca-441923527e09` |
+| Website and source | [github.com/mohui666/PCL-Rust](https://github.com/mohui666/PCL-Rust) |
+
+Personal Microsoft accounts sign in through device authorization, followed by Xbox Live, XSTS and Minecraft Services authentication, entitlement and profile checks. The launcher does not collect Microsoft passwords. Refresh credentials use the operating system credential store; Minecraft access sessions remain in memory. Offline profiles do not obtain service tokens.
+
+The AppID review was submitted and a receipt received. Approval is unconfirmed; the previous sign-in attempt returned HTTP 403 from Minecraft Services. See [login status](docs/login.md).
+
+Source, build scripts and required assets are public. Application installers and locally generated system fonts are not published.
+
+</details>

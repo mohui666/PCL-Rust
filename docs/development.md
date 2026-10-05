@@ -1,8 +1,8 @@
 # 源码开发与本地构建
 
-[返回项目首页](../README.md) · [验证记录](validation.md)
+[项目首页](../README.md) / [文档索引](README.md)
 
-本文对应 **2026-10-05 发布的构建源码**。仓库提供 `crates/`、Cargo 工作区与锁文件、`scripts/`、必要桌面资产及 CI；可克隆后按下面步骤在本机构建。应用发行包、游戏数据、原始验证记录和本机派生字体不随源码提供。
+适用范围：公开 Rust 工作区。先克隆并检查依赖，再按对应平台运行或打包；当前支持范围见 [当前范围](remaining-migration.md)。
 
 ## 工作区结构
 
@@ -17,11 +17,17 @@
 | `test-output/` | 本地生成目录，含字体和验证产物；不提交 |
 | `dist/` | 手动打包生成的应用目录；不随源码提交或由 CI 上传 |
 
-工作区使用 Rust 2021 edition，声明最低 Rust 版本为 1.88。上一批开发验证使用 Rust 1.99；这不代表已经在最低版本上完成测试。依赖由 `Cargo.lock` 锁定。
+工作区使用 Rust 2021 edition，声明最低 Rust 版本为 1.88。当前记录中的开发验证使用 Rust 1.99；这不代表已经在最低版本上完成测试。依赖由 `Cargo.lock` 锁定。
 
 ## 构建与检查
 
-先克隆仓库，所有命令在仓库根目录执行。需要 Rust 工具链及平台编译/链接环境：macOS 需要 Xcode Command Line Tools；Windows 需要与所选 Rust target 匹配的工具链（使用 MSVC target 时包含 C++ 构建工具和 Windows SDK）。首次获取依赖需要网络；依赖缓存齐全时可加 `--offline`。
+所有命令在仓库根目录执行。首次获取依赖需要网络；缓存齐全时可加 `--offline`。
+
+| 平台 | 构建前准备 |
+| --- | --- |
+| 通用 | Rust 工具链；依赖版本由 Cargo.lock 锁定。 |
+| macOS | Python 3、Xcode Command Line Tools（xcrun swift）、系统苹方；首次运行前生成字库。 |
+| Windows | 与所选 Rust target 匹配的编译/链接工具；MSVC target 需要 C++ 构建工具和 Windows SDK。 |
 
 ```sh
 git clone https://github.com/mohui666/PCL-Rust.git
@@ -37,7 +43,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-自动化测试默认不执行显式忽略的联网安装测试。CI 在 macOS/Windows runner 执行格式、严格 Clippy、测试及 `cargo build --workspace --release --locked`，不调用本地打包脚本，也不上传 `dist/`。CI 配置不代表某次运行已经成功；本次检出的检查结果见[验证记录](validation.md)。真实账号、远端安装及游戏运行应单独记录。
+默认测试跳过标记为 ignored 的用例。CI 在 macOS/Windows runner 执行格式、严格 Clippy、测试及 release 构建，不打包或上传 dist；运行结果见 [验证记录](validation.md)。
 
 ### macOS
 
@@ -63,7 +69,7 @@ python3 scripts/build-local-pingfang-sfnt.py --style all
 ./scripts/package-windows.ps1
 ```
 
-上一批开发产物验证来自 macOS 上对 `x86_64-pc-windows-gnu` 的交叉构建和 PE 静态检查。Windows 原生打包、启动、系统凭据管理与游戏运行仍需实机验证，不能据交叉构建成功推定通过。
+本地 Windows 开发产物验证来自 macOS 上对 `x86_64-pc-windows-gnu` 的交叉构建和 PE 静态检查。Windows 原生打包、启动、系统凭据管理与游戏运行仍需实机验证，不能据交叉构建成功推定通过。
 
 ## 配置与数据
 
@@ -82,4 +88,4 @@ python3 scripts/build-local-pingfang-sfnt.py --style all
 
 ## 发布与验证
 
-文档、源码检查、GUI 交互、真实服务、游戏运行及平台兼容分别记录。上一批本地开发产物指纹和本次公开源码检出的检查不能混为一项；详情见[验证记录](validation.md)。本次发布源码和构建脚本，不提供应用发行包。保留上游自定义许可与资产来源声明；本地构建成功不代表所有第三方材料可以无限制再分发。
+构建、签名、CI 与实机结果见 [验证记录](validation.md)。仓库目前不提供应用发行包；许可和资产分发范围见 [来源说明](upstream.md)。

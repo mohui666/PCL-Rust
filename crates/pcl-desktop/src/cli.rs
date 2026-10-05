@@ -10,11 +10,7 @@ use pcl_core::{
 use std::{path::PathBuf, sync::atomic::AtomicBool};
 
 #[derive(Parser)]
-#[command(
-    name = "pcl-desktop",
-    version,
-    about = "PCL Rust 第三方重构版；无参数运行桌面窗口"
-)]
+#[command(name = "pcl-desktop", version, about = "PCL Rust；无参数启动桌面应用")]
 struct Cli {
     #[arg(long, global = true)]
     root: Option<PathBuf>,

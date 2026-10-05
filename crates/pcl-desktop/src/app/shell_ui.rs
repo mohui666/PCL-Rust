@@ -288,7 +288,6 @@ impl Launcher {
                     }
                 } else {
                     // 2.13.1.1 HiddenRefresh unconditionally collapses the Link tab.
-                    // The full third-party product name remains in the window title and About.
                     let mut items = vec![
                         (Page::Launch, "启动", "launch"),
                         (Page::Download, "下载", "download"),
@@ -321,15 +320,15 @@ impl Launcher {
                         .paint_custom_title(ui, title_rect, &self.settings)
                     {
                         Ok(true) => (),
-                        Ok(false) => self.assets.icon(
-                            ui,
-                            "logo",
-                            egui::Rect::from_min_size(
-                                rect.min + Vec2::new(19.0, 15.5),
-                                Vec2::new(39.0, 17.0),
-                            ),
-                            Color32::WHITE,
-                        ),
+                        Ok(false) => {
+                            ui.painter().with_clip_rect(title_rect).text(
+                                egui::pos2(title_rect.left(), rect.top() + 24.0),
+                                egui::Align2::LEFT_CENTER,
+                                "PCL Rust",
+                                egui::FontId::proportional(20.0),
+                                Color32::WHITE,
+                            );
+                        }
                         Err(error) => self.error = Some(format!("标题栏绘制失败：{error:#}")),
                     }
                     for (i, (page, text, icon)) in items.into_iter().enumerate() {

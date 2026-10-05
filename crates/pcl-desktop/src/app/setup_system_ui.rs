@@ -177,9 +177,9 @@ impl Launcher {
                     self.setup_system.key_present = present;
                     self.setup_system.key_message = Some(
                         if present {
-                            "已配置 API Key；实际访问权限仍需服务端验证。"
+                            "已配置 API Key（未验证）。"
                         } else {
-                            "未配置 API Key，需要 CurseForge 开发者 API Key 才能使用该来源。"
+                            "请填写 CurseForge API Key。"
                         }
                         .into(),
                     );
@@ -269,7 +269,7 @@ impl Launcher {
                     match launcher {
                         Ok(Some(release)) => {
                             notes.push(if release.newer {
-                                format!("本项目已发布 {}。", release.tag)
+                                format!("PCL Rust {} 已发布。", release.tag)
                             } else {
                                 format!("暂无更新（当前 {}）。", env!("CARGO_PKG_VERSION"))
                             });
@@ -588,7 +588,7 @@ impl Launcher {
                 for (weight, value, title, hint) in [
                     (1.5, &mut self.settings.system.debug_skip_copy, "禁止在下载时从其他文件夹复制文件", "关闭共享下载缓存的跨目录复用；已校验的目标文件仍保留。只建议测试下载速度时开启。"),
                     (1.0, &mut self.settings.system.debug_mode, "调试模式", "显示更多诊断信息并保留更多脱敏日志"),
-                    (1.0, &mut self.settings.system.debug_delay, "添加延迟", "在网络请求及任务开始、结束环节添加可取消的随机延迟，仅用于测试。"),
+                    (1.0, &mut self.settings.system.debug_delay, "添加延迟", "为网络请求和任务添加随机延迟，用于调试。"),
                 ] {
                     ui.allocate_ui_with_layout(
                         Vec2::new(column * weight, 22.0),
@@ -709,7 +709,8 @@ impl Launcher {
         }
     }
 }
-const KEY_HELP: &str = "环境变量 PCL_CURSEFORGE_API_KEY 优先；清除只删除系统安全存储的条目。API Key 不写入设置 JSON 或日志。是否可访问由 CurseForge 服务端授权决定。";
+const KEY_HELP: &str =
+    "Key 保存在系统凭据库。环境变量 PCL_CURSEFORGE_API_KEY 优先，清除按钮不影响环境变量。";
 // PageSetupSystem download body: margins 25,37,25,15; source row heights
 // 28 + 7 + 28 + 7 + 27 + 27; the final row shows the actual target directory.
 fn download_card(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
@@ -819,9 +820,9 @@ fn source_combo(ui: &mut egui::Ui, id: &str, source: &mut SourcePreference) {
         })
         .response
         .on_hover_text(if id == "system-version-source" {
-            "选择获取游戏版本列表时使用的来源。镜像可能暂时缺少刚发布的版本。BMCLAPI 提供镜像服务。"
+            "镜像源可能延迟收录新版本。"
         } else {
-            "选择游戏文件下载来源；仅适用于支持镜像的公开下载地址。BMCLAPI 提供镜像服务，登录认证不使用镜像。"
+            "支持的游戏文件可通过 BMCLAPI 镜像下载。"
         });
 }
 fn source_label(value: SourcePreference) -> &'static str {

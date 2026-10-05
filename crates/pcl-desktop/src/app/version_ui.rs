@@ -730,7 +730,7 @@ impl Launcher {
                         && info.as_ref().is_some_and(|info| info.repair),
                     false,
                 )
-                .on_hover_text("按现有继承配置补全支持库、资源和原生库；保留版本配置。已记录的 Forge / NeoForge 生成物会用匹配安装器在临时目录重建，校验一致后恢复；缺少收据或校验值时会明确报告。")
+                .on_hover_text("补全缺失的游戏文件和加载器文件，保留版本配置。")
                 .clicked();
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
@@ -738,7 +738,9 @@ impl Launcher {
                     ui,
                     rect,
                     "删除版本",
-                    self.busy.is_none() && self.game_pid.is_none() && !self.jobs.conflicts_with(&self.settings.game_root),
+                    self.busy.is_none()
+                        && self.game_pid.is_none()
+                        && !self.jobs.conflicts_with(&self.settings.game_root),
                 )
                 .on_hover_text("将该版本及其独立数据移入系统废纸篓或回收站。操作前会显示具体目录。")
                 .clicked();

@@ -3,7 +3,10 @@ use super::{version_ui::page_frame, Event, Launcher};
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, Vec2};
-use pcl_core::pack_export::{self, ExportSelection, PackExportOptions, PackFormat, ResourceMode};
+use pcl_core::pack_export::{
+    self, ExportSelection, LauncherExport, LauncherPlatform, PackExportOptions, PackFormat,
+    ResourceMode,
+};
 use std::{io::Write, path::PathBuf};
 
 pub(super) struct PackExportState {
@@ -14,7 +17,7 @@ pub(super) struct PackExportState {
     error: Option<String>,
     base_description: String,
     java_available: bool,
-    launcher_error: Option<String>,
+    launcher_directory: Option<PathBuf>,
 }
 impl Default for PackExportState {
     fn default() -> Self {
@@ -26,6 +29,7 @@ impl Default for PackExportState {
                 summary: String::new(),
                 selection: ExportSelection::default(),
                 resource_mode: ResourceMode::PreferHosted,
+                include_launcher: true,
                 ..Default::default()
             },
             advanced: false,
@@ -33,7 +37,7 @@ impl Default for PackExportState {
             error: None,
             base_description: String::new(),
             java_available: false,
-            launcher_error: None,
+            launcher_directory: default_launcher_directory(),
         }
     }
 }
@@ -46,10 +50,6 @@ impl Launcher {
         if self.pack_export.target.as_ref() != Some(&(root.clone(), id.clone())) {
             self.pack_export = PackExportState {
                 target: Some((root.clone(), id.clone())),
-                launcher_error: current_launcher()
-                    .and_then(|path| pack_export::validate_launcher_export(&path))
-                    .err()
-                    .map(|error| format!("{error:#}")),
                 java_available: pack_export::available_java_roots(&root, &id)
                     .is_ok_and(|paths| !paths.is_empty()),
                 base_description: self
@@ -320,21 +320,37 @@ impl Launcher {
                             false,
                         );
                     }
-                    if let Some(error) = &state.launcher_error {
-                        ui.add_enabled_ui(false, |ui| {checkbox(ui, &mut false, "PCL-Rust 启动器程序", error, false);});
-                    } else {
                     if checkbox(
                         ui,
                         &mut state.options.include_launcher,
-                        "PCL-Rust 启动器程序",
-                        "当前平台第三方 Rust 版；外层 ZIP 不包含账户/全局设置，公开再分发前请核对程序与字体许可",
+                        "PCL Rust 启动器（Windows、macOS、Linux）",
+                        "将三种系统的启动器一并打包",
                         false,
-                    )
-                    .changed()
-                        && state.options.include_launcher
-                    {
+                    ).changed() && state.options.include_launcher {
                         state.options.format = PackFormat::Mrpack;
                     }
+                    if state.options.include_launcher {
+                        ui.add_space(8.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if button(ui, "选择启动器目录", false).clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title("选择包含 windows、macos、linux 的目录")
+                                    .pick_folder()
+                                {
+                                    state.launcher_directory = Some(path);
+                                    state.error = None;
+                                }
+                            }
+                            if let Some(directory) = &state.launcher_directory {
+                                ui.label(directory.file_name().unwrap_or_default().to_string_lossy())
+                                    .on_hover_text(directory.display().to_string());
+                            }
+                        });
+                        let status = export_launchers(state.launcher_directory.as_deref());
+                        match status {
+                            Ok(_) => { ui.label("三端启动器已就绪"); }
+                            Err(error) => { ui.colored_label(theme::palette(ui.ctx()).accent, error.to_string()); }
+                        }
                     }
                 },
             );
@@ -421,7 +437,6 @@ impl Launcher {
                             {
                                 match read_options(&path).and_then(|value| {
                                     validate_available_options(&value.selection, available)?;
-                                    anyhow::ensure!(!value.include_launcher || state.launcher_error.is_none(), "此本机应用不能附带导出，请关闭 include_launcher");
                                     anyhow::ensure!(!value.include_java || state.java_available, "当前版本没有可导出的版本目录 Java，请关闭配置中的 include_java");
                                     Ok(value)
                                 }) {
@@ -525,6 +540,17 @@ impl Launcher {
                 return;
             }
         };
+        let launchers = if options.include_launcher {
+            match export_launchers(self.pack_export.launcher_directory.as_deref()) {
+                Ok(launchers) => launchers,
+                Err(error) => {
+                    self.pack_export.error = Some(format!("无法导出：{error:#}"));
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let Some(path) = rfd::FileDialog::new()
             .set_title("导出整合包")
             .add_filter(
@@ -547,15 +573,14 @@ impl Launcher {
         };
         self.pack_export.error = None;
         let root = self.settings.game_root.clone();
-        let launcher = current_launcher().ok();
         tx.spawn(move |tx| {
             let cancel = tx.cancel_token();
-            let event = pack_export_event(pack_export::export_pack_with_launcher(
+            let event = pack_export_event(pack_export::export_pack_with_launchers(
                 &root,
                 &id,
                 &path,
                 &options,
-                launcher.as_deref(),
+                &launchers,
                 &cancel,
                 |progress| {
                     let _ = tx.send(Event::Progress(progress));
@@ -581,13 +606,36 @@ pub(super) fn pack_export_event(result: anyhow::Result<pack_export::PackExportRe
     }
 }
 
-fn current_launcher() -> anyhow::Result<PathBuf> {
-    let executable = std::env::current_exe()?;
-    Ok(executable
-        .ancestors()
-        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
-        .unwrap_or(&executable)
-        .to_owned())
+fn default_launcher_directory() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    // The shared bundle is adjacent to the app, never inside its own export input.
+    for directory in executable.ancestors().skip(1).take(4) {
+        let bundle = directory.join("launcher-bundle");
+        if bundle.is_dir() {
+            return Some(bundle);
+        }
+    }
+    None
+}
+
+fn export_launchers(directory: Option<&std::path::Path>) -> anyhow::Result<Vec<LauncherExport>> {
+    let directory = directory.ok_or_else(|| anyhow::anyhow!("请选择三端启动器目录"))?;
+    let launchers = vec![
+        LauncherExport {
+            platform: LauncherPlatform::Windows,
+            path: directory.join("windows"),
+        },
+        LauncherExport {
+            platform: LauncherPlatform::Macos,
+            path: directory.join("macos/PCL-Rust.app"),
+        },
+        LauncherExport {
+            platform: LauncherPlatform::Linux,
+            path: directory.join("linux"),
+        },
+    ];
+    pack_export::validate_launchers(&launchers)?;
+    Ok(launchers)
 }
 
 fn suggested_pack_filename(options: &PackExportOptions) -> String {

@@ -292,6 +292,19 @@ impl Launcher {
                 paths.push(contents.join("Resources/PingFang-Regular.otf"));
             }
         }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(executable) = std::env::current_exe() {
+                if let Some(directory) = executable.parent() {
+                    paths.push(directory.join("resources/NotoSansSC-Regular.ttf"));
+                }
+            }
+            #[cfg(debug_assertions)]
+            paths.push(PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../test-output/fonts/linux/NotoSansSC-Regular.ttf"
+            )));
+        }
         #[cfg(debug_assertions)]
         paths.push(PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -346,6 +359,19 @@ impl Launcher {
             if let Some(contents) = executable.parent().and_then(|p| p.parent()) {
                 bold_paths.push(contents.join("Resources/PingFang-Semibold.otf"));
             }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(executable) = std::env::current_exe() {
+                if let Some(directory) = executable.parent() {
+                    bold_paths.push(directory.join("resources/NotoSansSC-Semibold.ttf"));
+                }
+            }
+            #[cfg(debug_assertions)]
+            bold_paths.push(PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../test-output/fonts/linux/NotoSansSC-Semibold.ttf"
+            )));
         }
         #[cfg(debug_assertions)]
         bold_paths.push(PathBuf::from(concat!(
@@ -817,7 +843,7 @@ impl Launcher {
                 Some(s) => s.clone(),
                 None => {
                     self.error = Some(if matches!(action, LaunchAction::Export { .. }) {
-                        "当前没有已载入的正版会话，无法导出该身份的启动参数。请先通过启动器登录；导出本身不会刷新凭据。".into()
+                        "请先登录正版账号，再导出启动参数。".into()
                     } else {
                         "请先完成微软登录。".into()
                     });
@@ -919,7 +945,7 @@ impl Launcher {
                         for message in &diagnostics {
                             let _ = tx.send(Event::Log(message.clone()));
                         }
-                        let message = format!("未找到满足此版本要求的 Java。\n版本范围：{}\n{}\n\n可以下载当前平台的官方 Java，或在设置中导入、调整优先级及排除名单。具体候选诊断已写入日志。", requirement.range, requirement.reasons.join("\n"));
+                        let message = format!("未找到满足此版本要求的 Java。\n版本范围：{}\n{}\n\n请下载 Java，或在设置中选择兼容版本。详情见日志。", requirement.range, requirement.reasons.join("\n"));
                         let _ = tx.send(Event::Launch(LaunchEvent::Unavailable {
                             request: launch_request,
                         }));
@@ -1051,7 +1077,7 @@ impl Launcher {
             if result.runnable_without_credentials {
                 "脚本包含离线启动参数；Java 和游戏文件仍需保留在原位置。"
             } else {
-                "正版凭据已全部替换为占位符。此脚本只能用于诊断，不能直接完成正版登录；请使用启动器登录并启动。"
+                "脚本已隐藏登录凭据，仅用于诊断。正版游戏请从启动器启动。"
             }
         );
         if let Some(action) = account_ui::account_modal(
@@ -1163,10 +1189,7 @@ impl Launcher {
             self.busy = None;
             self.progress = None;
             if active.cancel_requested() {
-                self.record(format!(
-                    "{}：已请求取消，以下保留后台实际结果。",
-                    active.label()
-                ));
+                self.record(format!("{}：收到取消请求。", active.label()));
             }
         }
         match *message.event {
@@ -1627,9 +1650,11 @@ impl Launcher {
                 }
             }
             ui.label(
-                RichText::new("支持 Modrinth、MultiMC / Prism、HMCL 和 MCBBS 整合包，安装到新实例。已有文件不会覆盖。")
-                    .small()
-                    .color(MUTED),
+                RichText::new(
+                    "支持 Modrinth、MultiMC / Prism、HMCL 和 MCBBS 整合包，将创建新实例。",
+                )
+                .small()
+                .color(MUTED),
             );
         });
         let Some((path, info)) = self.pack_info.clone() else {

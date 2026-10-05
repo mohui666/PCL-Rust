@@ -1,29 +1,54 @@
 # 验证摘要
 
-更新日期：2026-10-05。仓库本次提供 Rust 源码、Cargo 配置、脚本、必要资产和 CI。本文分别记录公开源码检出和此前本地开发版的证据，不代表完整迁移、应用发行包发布或所有游戏组合兼容。下列开发产物不提供下载。
+[项目首页](../README.md) / [文档索引](README.md)
 
+更新日期：2026-10-05。每项结论绑定对应源码、平台和验证方式；开发产物仅列指纹，不提供下载。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+
+## 当前结果速览
+
+| 项目 | 记录 |
+| --- | --- |
+| 本机冻结源码 | 616 通过、0 失败、4 忽略；200 个构建输入保持一致。 |
+| 本地构建 | macOS 签名包与 Windows 交叉编译包完成；哈希见下节。 |
+| CI | [faba0a0](https://github.com/mohui666/PCL-Rust/commit/faba0a024b86d216473352ca70a4f8b1ad4035ba) 的 [运行 37311469385](https://github.com/mohui666/PCL-Rust/actions/runs/37311469385) 两平台通过：Mac 616 通过、4 忽略；Windows 588 通过、3 忽略，均无失败。格式、严格 Clippy、工作区测试与 release 构建通过。 |
+| Mac 原生操作 | 帮助条目、跳转与图文布局；初始化确认后取消；独立设置往返；CF 输入提示居中。 |
+| 真实网络 | 三款历史 Forge 样本的库与 native 准备；公开 Mod Menu 元数据与图标查询。详见专项表。 |
+| Windows 实机 / 全页像素 | 尚未完成。 |
+| 登录审批 | 未确认过审；登录到 Minecraft 4/6，未取得终态。见 [登录说明](login.md)。 |
+| CurseForge | 申请已提交待审核，尚无 Key 或真实 API 验证。见 [服务状态](upstream.md#外部服务状态)。 |
+
+CI 结果仅对应提交 `faba0a0`，不包含之后的文案和三端导出改动。
+
+<details>
+<summary>前一提交的 CI 失败记录</summary>
+
+[973fc8f](https://github.com/mohui666/PCL-Rust/commit/973fc8fafe7ee9c9431d91877f38de4947af0056) 的 [运行 37310136786](https://github.com/mohui666/PCL-Rust/actions/runs/37310136786) 失败。两平台格式与严格 Clippy 通过；Mac 核心 349 通过/2 忽略，桌面 264 通过/3 失败/2 忽略。3 项帮助几何测试缺少中文字库，报 `Chinese system/fixture font required on supported desktop targets`；Windows 测试被取消，两平台 release 均跳过。后续提交补入字体准备步骤，结果见上表。
+
+</details>
+
+历史批次折叠保留于页尾，原始本地日志与截图不随公开仓库提供。术语见 [文档索引](README.md#状态怎么读)。
 
 ## 九类能力补齐与帮助格式修复（2026-10-05）
 
-本批依据当前冻结源码补齐此前列出的九类能力，并处理帮助原始 XAML 格式、版本独立设置重入刷新及输入框文字上浮反馈。登录与联机排除本批。实现范围与仍受限部分分别见 [已补项与剩余边界](remaining-migration.md)、[UI 核对表](ui-gap-audit.md)；下表和专项结果不等于全部原版行为或成对像素验收。
+本批补齐九类能力、帮助 XAML、独立设置重入刷新和输入文字居中。功能说明见 [当前范围](remaining-migration.md)，下表列验证内容。
 
 | 本批能力 | 已实现与本次验证范围 |
 | --- | --- |
 | 窗口尺寸记忆 | 正常逻辑宽高持久保存/重开恢复，关闭补写与屏幕限幅；排除最小化/最大化/全屏尺寸污染。状态/保存夹具通过，跨显示器、全部 DPI 与 Windows 实机未全验。 |
 | 分设置页初始化 | 启动/个性化/其他/全部偏好四范围；先备份，拒绝过期磁盘快照；分页保留其它页、目录、账号输入、窗口尺寸及提示关闭状态。临时目录夹具通过，不删除背景/音乐/游戏文件；无全局备份图形恢复选择器。 |
-| 提示关闭记忆 | 高级启动、实例独立设置、主页风险与文档声明的 MyHint 关闭状态持久化；真实指针事件及重载夹具通过，不推定所有原版条件提示/内部键已经兼容。 |
+| 提示关闭记忆 | 高级启动、实例独立设置、主页风险与文档声明的 MyHint 关闭状态持久化；真实指针事件及重载夹具通过，未覆盖原版全部条件提示与内部键。 |
 | 页面切换动画 | 页面卡片、侧栏行/缩放、标题及宽度的原版时序/缓动；退出快照保留纹理，错位期间不提交内容操作；时序/几何/导航中断与纹理生命周期有回归，完整原生帧轨迹/像素未验。 |
 | Mod 详情与诊断 | 本地描述/作者/环境/声明依赖与冲突、重复 ID；受校验内容哈希/指纹关联远端译名/标签/图标/版本，文件替换/离页隔离旧结果。未知版本与内嵌依赖不武断判错；固定夹具及下述 Modrinth 单样本核心探测通过。 |
 | 崩溃归因 | 保留固定规则，补 Fabric 建议、Forge MOD 失败块、Mixin/显式 Mod、受限异常栈与 Mod 清单关联、明确实体/方块位置及维度。核心固定日志 16 项、桌面导入/生命周期 3 项定向通过；候选、原始证据与建议分开，不上传日志或自动修改存档。 |
-| XAML 绑定与布局 | Style.BasedOn、文档局部 TwoWay/OneWayToSource、跨节点显示 Binding/Setter、Hidden/Collapsed 等；继承/真实编辑/状态/布局回归通过。写入仅本文档局部值，不越到账号/应用配置，不执行 CLR/转换器/自动副作用事件。 |
-| 显式权重任务 | TaskComponentSpec 声明组件权重和依赖，基础安装真实阶段按 5/14/4/14/1/1 汇总，组合按实际工作计划推进；依赖未完成不能提前记下游进度。权重非字节比/耗时，无遥测不虚构线性增长，通用任意 Loader 图仍不等价。 |
+| XAML 绑定与布局 | Style.BasedOn、文档局部 TwoWay/OneWayToSource、跨节点显示 Binding/Setter、Hidden/Collapsed 等；继承/真实编辑/状态/布局回归通过。写入仅本文档局部值，不写入账号或应用配置，不执行 CLR/转换器/自动副作用事件。 |
+| 显式权重任务 | TaskComponentSpec 声明组件权重和依赖，基础安装真实阶段按 5/14/4/14/1/1 汇总，组合按实际工作计划推进；依赖未完成不能提前记下游进度。权重不表示字节比例或耗时；未上报进度的阶段只在完成时结算，不支持任意 Loader 图。 |
 | 历史安装兼容 | 补真实旧 minecraftforge 坐标、native-only/classifier、一致重复库与实际隔离/自定义目录 map_to_resources；保留哈希、路径/提取限制和现有文件冲突保护。三款官方样本的六次平台参数探测另列，未运行历史 Java/游戏。 |
 
-本机冻结检查：核心 **349**、桌面 **267**，共 **616 通过、0 失败、4 忽略**；另无文档测试失败。Mac 与 Windows 目标的严格 Clippy 通过；两端本地 release 包已完成，**200 个构建输入**在检查/构建前后保持一致。4 项忽略没有并入通过数；下面单独执行的官方历史样本测试属于独立证据，也不叠加进 616。此处未用历史远端 CI 代替本批结果。
+本机冻结检查：核心 **349**、桌面 **267**，共 **616 通过、0 失败、4 忽略**；文档测试无失败。Mac 与 Windows 目标的严格 Clippy 通过；两端本地 release 包已完成，**200 个构建输入**在检查/构建前后保持一致。4 项忽略和另行运行的历史样本测试不计入 616。
 
-固定帮助保留 **40 条目录记录中的 30 篇正文原始 XAML**，共用渲染器在两种内容宽度 589/768 DIP 完成全正文解析/布局测试。文本 Run/Bold/Span 继承字样、行高/颜色/对齐、四边 Padding、正负 Margin、Grid 同格图文、图片对齐、原版 MyCard 箭头/标题与 42 DIP MyListItem 图标/标题/副标题均纳入修复。有效帮助元数据填充入口；缺失的新手教程目标保留目标信息、显示“帮助条目未收录”并禁用入口，不伪造跳转；远程图片的几何夹具使用预置纹理，不据此宣布网络图像加载通过。
+固定帮助保留 **40 条目录记录中的 30 篇正文原始 XAML**，共用渲染器在两种内容宽度 589/768 DIP 完成全正文解析/布局测试。文本 Run/Bold/Span 继承字样、行高/颜色/对齐、四边 Padding、正负 Margin、Grid 同格图文、图片对齐、原版 MyCard 箭头/标题与 42 DIP MyListItem 图标/标题/副标题均纳入修复。帮助入口显示标题、说明与图标；缺失的新手教程目标显示“帮助条目未收录”并禁用；远程图片几何测试使用预置纹理，未测试下载。
 
-版本独立设置入口现在按当前选中版本重读磁盘配置，并复用原版箭头控件；回归覆盖两种宽度、A/B 切换及同一 B 在磁盘更新后重入。全局单行输入 helper 统一垂直居中，覆盖搜索、设置、CurseForge 和弹窗输入；生产 Latin 与本机苹方的文字/提示几何测试通过。上述是自动输入/布局证据，不等于所有原生控件状态的像素比较。
+版本独立设置入口现在按当前选中版本重读磁盘配置，并复用原版箭头控件；回归覆盖两种宽度、A/B 切换及同一 B 在磁盘更新后重入。全局单行输入框统一垂直居中，覆盖搜索、设置、CurseForge 和弹窗输入；生产 Latin 与本机苹方的文字/提示几何测试通过。
 
 最终本地开发产物（未公开应用发行包）：
 
@@ -32,7 +57,7 @@
 | macOS arm64，签名后 | 22,689,760 | `7918e17935a0ef7f7d452d4896c6452e3e28159d15399226d0f266ab9ab987f0` |
 | Windows x86-64 GUI，交叉构建 | 25,792,512 | `4ed8c9f4c8031d987a3d9b001d658c9d7b52ec62dc56ca826fdeea7db9d96836` |
 
-两端大小和 SHA256 已独立复算，与记录一致。Mac 严格签名验证通过，签名前 cargo 主程序与签名后的包内主程序哈希不同属已记录的签名修改；表中使用最终包内值。Windows 为 PE32+ AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；包内 EXE 与构建输出相同，未执行该 Windows 包或 Wine。旧两端产物/记录另存，没有覆盖为本批结果。
+两端大小和 SHA256 已独立复算，与记录一致。Mac 严格签名验证通过，签名前 cargo 主程序与签名后的包内主程序哈希不同属已记录的签名修改；表中使用最终包内值。Windows 为 PE32+ AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；包内 EXE 与构建输出相同，未执行该 Windows 包或 Wine。旧产物另存。
 
 最终 Mac 应用已完成下列原生检查：
 
@@ -43,17 +68,24 @@
 | 全局启动页页尾“版本独立设置” → 独立设置 → “全局设置” | 实际进入选中验收实例的独立设置，再通过页尾箭头回到全局设置，完整点击路径通过。 |
 | 滚动至 CurseForge 输入框 | 原生截图确认 hint 垂直居中；未输入或保存密钥，不算 API 接入验证。 |
 
-上述操作后，用户设置文件与原生检查前的本地基线字节相同。证据只覆盖这些最终包的局部原生操作与可见状态，不能扩大成全部帮助、全部控件状态或无损逐像素验收；离屏渲染测试另行保留。
+上述操作后，用户设置文件与原生检查前的本地基线字节相同。原生验证范围限于表中操作。
 
-| 独立专项证据 | 实际结果 | 不能据此推定 |
+| 独立专项证据 | 实际结果 | 未覆盖 |
 | --- | --- | --- |
-| 官方历史样本独立探测（原始证据留在本地） | 官方 Forge 1.6.1 的 8.9.0.753/775、1.6.2 的 9.10.1.871 安装包 MD5 核对；每款分别按 macOS/Windows 元数据执行支持库 SHA1/原生 ZIP 提取，共六次，均为24个库/2个 native archive；独立测试通过 | 没有执行 Java 或 Minecraft，也不是 Windows 上运行安装器；不证明全部旧版、ZIP64/分卷/自解压或未知处理器兼容。 |
-| 公开 Mod Menu 样本核心探测（原始证据留在本地） | 隔离副本的公开 Mod Menu 11.0.5 经生产扫描及真实 SHA512 查询匹配 Modrinth，返回中文关联名、utility/仅客户端标签、MC 百科1675和96×96 PNG；原件与副本 SHA256 不变，未读取用户 Mod | 这是单样本核心网络/元数据/图标链路，无 GUI、CurseForge 或游戏启动，不能称整页/双源/全部 Mod 验收。 |
-| 固定崩溃日志与桌面回归（原始证据留在本地） | 固定错误日志与 UI 导入/生命周期回归，普通 INFO 栈/未知短日志不伪造崩溃根因 | 不是用户真实崩溃，不保证候选 Mod 就是元凶；没有运行修复或修改世界。 |
+| 官方历史样本独立探测（本地证据） | 官方 Forge 1.6.1 的 8.9.0.753/775、1.6.2 的 9.10.1.871 安装包 MD5 核对；每款分别按 macOS/Windows 元数据执行支持库 SHA1/原生 ZIP 提取，共六次，均为24个库/2个 native archive；独立测试通过 | 没有执行 Java 或 Minecraft，也不是 Windows 上运行安装器；不证明全部旧版、ZIP64/分卷/自解压或未知处理器兼容。 |
+| 公开 Mod Menu 样本核心探测（本地证据） | 隔离副本的公开 Mod Menu 11.0.5 经生产扫描及真实 SHA512 查询匹配 Modrinth，返回中文关联名、utility/仅客户端标签、MC 百科1675和96×96 PNG；原件与副本 SHA256 不变，未读取用户 Mod | 仅验证该样本的网络、元数据与图标查询；未检查 GUI、CurseForge 或游戏启动。 |
+| 固定崩溃日志与桌面回归（本地证据） | 固定错误日志与 UI 导入/生命周期回归，普通 INFO 栈/未知短日志不伪造崩溃根因 | 固定测试日志，不代表真实崩溃根因；未修改世界。 |
 
-固定上游 `PageDownloadInstall.xaml.vb:724、757` 明确跳过 universal/client ZIP，故不列为原版自动安装漏迁。本轮补旧 installer/native 和映射资源没有移除校验。私有主题精确参数、完整 WPF/CLR、有效资格下的 CF/OptiFabric、全部历史/含 Mod 游戏组合、Windows 实机和全页面同状态像素对照仍保留边界；登录与联机不计本批。
+固定上游 `PageDownloadInstall.xaml.vb:724、757` 明确跳过 universal/client ZIP，故不列为原版自动安装漏迁。格式和平台限制见 [当前范围](remaining-migration.md)；登录与联机排除本批。
 
-本轮完整测试/构建日志、输入快照、原生操作记录及网络探测原始证据保留在开发者本地，不随公开仓库提供。公开代码中的回归可分别查阅 [任务与权重](../crates/pcl-desktop/src/app/task_ui.rs)、[帮助渲染](../crates/pcl-desktop/src/app/more_ui.rs)、[XAML 布局](../crates/pcl-desktop/src/app/xaml_ui.rs)、[历史安装](../crates/pcl-core/src/forge.rs)及[崩溃归因](../crates/pcl-core/src/crash_analysis.rs)。后续公开 CI 应以对应提交独立核对；以下历史摘要的原时点与结论保持不变。
+本轮完整测试/构建日志、输入快照、原生操作记录及网络探测原始证据保留在开发者本地，不随公开仓库提供。公开代码中的回归可分别查阅 [任务与权重](../crates/pcl-desktop/src/app/task_ui.rs)、[帮助渲染](../crates/pcl-desktop/src/app/more_ui.rs)、[XAML 布局](../crates/pcl-desktop/src/app/xaml_ui.rs)、[历史安装](../crates/pcl-core/src/forge.rs)及[崩溃归因](../crates/pcl-core/src/crash_analysis.rs)。历史结果按原批次保留。
+
+## 历史批次
+
+以下按原文保留各批结果；涉及审核或工具拦截的描述均属于当时状态。当前账号状态见 [登录说明](login.md)。
+
+<details>
+<summary>实例设置页尾修正（2026-10-05）</summary>
 
 ## 实例设置页尾修正（2026-10-05）
 
@@ -70,6 +102,11 @@ Mac 严格签名验证通过；实际新包已重新打开，侧栏初始化确�
 
 Windows 为 AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；本地 Windows 包未执行。两端均只更新本地包，未发布应用发行包。证据：`test-output/instance-footer-{checks,source-snapshot,macos-validation,windows-validation}.json`、对应日志及 `instance-footer-review/validation.json`。补丁前已在上一构建检查资源搜索字段对齐、真实键盘输入和加载器下拉；它们保持独立记录，不冒充最终包复测。
 
+</details>
+
+<details>
+<summary>原生复查补丁（2026-10-05）</summary>
+
 ## 原生复查补丁（2026-10-05）
 
 本轮尝试读取实际窗口时，桌面工具连续返回 `timeoutReached (-10005)`；重置后仍然超时，未取得新截图或完成原生点击。已请用户退出并重开最新版窗口。本次没有返回锁屏提示，不能将此超时直接归因为锁屏。
@@ -77,6 +114,11 @@ Windows 为 AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；本地 Wi
 独立复查发现状态栏测试仍用默认样式。改用实际间距、字号及本机苹方后，复现 31 DIP 无进度面板的“取消”文字超出内容下界 0.5 DIP；局部限制首行高度后，810/989 宽度、有/无进度四种布局以及日志/取消点击通过。保留加强后的原测试，总数不变；本地 **560 通过、0 失败、3 忽略**，格式及 Mac/Windows 全目标严格 Clippy 通过。公开 CI 若无本补丁的独立结果，前一批通过记录不得移用。
 
 两端本地 release 已重新构建，194 份输入与公开副本相同；Mac 签名校验通过，Windows PE 静态检查通过。主程序 SHA256：Mac `ded2b342d6313ab9f2a66eb425da52c2bb4261df3f953221075042a485f952b9`（22,015,216 字节），Windows `ec7afd2091e5d9ec886531980d6b8d0c14f96aeafae1ad33b2348d5f02d489a8`（25,185,280 字节）。Windows 本地包未运行。证据：`test-output/ui-native-recheck-{checks,source-snapshot,macos-validation,windows-validation}.json` 及 `ui-native-recheck-20261005/validation.json`。
+
+</details>
+
+<details>
+<summary>界面一致性复查（2026-10-05）</summary>
 
 ## 界面一致性复查（2026-10-05）
 
@@ -94,6 +136,11 @@ Windows 为 AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；本地 Wi
 | Windows x86-64 GUI，交叉构建 | 25,146,880 | `fdba3c4c90338a797729cb2b4c9201962a4126b33b6998a31d4fed99e9594598` |
 
 Mac 严格签名验证通过。Windows 为 AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库；本地包未执行或经 Wine 运行。当前用户设置与本轮基线相同。证据为 `test-output/ui-consistency-final-{checks,source-snapshot,macos-validation,windows-validation,ci}.json`、对应日志和 `ui-consistency-gui/validation.json`。
+
+</details>
+
+<details>
+<summary>列表修正批（2026-10-05）</summary>
 
 ## 列表修正批（2026-10-05）
 
@@ -118,6 +165,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI、30 个系统 DLL，无
 
 证据：`test-output/list-parity-{checks,source-snapshot,macos-validation,windows-validation,ci}.json`、对应日志与 `list-parity-gui/validation.json`。以下首批记录保留原时点，不冒充本次最终包验证。
 
+</details>
+
+<details>
+<summary>UI 反馈首批（2026-10-05，列表修正前）</summary>
+
 ## UI 反馈首批（2026-10-05，列表修正前）
 
 根据用户截图删除资源页缓存说明及设置页常驻开发说明；资源版本下拉由固定数组改为官方清单，保留手动输入和刷新；Quilt、LiteLoader 与其他组件同级显示；标题/主页单选、功能隐藏及系统设置按固定 Windows 源码重新排版；关于页新增 mohui666 的 GitHub 头像。
@@ -131,6 +183,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI、30 个系统 DLL，无
 本批中间包 Mac 主程序 SHA256 为 `779ba9b6f0e22221b39cd8359911bd1ab23d94325359ec5b57bfdaa2335f8bcf`（22,031,856 字节），严格签名验证通过；Windows 交叉构建为 `a144af537180304c514c8cdccfe2165fc48a3febf623f57562e537c11b85dcb3`（25,077,760 字节），PE AMD64/GUI、30 个系统 DLL，无 MinGW 动态运行库。该 Windows 包未执行。
 
 Mac 原生已观察作者头像、版本菜单顶部 26.3/26.4 预览、组件同级卡片、去说明后的启动器设置及调试布局，以及真实离线进程创建后的左侧等待界面。用户同期操作窗口并提出后续列表反馈，因此没有把该次进程退出认定为就绪或关闭按钮验证。未导出截图；设置仅有用户主动切换的主题变化。本批证据为 `test-output/ui-feedback-{checks,source-snapshot,macos-validation,windows-validation,ci}.json` 与 `ui-feedback-gui/validation.json`；后续列表修正需重新构建并另记验证。
+
+</details>
+
+<details>
+<summary>历史508测试批：剩余功能补齐（2026-10-05）</summary>
 
 ## 历史508测试批：剩余功能补齐（2026-10-05）
 
@@ -165,6 +222,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI，30 个系统 DLL，无
 
 本地证据：`test-output/remaining-completion-{checks,source-snapshot,macos-validation,windows-validation}.json`、`remaining-completion-gui/validation.json`、对应测试/构建日志、`remaining-windows-ci-clippy-fix.log` 和 `remaining-resumable-live.log`。历史证据与旧包单独保存，没有改写为本次结果。
 
+</details>
+
+<details>
+<summary>历史444测试批：非登录功能与输入页面修复</summary>
+
 ## 历史444测试批：非登录功能与输入页面修复
 
 2026-10-05 本机最终统一检查：核心 **277**、桌面 **167**，共 **444 通过、0 失败、3 忽略**；全部目标严格 Clippy 与格式检查通过，175 个源码/资源/脚本输入冻结。最后修正了输入框聚焦白边、线程/限速滑轨与“其他”页布局；CurseForge 高级配置默认折叠于页尾，保存/清除能力保留，技术说明移至悬停提示。
@@ -185,6 +247,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI，30 个系统 DLL，无
 最终 Mac 应用中已实际检查：线程数经鼠标聚焦和键盘从 64 改为 32 再恢复；限速滑轨点击更新为 5120 KiB/s，再输入 0 恢复不限速；输入框聚焦边框可见。CurseForge 高级配置默认收起，展开、收起均可操作；未编辑密钥。下载资源名称实际输入 `sodium`，分类选择“科技”再恢复“全部”，查询清空。下载来源、64 线程、不限速保持原值。
 
 原生拖动工具两次未改变滑轨值，尚不能认定原生拖动通过；生产布局的六组连续指针事件夹具通过，不能替代实机拖动。没有新增正版登录、Windows GUI 或完整逐像素验收。前一份功能包的离线游戏运行证据不移用于最终二进制。
+
+</details>
+
+<details>
+<summary>历史批：版本加载、设置与下拉菜单</summary>
 
 ## 历史批：版本加载、设置与下拉菜单
 
@@ -210,6 +277,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI，30 个系统 DLL，无
 
 旧源码提交 `85aa0c0` 的 [GitHub Actions 运行](https://github.com/mohui666/PCL-Rust/actions/runs/37218910801) 最终在Windows Clippy失败，Mac由fail-fast取消；本批修正Unix专用测试辅助函数的条件编译。本地及交叉检查通过不等于远端新工作流通过，远端状态须以当前提交的Actions结果为准。
 
+</details>
+
+<details>
+<summary>历史源码检出：85aa0c0</summary>
+
 ## 历史源码检出：85aa0c0
 
 源码发布日期为 **2026-10-05**。本次仓库包含本地构建所需的代码、锁文件、脚本和必要资产，macOS 字体在使用者本机生成；不上传应用发行包、系统派生字体或原始验证日志。CI 配置执行格式、Clippy、测试及 release 构建，不打包或上传 `dist/`。
@@ -224,6 +296,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI，30 个系统 DLL，无
 | release 构建 | `cargo build --workspace --release --locked --offline` | 通过 |
 
 这是本次检出的本地检查，不是远端 GitHub Actions 运行结果。本次未打包、未新增 GUI 检查、未进行真实登录，也未执行 Windows/Wine。下面保留的 304 测试批和 `f710…` / `9b74…` 主程序哈希仍属于上一批本地开发及签名/交叉构建产物，不归到此次 release 构建。
+
+</details>
+
+<details>
+<summary>历史本地开发验证：登录反馈与恢复流程</summary>
 
 ## 历史本地开发验证：登录反馈与恢复流程
 
@@ -255,6 +332,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI，30 个系统 DLL，无
 
 已知交互限制：消息框旋转入场的 **360 毫秒**内暂缓指针提交，键盘仍可使用；底层界面库不能旋转命中区域。完整进出场逐帧轨迹、全部交互状态及同状态 Windows 参考图的成对像素检查仍未完成。现有 JPEG 截图也不是无损逐像素等价证据。
 
+</details>
+
+<details>
+<summary>登录服务的真实验证状态</summary>
+
 ## 登录服务的真实验证状态
 
 自有应用已配置为支持个人 Microsoft 账号的公共客户端，真实设备码请求成功。随后一次真实尝试在 Minecraft Services 的 `login_with_xbox` 阶段返回 **HTTP 403**。
@@ -262,6 +344,11 @@ Mac 严格签名验证通过。Windows PE 为 AMD64/GUI，30 个系统 DLL，无
 按照实现中的调用顺序，可以推断此前 Microsoft、Xbox Live 和 XSTS 阶段已完成；这不是各服务独立响应日志的验收。HTTP 403 说明请求被拒绝，但不足以单独确认原因是应用资格、配置还是其他访问限制。
 
 Minecraft AppID 访问审核申请已提交，**尚未确认审核通过**。本批没有新增真实授权尝试。所有权、玩家资料、真实刷新凭据保存与恢复、续期和皮肤/披风变更仍未完成端到端验收。实现与恢复语义见[登录说明](login.md)。
+
+</details>
+
+<details>
+<summary>历史有限证据</summary>
 
 ## 历史有限证据
 
@@ -274,6 +361,10 @@ Minecraft AppID 访问审核申请已提交，**尚未确认审核通过**。本
 
 原始日志、截图、测试账号数据和本机路径不随本公开摘要提供。后续变更应重新记录对应构建和验证范围，不能将自动化测试、模拟界面或某次成功操作当作完整迁移验收。
 
+</details>
+
+<details>
+<summary>2026-10-05 输入控件与账号菜单修复</summary>
 
 ## 2026-10-05 输入控件与账号菜单修复
 
@@ -285,6 +376,10 @@ Mac 本机签名后主程序 SHA-256：`f715c76505cbf2f57008bfa1fcdfc50c0e65ead2
 
 后续复核：通过窗口的 Raise 动作激活后，坐标点击恢复。两个账号菜单均实际鼠标展开并对齐；离线用户名输入 `Player_UI` 后恢复 `Player`。下载名称输入 `sodium`，分类选择“科技”，版本连续输入到 `1.21.11` 后恢复，均在界面观察到。没有发起正版登录。
 
+</details>
+
+<details>
+<summary>2026-10-05 非登录功能接入与跨平台回归</summary>
 
 ## 2026-10-05 非登录功能接入与跨平台回归
 
@@ -297,3 +392,5 @@ Mac 本机签名后主程序 SHA-256：`f715c76505cbf2f57008bfa1fcdfc50c0e65ead2
 此前菜单修复提交的远端 Windows 测试发现两处路径问题：Forge 处理器的 Windows verbatim 路径混入 `/` 导致合法目录被拒绝；继承启动测试使用 POSIX 字符串后缀。本批修复真实路径规范化并保留原有路径边界检查，测试按实际路径严格比较。修复后的远端 CI 结论以对应提交工作流为准，不能复用本机通过结论。
 
 本节保留此前 440 测试批记录；最终产物、签名、窗口实际运行及远端 Windows 测试见本文顶部当前批。尚未认定完整非登录迁移或像素等价。
+
+</details>

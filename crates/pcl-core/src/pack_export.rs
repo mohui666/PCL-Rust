@@ -22,7 +22,10 @@ mod formats;
 pub use formats::PackFormat;
 #[path = "pack_export_extras.rs"]
 mod extras;
-pub use extras::{available_java_roots, export_pack_with_launcher, validate_launcher_export};
+pub use extras::{
+    available_java_roots, export_pack_with_launcher, export_pack_with_launchers,
+    validate_launcher_export, validate_launchers, LauncherExport, LauncherPlatform,
+};
 
 const MAX_FILE: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
@@ -2752,7 +2755,7 @@ mod tests {
         assert!(!rejected.exists());
     }
     #[test]
-    fn launcher_bundle_rejects_local_only_system_fonts_before_creating_archive() {
+    fn launcher_bundle_preserves_mac_fonts_and_signature_resources() {
         let root = fixture();
         let app = root.path().join("Current.app");
         put(&app, "Contents/Info.plist", b"fixture");
@@ -2761,25 +2764,270 @@ mod tests {
             "Contents/Resources/PingFang-Regular.otf",
             b"local-only fixture font",
         );
+        put(
+            &app,
+            "Contents/Resources/PingFang-Semibold.otf",
+            b"bold fixture",
+        );
+        put(
+            &app,
+            "Contents/_CodeSignature/CodeResources",
+            b"signature fixture",
+        );
+        put(&app, "Contents/MacOS/pcl-desktop", b"synthetic executable");
         let mut value = options();
         value.include_launcher = true;
-        let output = root.path().join("not-redistributable.zip");
-        assert!(export_pack_with_launcher(
+        value.resource_mode = ResourceMode::EmbedAll;
+        let output = root.path().join("mac-launcher.zip");
+        validate_launcher_export(&app).unwrap();
+        export_pack_with_launcher(
             root.path(),
             "pack",
             &output,
             &value,
             Some(&app),
             &AtomicBool::new(false),
-            |_| {}
+            |_| {},
         )
-        .unwrap_err()
-        .to_string()
-        .contains("仅本机"));
-        assert!(!output.exists());
+        .unwrap();
+        let files = archive(&output);
+        for path in [
+            "Contents/Info.plist",
+            "Contents/Resources/PingFang-Regular.otf",
+            "Contents/Resources/PingFang-Semibold.otf",
+            "Contents/_CodeSignature/CodeResources",
+            "Contents/MacOS/pcl-desktop",
+        ] {
+            assert_eq!(
+                files[&format!("PCL-Rust.app/{path}")],
+                fs::read(app.join(path)).unwrap()
+            );
+        }
         assert_eq!(
             fs::read(app.join("Contents/Resources/PingFang-Regular.otf")).unwrap(),
             b"local-only fixture font"
+        );
+    }
+
+    fn three_launchers(root: &Path) -> Vec<LauncherExport> {
+        put(
+            root,
+            "programs/windows/PCL-Rust.exe",
+            b"MZ\x00\x00synthetic PE fixture",
+        );
+        put(
+            root,
+            "programs/windows/companion.dll",
+            b"synthetic DLL fixture",
+        );
+        put(
+            root,
+            "programs/macos/PCL-Rust.app/Contents/Info.plist",
+            b"fixture plist",
+        );
+        put(
+            root,
+            "programs/macos/PCL-Rust.app/Contents/MacOS/pcl-desktop",
+            b"\xcf\xfa\xed\xfe synthetic Mach-O fixture",
+        );
+        put(
+            root,
+            "programs/macos/PCL-Rust.app/Contents/Resources/PingFang-Regular.otf",
+            b"synthetic regular font",
+        );
+        put(
+            root,
+            "programs/macos/PCL-Rust.app/Contents/_CodeSignature/CodeResources",
+            b"synthetic sealed resources",
+        );
+        put(
+            root,
+            "programs/linux/PCL-Rust",
+            b"\x7fELF synthetic ELF fixture",
+        );
+        put(
+            root,
+            "programs/linux/fonts/fixture.ttf",
+            b"synthetic redistributable font",
+        );
+        put(root, "programs/linux/LICENSE", b"fixture licence");
+        vec![
+            LauncherExport {
+                platform: LauncherPlatform::Windows,
+                path: root.join("programs/windows"),
+            },
+            LauncherExport {
+                platform: LauncherPlatform::Macos,
+                path: root.join("programs/macos/PCL-Rust.app"),
+            },
+            LauncherExport {
+                platform: LauncherPlatform::Linux,
+                path: root.join("programs/linux"),
+            },
+        ]
+    }
+
+    #[test]
+    fn three_platform_launchers_preserve_payloads_and_import_only_game_content() {
+        let root = fixture();
+        let launchers = three_launchers(root.path());
+        put(root.path(), "instances/pack/options.txt", b"music:0.5");
+        let mut value = options();
+        value.include_launcher = true;
+        value.resource_mode = ResourceMode::EmbedAll;
+        let output = root.path().join("three-platforms.zip");
+        export_pack_with_launchers(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            &launchers,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        let files = archive(&output);
+        for (relative, original) in [
+            ("windows/PCL-Rust.exe", "programs/windows/PCL-Rust.exe"),
+            ("windows/companion.dll", "programs/windows/companion.dll"),
+            (
+                "macos/PCL-Rust.app/Contents/Resources/PingFang-Regular.otf",
+                "programs/macos/PCL-Rust.app/Contents/Resources/PingFang-Regular.otf",
+            ),
+            (
+                "macos/PCL-Rust.app/Contents/_CodeSignature/CodeResources",
+                "programs/macos/PCL-Rust.app/Contents/_CodeSignature/CodeResources",
+            ),
+            ("linux/PCL-Rust", "programs/linux/PCL-Rust"),
+            (
+                "linux/fonts/fixture.ttf",
+                "programs/linux/fonts/fixture.ttf",
+            ),
+            ("linux/LICENSE", "programs/linux/LICENSE"),
+        ] {
+            assert_eq!(
+                files[&format!("launchers/{relative}")],
+                fs::read(root.path().join(original)).unwrap()
+            );
+        }
+        let mut zip = ZipArchive::new(File::open(&output).unwrap()).unwrap();
+        for path in [
+            "launchers/linux/PCL-Rust",
+            "launchers/macos/PCL-Rust.app/Contents/MacOS/pcl-desktop",
+        ] {
+            assert_eq!(
+                zip.by_name(path).unwrap().unix_mode().unwrap() & 0o777,
+                0o755
+            );
+        }
+        let target = root.path().join("import");
+        crate::modpack::import_mrpack(&output, &target, false, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(fs::read(target.join("options.txt")).unwrap(), b"music:0.5");
+        assert!(!target.join("launchers").exists());
+        let before = fs::read(&output).unwrap();
+        assert!(export_pack_with_launchers(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            &launchers,
+            &AtomicBool::new(false),
+            |_| {}
+        )
+        .is_err());
+        assert_eq!(fs::read(&output).unwrap(), before);
+        let cancelled = root.path().join("cancelled.zip");
+        assert!(export_pack_with_launchers(
+            root.path(),
+            "pack",
+            &cancelled,
+            &value,
+            &launchers,
+            &AtomicBool::new(true),
+            |_| {}
+        )
+        .unwrap_err()
+        .is::<crate::model::OperationCancelled>());
+        assert!(!cancelled.exists());
+    }
+
+    #[test]
+    fn three_platform_launchers_reject_missing_duplicate_and_wrong_programs_before_export() {
+        let root = fixture();
+        let mut launchers = three_launchers(root.path());
+        let mut value = options();
+        value.include_launcher = true;
+        let output = root.path().join("invalid.zip");
+        let fail_before_progress = |launchers: &[LauncherExport]| {
+            let error = export_pack_with_launchers(
+                root.path(),
+                "pack",
+                &output,
+                &value,
+                launchers,
+                &AtomicBool::new(false),
+                |_| panic!("preflight must precede inner export"),
+            )
+            .unwrap_err();
+            assert!(!output.exists());
+            error.to_string()
+        };
+        assert!(fail_before_progress(&launchers[..2]).contains("缺少 Linux"));
+        let mut repeated = launchers.clone();
+        repeated.push(launchers[0].clone());
+        assert!(fail_before_progress(&repeated).contains("重复提供 Windows"));
+        fs::write(root.path().join("programs/linux/PCL-Rust"), b"MZ wrong OS").unwrap();
+        assert!(fail_before_progress(&launchers).contains("Linux 启动器程序格式不匹配"));
+        fs::write(
+            root.path().join("programs/linux/PCL-Rust"),
+            b"\x7fELF restored",
+        )
+        .unwrap();
+        launchers[0].path = root.path().join("programs/windows/PCL-Rust.exe");
+        launchers[2].path = root.path().join("programs/linux/PCL-Rust");
+        validate_launchers(&launchers).unwrap();
+        fs::remove_file(
+            root.path()
+                .join("programs/macos/PCL-Rust.app/Contents/MacOS/pcl-desktop"),
+        )
+        .unwrap();
+        assert!(fail_before_progress(&launchers).contains("macOS 应用缺少"));
+    }
+
+    #[test]
+    fn three_platform_launchers_abort_when_a_source_changes_during_export() {
+        let root = fixture();
+        let launchers = three_launchers(root.path());
+        put(root.path(), "instances/pack/options.txt", b"music:0.5");
+        let mut value = options();
+        value.include_launcher = true;
+        value.resource_mode = ResourceMode::EmbedAll;
+        let output = root.path().join("changed.zip");
+        let changed = AtomicBool::new(false);
+        let result = export_pack_with_launchers(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            &launchers,
+            &AtomicBool::new(false),
+            |_| {
+                if !changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    fs::write(
+                        root.path().join("programs/linux/PCL-Rust"),
+                        b"\x7fELF changed after source snapshot",
+                    )
+                    .unwrap();
+                }
+            },
+        );
+        assert!(changed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(result.is_err());
+        assert!(!output.exists());
+        assert_eq!(
+            fs::read(root.path().join("programs/linux/PCL-Rust")).unwrap(),
+            b"\x7fELF changed after source snapshot"
         );
     }
 }

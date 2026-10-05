@@ -35,3 +35,23 @@ jobs:
           }
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked
+  linux-build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev python3-venv
+          python3 -m venv "$RUNNER_TEMP/pcl-fonts"
+          "$RUNNER_TEMP/pcl-fonts/bin/pip" install fonttools==4.60.1
+      - name: Build Linux launcher and fonts
+        run: PYTHON_BIN="$RUNNER_TEMP/pcl-fonts/bin/python" bash scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCL-Rust-Linux-x86_64
+          path: dist/PCL-Rust-Linux-x86_64.tar.gz
+          if-no-files-found: error

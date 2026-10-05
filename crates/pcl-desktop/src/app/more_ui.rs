@@ -750,8 +750,8 @@ impl Launcher {
                     ui,
                     textures,
                     "Logo.png",
-                    "PCL Rust · 第三方重构",
-                    &format!("当前版本：{} · 非官方版本", env!("CARGO_PKG_VERSION")),
+                    "PCL Rust",
+                    &format!("版本：{} · 第三方版本", env!("CARGO_PKG_VERSION")),
                     "检查更新",
                     Some("pcl-rust:check-update"),
                     &mut url,
@@ -784,14 +784,14 @@ impl Launcher {
                 }
                 ui.add_space(5.0);
                 ui.label(
-                    RichText::new("以上为固定上游的原始鸣谢，所列服务不代表已接入此重构版。")
+                    RichText::new("以上鸣谢来自原版 PCL，部分服务未接入。")
                         .size(12.0)
                         .color(MUTED),
                 );
             },
         );
         more_card(ui, "sponsors", "赞助者", None, TEXT_MARGIN, |ui| {
-            ui.label("以下为上游源码随附的赞助者快照。感谢大家对原版 PCL 的支持！");
+            ui.label("感谢以下赞助者对原版 PCL 的支持！");
             ui.add_space(5.5);
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 3.0);
@@ -804,7 +804,7 @@ impl Launcher {
         });
         more_card(ui, "legal", "法律信息", Some(true), TEXT_MARGIN, |ui| {
             ui.label(RichText::new("第三方身份与许可").strong());
-            ui.label("此项目参考 PCL 2.13.1.1 的公开源码进行 Rust 跨平台重构，由独立第三方开发。原作者为龙腾猫跃，原版 PCL 的名称、图标与资料权利归其原权利人所有；本页保留原作者署名及许可。迁移尚未完成，不代表原版官方发行。");
+            ui.label("PCL Rust 是基于 PCL 2.13.1.1 公开源码开发的第三方版本。原版作者为龙腾猫跃，名称、图标和资料的权利归原权利人所有。");
             ui.add_space(10.0);
             ui.label("非 MINECRAFT 官方产品。未经 MOJANG 或 MICROSOFT 批准，也不与 MOJANG 或 MICROSOFT 关联。");
             ui.add_space(12.0);
@@ -834,7 +834,7 @@ impl Launcher {
             Some(true),
             TEXT_MARGIN,
             |ui| {
-                ui.label("以下是固定上游的依赖版权声明，保留用于资料归属，不代表本 Rust 应用采用其全部依赖。Rust 应用使用 Rust、egui/eframe、reqwest、serde 等项目，依赖版本记录于随源码提供的 Cargo.lock。");
+                ui.label("以下保留原版依赖的版权声明。PCL Rust 的依赖及版本见 Cargo.lock。");
                 let mut action = None;
                 for node in &catalog.upstream_licenses {
                     render_nodes(ui, &node.children, &catalog, &mut action);
@@ -898,7 +898,11 @@ impl Launcher {
                 height,
                 &["复制日志", "导出日志", "关闭"],
                 |ui| {
-                    ui.label(RichText::new("访问令牌已隐藏。仅保留本次运行日志，复制前请检查目录、用户名和服务器地址。").size(12.0).color(MUTED));
+                    ui.label(
+                        RichText::new("本次运行日志。分享前请检查路径、用户名和服务器地址。")
+                            .size(12.0)
+                            .color(MUTED),
+                    );
                     ui.add_space(8.0);
                     egui::ScrollArea::vertical()
                         .max_height(height - 42.0)

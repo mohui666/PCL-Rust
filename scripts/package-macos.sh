@@ -19,7 +19,7 @@ cat > "$PCL_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>pcl-desktop</string>
 <key>CFBundleIdentifier</key><string>local.pcl-rust.thirdparty</string>
 <key>CFBundleName</key><string>PCL Rust</string>
-<key>CFBundleDisplayName</key><string>PCL Rust 第三方重构版</string>
+<key>CFBundleDisplayName</key><string>PCL Rust</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>PCL-Rust.icns</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>

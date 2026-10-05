@@ -151,7 +151,7 @@ impl Launcher {
                         }
                     });
                     ui.add_space(8.0);
-                    disabled_checkbox(ui,"在正版登录时验证 SSL 证书",true,"当前实现始终验证官方服务的 TLS 证书，不能关闭。",22.0);
+                    disabled_checkbox(ui,"在正版登录时验证 SSL 证书",true,"验证服务器证书，保护登录信息。此项不可关闭。",22.0);
                     ui.add_space(4.0);
                 });
                 setup_card(ui,"内存分配",15,None,|ui| {
@@ -182,7 +182,7 @@ impl Launcher {
                     ui.add_space(10.0);
                     if settings.offline_skin_mode==OfflineSkinMode::OfficialName {
                         argument_row(ui,"正版玩家名",|ui|{text_edit(ui,&mut settings.offline_skin_name,"玩家名");});
-                        hint(ui,"原版的正版名称离线皮肤方式仅适用于 Minecraft 1.20 以前；新版请使用本地 PNG。",false);
+                        hint(ui,"通过正版名称获取皮肤仅支持 Minecraft 1.20 以前。新版请选择本地 PNG。",false);
                     }
                     if settings.offline_skin_mode==OfflineSkinMode::Custom {
                         ui.horizontal(|ui|{
@@ -191,7 +191,7 @@ impl Launcher {
                             ui.add(egui::Label::new(&name).truncate()).on_hover_text(name);
                         });
                         ui.checkbox(&mut settings.offline_skin_slim,"使用 Alex（纤细）模型");
-                        hint(ui,"支持 64×32 或 64×64 PNG。启动时生成独立皮肤资源包；原图和其他资源包不会被覆盖。",false);
+                        hint(ui,"支持 64×32 或 64×64 PNG，启动时自动应用。",false);
                     }
                     if settings.offline_skin_mode!=OfflineSkinMode::Default {
                         ui.label(RichText::new("皮肤模型按原版方式选择离线 UUID，切换后服务器内的离线玩家资料可能不同。").size(12.0).color(MUTED));
@@ -233,7 +233,7 @@ impl Launcher {
                                         }
                                     });
                                 }
-                            }).response.on_hover_text("启动时选择列表中第一个兼容当前 Minecraft 的 Java。点击右侧箭头调整优先顺序。移除只排除自动候选，不删除文件；实例指定 Java 需在版本设置中修改。");
+                            }).response.on_hover_text("优先使用列表中靠前的兼容 Java。右侧箭头调整顺序；移除不会删除文件。版本专用 Java 请在版本设置中选择。");
                             ui.add_space(5.0);
                             if ui.add_sized([24.0,24.0],egui::Button::new("↻").small().frame(false)).on_hover_text("重新搜索 Java；保留已排序项目及移除名单").clicked(){java_action=Some(JavaAction::Refresh);}
                         });
@@ -612,7 +612,7 @@ fn isolation_label(value: IsolationPolicy) -> &'static str {
         IsolationPolicy::All => "隔离所有版本",
     }
 }
-pub(super) const PRE_LAUNCH_HELP: &str = "仅运行你在本机设置中填写的命令；不会执行下载元数据中的命令。先执行全局命令，再执行版本命令，工作目录为游戏根目录。Windows 使用 cmd /D /V:ON；macOS 使用 /bin/sh。支持 {minecraft}、{verpath}/{version_path}、{verindie}/{version_indie}、{java}、{name}、{version}、{path}、{path_with_name}、{pcl_version}。路径标记安全传入环境变量；命令输出不写入启动器日志。非零退出会提示后继续，取消启动会请求终止本次命令树。";
+pub(super) const PRE_LAUNCH_HELP: &str = "先执行全局命令，再执行版本命令，工作目录为游戏根目录。Windows 使用 cmd，macOS 使用 /bin/sh。支持 {minecraft}、{verpath}/{version_path}、{verindie}/{version_indie}、{java}、{name}、{version}、{path}、{path_with_name}、{pcl_version}。命令失败后提示并继续启动。";
 
 fn visibility_label(value: LauncherVisibility) -> &'static str {
     match value {
@@ -651,11 +651,12 @@ fn gc_label(value: GcMode) -> &'static str {
 }
 
 // These limits describe implemented platform behavior, not a system-wide cleanup.
-pub(super) const WINDOW_HELP:&str="启动后仅控制本次 Java 的游戏窗口。支持 {name}、{version}、{date}、{time} 等路径/版本标记。macOS 需要用户手动授予辅助功能权限；游戏可能不允许外部改标题，失败会提示并继续启动。最大化在游戏加载完成后请求，不等于全屏。";
-pub(super) const MEMORY_HELP:&str="只回收启动器自身可释放的内存（Windows 工作集 / macOS 分配器空闲页），不清理其他程序，不保证释放量或性能提升。原版全系统优化实现未公开。";
-pub(super) const JLW_HELP:&str="使用已随程序校验的 Java Launch Wrapper 修复 Windows Java 6–18 的非 GBK 编码问题。Java 19+、macOS 或自定义 Java Agent 不使用此补丁。任一全局/版本禁用开关生效。";
-pub(super) const LUA_HELP:&str="仅 LWJGL 3.4.1 且 Java 25+ 时注入随程序提供的 LWJGL Unsafe Agent。其他版本不注入；任一全局/版本禁用开关生效。";
-pub(super) const GPU_HELP:&str="Windows：仅临时设置当前用户下本次 Java 应用的高性能 GPU 偏好，图形初始化或进程结束后恢复原值；不提权，不改全局显卡。驱动决定最终设备。若启动器被强制终止，可能需要在系统图形设置中手动恢复。macOS 由系统管理 GPU。";
+pub(super) const WINDOW_HELP:&str="支持 {name}、{version}、{date}、{time} 等标记。macOS 需授予辅助功能权限。标题修改失败不影响启动；最大化在游戏加载后生效。";
+pub(super) const MEMORY_HELP: &str = "释放启动器自身的空闲内存，不清理其他程序。";
+pub(super) const JLW_HELP: &str =
+    "修复 Windows Java 6–18 的非 GBK 编码问题。Java 19+、macOS 或自定义 Java Agent 不使用此补丁。";
+pub(super) const LUA_HELP: &str = "为 LWJGL 3.4.1 与 Java 25+ 启用兼容补丁。";
+pub(super) const GPU_HELP:&str="Windows：临时为本次 Java 设置高性能 GPU 偏好，用后恢复。强制关闭启动器可能需要手动恢复系统图形设置。macOS 由系统管理 GPU。";
 
 #[cfg(test)]
 mod tests {

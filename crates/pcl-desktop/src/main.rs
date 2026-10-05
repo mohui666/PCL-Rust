@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     let window = saved.launcher_window.bounded(None);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Plain Craft Launcher (PCL) Rust 第三方重构版")
+            .with_title("PCL Rust")
             .with_icon(icon)
             .with_inner_size([window.width, window.height])
             .with_min_inner_size([810.0, 470.0])
@@ -44,7 +44,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("启动画面无法显示：{error:#}");
     }
     let result = eframe::run_native(
-        "Plain Craft Launcher (PCL) Rust 第三方重构版",
+        "PCL Rust",
         options,
         Box::new(|cc| Ok(Box::new(app::Launcher::new(cc)))),
     )
