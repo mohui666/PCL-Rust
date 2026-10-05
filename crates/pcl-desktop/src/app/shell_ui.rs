@@ -564,12 +564,15 @@ impl Launcher {
             if !enabled {
                 response.clone().on_hover_text("此功能尚未迁移");
             }
-            if response.hovered() && enabled {
+            if response.contains_pointer() && enabled {
                 ui.painter().rect_filled(
                     r,
                     0,
                     theme::palette(ui.ctx()).light.gamma_multiply(100.0 / 255.0),
                 );
+            }
+            if self.page == Page::Launch && tab == 2 {
+                self.instance_settings_sidebar_action(ui, r, &response);
             }
             if response.clicked() && enabled {
                 match self.page {
@@ -651,6 +654,80 @@ impl Launcher {
                 egui::FontId::proportional(14.0),
                 color,
             );
+        }
+    }
+
+    fn instance_settings_sidebar_action(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: egui::Rect,
+        row_response: &egui::Response,
+    ) {
+        let instance = self.settings.selected_version.clone();
+        let writable = self.busy.is_none()
+            && self.game_pid.is_none()
+            && !self.jobs.conflicts_with(&self.settings.game_root)
+            && instance.is_some();
+        // MyListItem.Buttons: 25 DIP button, 5 DIP right margin, vertically
+        // centered in the 36 DIP row. Its reserved MinPaddingRight is 35 DIP.
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(row.right() - 17.5, row.center().y),
+            Vec2::splat(25.0),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        if !writable {
+            child.disable();
+        }
+        let response = child.interact(
+            rect,
+            ui.id().with((
+                "instance-settings-reset",
+                &self.settings.game_root,
+                &instance,
+            )),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, writable, "初始化版本设置")
+        });
+        let mut restore = false;
+        response.context_menu(|ui| {
+            if ui
+                .add_enabled(writable, egui::Button::new("恢复版本设置…"))
+                .clicked()
+            {
+                restore = true;
+                ui.close();
+            }
+        });
+        let visible = row_response.contains_pointer()
+            || row_response.has_focus()
+            || response.has_focus()
+            || response.context_menu_opened();
+        if visible {
+            let palette = theme::palette(ui.ctx());
+            let color = if !writable {
+                Color32::from_gray(160)
+            } else if response.hovered() || response.has_focus() {
+                palette.accent
+            } else {
+                palette.text
+            };
+            if response.hovered() && writable {
+                ui.painter()
+                    .circle_filled(rect.center(), 12.5, palette.light);
+            }
+            paint_instance_reset(ui, rect.shrink(5.75), color);
+        }
+        let response = response
+            .on_hover_text("初始化")
+            .on_disabled_hover_text("当前有任务或游戏正在使用此版本，暂时无法初始化或恢复设置。");
+        if response.clicked() && writable {
+            self.tools_tab = 2;
+            self.confirm_instance_reset(ui.ctx(), instance.as_deref().unwrap());
+        }
+        if restore && writable {
+            self.restore_instance_preferences(instance.as_deref().unwrap());
         }
     }
 
@@ -904,9 +981,294 @@ fn extra_button(
     response.on_hover_text(label)
 }
 
+// PageInstanceLeft.xaml ItemSetup Reset logo, using its original 0.9 scale.
+fn paint_instance_reset(ui: &egui::Ui, rect: egui::Rect, color: Color32) {
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1051" height="1022" viewBox="0 0 1051 1022"><path fill="white" d="M530 0c287 0 521 229 521 511s-233 511-521 511c-233 0-436-151-500-368a63 63 0 0 1 44-79 65 65 0 0 1 80 43c48 162 200 276 375 276 215 0 390-171 390-383s-174-383-390-383c-103 0-199 39-270 106l21-5a63 63 0 0 1 33 123l-157 42a65 65 0 0 1-90-42l-49-183a65 65 0 1 1 126-33l6 26A524 524 0 0 1 530 0z"/></svg>"#;
+    let key = egui::Id::new("instance-sidebar-reset-texture");
+    let texture = ui
+        .ctx()
+        .data(|data| data.get_temp::<egui::TextureHandle>(key))
+        .unwrap_or_else(|| {
+            let tree = resvg::usvg::Tree::from_str(SVG, &resvg::usvg::Options::default())
+                .expect("fixed upstream reset SVG");
+            let bounds = tree.root().abs_bounding_box();
+            let scale = 64.0 / bounds.width().max(bounds.height());
+            let mut pixels = resvg::tiny_skia::Pixmap::new(64, 64).unwrap();
+            resvg::render(
+                &tree,
+                resvg::usvg::Transform::from_scale(scale, scale)
+                    .pre_translate(-bounds.x(), -bounds.y()),
+                &mut pixels.as_mut(),
+            );
+            let texture = ui.ctx().load_texture(
+                "instance-sidebar-reset",
+                egui::ColorImage::from_rgba_premultiplied([64, 64], pixels.data()),
+                egui::TextureOptions::LINEAR,
+            );
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(key, texture.clone()));
+            texture
+        });
+    ui.painter().image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        color,
+    );
+}
+
 #[cfg(test)]
 mod navigation_tests {
     use super::*;
+
+    fn instance_sidebar_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        ctx
+    }
+
+    fn sidebar_frame(
+        app: &mut Launcher,
+        ctx: &egui::Context,
+        frame: usize,
+        events: Vec<egui::Event>,
+        dialog: bool,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(989.0, 517.0),
+                )),
+                time: Some(frame as f64 * 0.25),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::TopBottomPanel::top("source-title")
+                    .exact_height(48.0)
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |_| {});
+                app.sidebar(ctx);
+                if dialog {
+                    app.version_management_dialog(ctx);
+                }
+            },
+        )
+    }
+
+    fn sidebar_pointer(
+        point: egui::Pos2,
+        button: egui::PointerButton,
+        pressed: bool,
+    ) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: point,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn has_reset_icon(output: &egui::FullOutput) -> bool {
+        output.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) => {
+                let rect = mesh.calc_bounds();
+                rect.contains(egui::pos2(120.5, 114.0)) && (rect.width() - 13.5).abs() < 0.1
+            }
+            _ => false,
+        })
+    }
+
+    fn has_text(output: &egui::FullOutput, expected: &str) -> bool {
+        fn contains(shape: &egui::Shape, expected: &str) -> bool {
+            match shape {
+                egui::Shape::Text(text) => text.galley.text().contains(expected),
+                egui::Shape::Vec(shapes) => shapes.iter().any(|shape| contains(shape, expected)),
+                _ => false,
+            }
+        }
+        output
+            .shapes
+            .iter()
+            .any(|shape| contains(&shape.shape, expected))
+    }
+
+    fn reset_confirmation_is_focused(ctx: &egui::Context) -> bool {
+        // The animated modal tessellates its text into meshes. Its settled
+        // confirmation button is a real focusable widget, not a text shape.
+        let button =
+            egui::Id::new(("pcl-modal", "version-management-warning")).with(("button", 0_usize));
+        ctx.memory(|memory| memory.has_focus(button))
+    }
+
+    #[test]
+    fn instance_reset_hover_survives_child_hit_and_opens_confirmation_without_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(directory.path());
+        app.version_tools = true;
+        app.settings.selected_version = Some("fixture".into());
+        let before = std::fs::read(&app.settings_path).unwrap();
+        let ctx = instance_sidebar_context();
+        let point = egui::pos2(120.5, 114.0);
+        let first = sidebar_frame(&mut app, &ctx, 0, vec![], false);
+        assert!(
+            !has_reset_icon(&first),
+            "reset remains hidden outside the row"
+        );
+        let row = sidebar_frame(
+            &mut app,
+            &ctx,
+            1,
+            vec![egui::Event::PointerMoved(egui::pos2(62.0, 114.0))],
+            false,
+        );
+        assert!(has_reset_icon(&row));
+        for frame in 2..=3 {
+            let child = sidebar_frame(
+                &mut app,
+                &ctx,
+                frame,
+                vec![egui::Event::PointerMoved(point)],
+                false,
+            );
+            assert!(
+                has_reset_icon(&child),
+                "hovering the child must retain the row action"
+            );
+        }
+        let _ = sidebar_frame(
+            &mut app,
+            &ctx,
+            4,
+            vec![sidebar_pointer(point, egui::PointerButton::Primary, true)],
+            false,
+        );
+        let _ = sidebar_frame(
+            &mut app,
+            &ctx,
+            5,
+            vec![sidebar_pointer(point, egui::PointerButton::Primary, false)],
+            true,
+        );
+        let _ = sidebar_frame(&mut app, &ctx, 6, vec![], true);
+        let _ = sidebar_frame(&mut app, &ctx, 7, vec![], true);
+        assert_eq!(app.tools_tab, 2);
+        assert!(reset_confirmation_is_focused(&ctx));
+        assert!(
+            !app.jobs.is_active(),
+            "confirmation cannot start a writer before approval"
+        );
+        assert_eq!(std::fs::read(&app.settings_path).unwrap(), before);
+        assert!(!app.settings.game_root.join("versions").exists());
+    }
+
+    #[test]
+    fn instance_reset_right_click_keeps_restore_in_the_menu_without_a_footer_action() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(directory.path());
+        app.version_tools = true;
+        app.settings.selected_version = Some("fixture".into());
+        let ctx = instance_sidebar_context();
+        let point = egui::pos2(120.5, 114.0);
+        let _ = sidebar_frame(
+            &mut app,
+            &ctx,
+            0,
+            vec![egui::Event::PointerMoved(point)],
+            false,
+        );
+        let _ = sidebar_frame(
+            &mut app,
+            &ctx,
+            1,
+            vec![sidebar_pointer(point, egui::PointerButton::Secondary, true)],
+            false,
+        );
+        let _ = sidebar_frame(
+            &mut app,
+            &ctx,
+            2,
+            vec![sidebar_pointer(
+                point,
+                egui::PointerButton::Secondary,
+                false,
+            )],
+            false,
+        );
+        let menu = sidebar_frame(
+            &mut app,
+            &ctx,
+            3,
+            vec![egui::Event::PointerMoved(egui::pos2(190.0, 140.0))],
+            false,
+        );
+        assert!(has_text(&menu, "恢复版本设置"));
+        assert!(
+            has_reset_icon(&menu),
+            "the action remains visible while its context menu is open"
+        );
+        assert!(!app.jobs.is_active());
+    }
+
+    #[test]
+    fn instance_reset_is_disabled_for_busy_game_or_conflicting_writer() {
+        for gate in 0..3 {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = super::super::event_tests::fixture(directory.path());
+            app.version_tools = true;
+            app.settings.selected_version = Some("fixture".into());
+            match gate {
+                0 => app.busy = Some("fixture operation".into()),
+                1 => app.game_pid = Some(123),
+                _ => {
+                    let _ = app
+                        .start_download_job("fixture writer", Some("fixture".into()))
+                        .unwrap();
+                }
+            }
+            let ctx = instance_sidebar_context();
+            let point = egui::pos2(120.5, 114.0);
+            let _ = sidebar_frame(
+                &mut app,
+                &ctx,
+                0,
+                vec![egui::Event::PointerMoved(point)],
+                false,
+            );
+            let _ = sidebar_frame(
+                &mut app,
+                &ctx,
+                1,
+                vec![sidebar_pointer(point, egui::PointerButton::Primary, true)],
+                false,
+            );
+            let _ = sidebar_frame(
+                &mut app,
+                &ctx,
+                2,
+                vec![sidebar_pointer(point, egui::PointerButton::Primary, false)],
+                false,
+            );
+            app.busy = None;
+            app.game_pid = None;
+            app.jobs = Default::default();
+            let _ = sidebar_frame(&mut app, &ctx, 3, vec![], true);
+            let _ = sidebar_frame(&mut app, &ctx, 4, vec![], true);
+            let _ = sidebar_frame(&mut app, &ctx, 5, vec![], true);
+            assert!(
+                !reset_confirmation_is_focused(&ctx),
+                "gate {gate} must not create pending confirmation"
+            );
+            assert!(!app.settings.game_root.join("versions").exists());
+        }
+    }
+
     #[test]
     fn hiding_active_subpages_falls_back_and_f12_restores_access() {
         let dir = tempfile::tempdir().unwrap();

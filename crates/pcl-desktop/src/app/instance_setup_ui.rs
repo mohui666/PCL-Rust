@@ -368,27 +368,88 @@ impl Launcher {
             ui.add_space(10.0);
             ui.colored_label(Color32::from_rgb(205, 65, 65), error);
         }
-        ui.add_space(15.0);
-        let (reset_rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
-        if ui_style::outline_button(ui, reset_rect, "初始化版本设置", None, false, writable)
-            .clicked()
-        {
-            self.confirm_instance_reset(ui.ctx(), &id);
-        }
-        let (restore_rect, _) =
-            ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
-        if ui_style::outline_button(ui, restore_rect, "恢复版本设置", None, false, writable)
-            .clicked()
-        {
-            self.restore_instance_preferences(&id);
-        }
         self.version_management_dialog(ui.ctx());
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
-        if ui_style::outline_button(ui, rect, "全局设置", None, false, true).clicked() {
+        // CardAdvance already supplies its 15 DIP bottom margin; BtnSwitch
+        // follows with Margin="0,-5,0,0" in PageInstanceSetup.xaml.
+        ui.add_space(-5.0);
+        if global_settings_button(ui).clicked() {
             self.page = super::Page::Settings;
             self.settings_tab = 0;
         }
     }
+}
+
+fn global_settings_button(ui: &mut egui::Ui) -> egui::Response {
+    // MyExtraTextButton.xaml: 52 high, content top 10, horizontal padding 20,
+    // 18 high logo with a 0.9 transform, 12 before the 16-point label.
+    let colors = theme::palette(ui.ctx());
+    let text = ui.painter().layout_no_wrap(
+        "全局设置".into(),
+        egui::FontId::proportional(16.0),
+        colors.lightest,
+    );
+    let logo_width = 18.0 * 1170.0 / 1024.0;
+    let width = 40.0 + 2.0 + logo_width + 12.0 + text.size().x;
+    let (row, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), egui::Sense::hover());
+    let rect = egui::Rect::from_center_size(row.center(), Vec2::new(width, 52.0));
+    let response = ui.interact(
+        rect,
+        ui.id().with("instance-global-settings"),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "全局设置"));
+    if ui.is_rect_visible(rect) {
+        let body = egui::Rect::from_min_max(rect.min + Vec2::new(0.0, 10.0), rect.max);
+        ui.painter().add(
+            egui::epaint::Shadow {
+                offset: [0, 0],
+                blur: 10,
+                spread: 0,
+                color: Color32::from_black_alpha(51),
+            }
+            .as_shape(body, egui::CornerRadius::same(21)),
+        );
+        ui.painter().rect_filled(
+            body,
+            21,
+            if response.hovered() || response.has_focus() {
+                colors.border
+            } else {
+                colors.accent
+            },
+        );
+        let icon_id = egui::Id::new("instance-global-settings-arrow");
+        let icon = ui.ctx().data(|data| data.get_temp::<egui::TextureHandle>(icon_id))
+            .unwrap_or_else(|| {
+                // Exact BtnSwitch.Logo from PageInstanceSetup.xaml.
+                let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1170 1024"><path fill="white" d="M73 584L920 584 608 896C579 925 579 972 608 1001 637 1030 683 1030 712 1001L1149 565C1164 550 1170 531 1170 511 1170 492 1164 472 1149 457L712 21C683-7 637-7 608 21 579 50 579 97 608 126L920 438 73 438C33 438 0 471 0 511 0 551 33 584 73 584Z"/></svg>"#;
+                let tree = resvg::usvg::Tree::from_str(svg, &Default::default()).unwrap();
+                let mut pixels = resvg::tiny_skia::Pixmap::new(120, 106).unwrap();
+                resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(120.0 / 1170.0, 106.0 / 1024.0), &mut pixels.as_mut());
+                let icon = ui.ctx().load_texture("instance-global-settings-arrow", egui::ColorImage::from_rgba_premultiplied([120, 106], pixels.data()), egui::TextureOptions::LINEAR);
+                ui.ctx().data_mut(|data| data.insert_temp(icon_id, icon.clone()));
+                icon
+            });
+        ui.painter().image(
+            icon.id(),
+            egui::Rect::from_center_size(
+                egui::pos2(body.left() + 22.0 + logo_width / 2.0, body.center().y),
+                Vec2::new(logo_width, 18.0) * 0.9,
+            ),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            colors.lightest,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                body.left() + 22.0 + logo_width + 12.0,
+                body.center().y - text.size().y / 2.0 - 0.4,
+            ),
+            text,
+            colors.lightest,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn java_mode_label(mode: JavaSelectionMode) -> &'static str {
@@ -602,6 +663,30 @@ mod tests {
         app.instance_setup.java_preview.message = Some(("Fixture Java".into(), None));
         let ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "PCL English".into(),
+            egui::FontData::from_static(include_bytes!("../../assets/upstream/Resources/Font.ttf"))
+                .into(),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "PCL English".into());
+        if let Ok(data) = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-output/fonts/PingFang-Regular.otf"
+        )) {
+            fonts.font_data.insert(
+                "Fixture CJK".into(),
+                egui::FontData::from_owned(data).into(),
+            );
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Proportional)
+                .unwrap()
+                .insert(1, "Fixture CJK".into());
+        }
         fonts.families.insert(
             egui::FontFamily::Name("PCL Bold".into()),
             fonts.families[&egui::FontFamily::Proportional].clone(),
@@ -610,11 +695,19 @@ mod tests {
         ctx.style_mut(|style| {
             style.spacing.item_spacing = Vec2::new(10.0, 8.0);
             style.spacing.interact_size.y = 28.0;
+            style.spacing.button_padding = Vec2::new(12.0, 6.0);
             style
                 .text_styles
                 .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
         });
         for size in [Vec2::new(989.0, 517.0), Vec2::new(810.0, 470.0)] {
+            app.page = super::super::Page::Launch;
+            app.version_tools = true;
+            app.settings_tab = 2;
+            let max_scroll = std::cell::Cell::new(0.0_f32);
             let mut draw = |offset, events| {
                 ctx.run(
                     egui::RawInput {
@@ -634,7 +727,7 @@ mod tests {
                         egui::CentralPanel::default()
                             .frame(egui::Frame::NONE)
                             .show(ctx, |ui| {
-                                egui::ScrollArea::vertical()
+                                let scroll = egui::ScrollArea::vertical()
                                     .id_salt(size.x.to_bits())
                                     .auto_shrink([false, false])
                                     .vertical_scroll_offset(offset)
@@ -643,6 +736,9 @@ mod tests {
                                             .inner_margin(25)
                                             .show(ui, |ui| app.instance_setup_page(ui));
                                     });
+                                max_scroll.set(
+                                    (scroll.content_size.y - scroll.inner_rect.height()).max(0.0),
+                                );
                             });
                     },
                 )
@@ -709,6 +805,48 @@ mod tests {
                 34.0,
                 "one source card header, without a second empty header"
             );
+            let bottom = max_scroll.get();
+            let footer = draw(bottom, vec![]);
+            let label = text_rect(&footer, "全局设置", 0.0);
+            let (button, clip) = footer
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.contains_rect(label) && rect.rect.height() == 42.0 =>
+                    {
+                        Some((rect.rect, shape.clip_rect))
+                    }
+                    _ => None,
+                })
+                .expect("the source footer button must paint behind its label");
+            assert!(
+                (button.center().x - (138.0 + size.x) / 2.0).abs() < 1.0,
+                "footer must be centered in the real content column"
+            );
+            assert!(
+                clip.contains_rect(button),
+                "footer must remain inside the page clip at {size:?}"
+            );
+            assert!(button.contains_rect(label));
+            assert!(!footer.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if ["初始化版本设置", "恢复版本设置"].contains(&text.galley.text()))), "management actions must not reappear as page footer buttons");
+            let point = label.center();
+            for pressed in [true, false] {
+                let _ = draw(
+                    bottom,
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(app.page == super::super::Page::Settings);
+            assert_eq!(app.settings_tab, 0);
         }
 
         assert!(app.instance_setup.value.memory_mb.is_some());
