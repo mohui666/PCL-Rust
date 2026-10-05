@@ -18,6 +18,7 @@ struct State {
     items: Vec<Item>,
     highlight: Option<usize>,
     was_open: bool,
+    opened_on_pointer_press: bool,
     search: String,
     search_at: f64,
 }
@@ -131,8 +132,14 @@ impl PclComboBox {
         let mut scroll_to = None;
         let mut tab = false;
         let mut keyboard_handled = false;
-        let pressed = enabled && response.hovered() && ui.input(|i| i.pointer.primary_pressed());
+        // A native click can arrive as a release-only activation after the OS
+        // changes first responder. Keep the release fallback and remember only
+        // presses this selector actually owns, so a press is never toggled twice.
+        let pressed = enabled
+            && response.is_pointer_button_down_on()
+            && ui.input(|i| i.pointer.primary_pressed());
         if pressed {
+            state.opened_on_pointer_press = true;
             response.request_focus();
             open = !open;
         }
@@ -269,14 +276,12 @@ impl PclComboBox {
             open = false;
             tab = true;
         }
-        if enabled
-            && response.clicked()
-            && !keyboard_handled
-            && !pressed
-            && !ui.input(|input| input.pointer.any_click())
-        {
+        if enabled && response.clicked() && !keyboard_handled && !state.opened_on_pointer_press {
             open = !open;
             response.request_focus();
+        }
+        if ui.input(|input| input.pointer.primary_released()) {
+            state.opened_on_pointer_press = false;
         }
         if open && !state.was_open {
             state.highlight = state
@@ -352,6 +357,13 @@ impl PclComboBox {
         let mut committed = None;
         let inner = if open {
             egui::Popup::from_response(&response)
+                // Editable combos only hit-test the arrow, but their popup is
+                // aligned to the complete field, including on transformed layers.
+                .anchor(
+                    ui.ctx()
+                        .layer_transform_to_global(ui.layer_id())
+                        .map_or(rect, |transform| transform * rect),
+                )
                 .id(popup_id)
                 .open_memory(None)
                 .kind(egui::PopupKind::Menu)
@@ -608,6 +620,23 @@ impl ComboUi<'_> {
         selected: bool,
         text: impl Into<egui::WidgetText>,
     ) -> Response {
+        self.selectable_row(enabled, selected, text, false).0
+    }
+    /// Account history keeps the delete action separate from selection and focus.
+    pub fn selectable_label_with_remove(
+        &mut self,
+        selected: bool,
+        text: impl Into<egui::WidgetText>,
+    ) -> (Response, bool) {
+        self.selectable_row(true, selected, text, true)
+    }
+    fn selectable_row(
+        &mut self,
+        enabled: bool,
+        selected: bool,
+        text: impl Into<egui::WidgetText>,
+        remove: bool,
+    ) -> (Response, bool) {
         let text = text.into();
         let index = self.items.len();
         self.items.push(Item {
@@ -619,8 +648,13 @@ impl ComboUi<'_> {
         let (rect, _) = self
             .ui
             .allocate_exact_size(Vec2::new(self.ui.available_width(), ROW), Sense::hover());
+        let hit = if remove {
+            Rect::from_min_max(rect.min, rect.max - Vec2::new(26.0, 0.0))
+        } else {
+            rect
+        };
         let mut response = self.ui.interact(
-            rect,
+            hit,
             id,
             if enabled && !self.hidden {
                 Sense::click()
@@ -680,7 +714,7 @@ impl ComboUi<'_> {
             let galley = text.into_galley(
                 self.ui,
                 Some(egui::TextWrapMode::Truncate),
-                (rect.width() - 12.0).max(0.0),
+                (rect.width() - if remove { 38.0 } else { 12.0 }).max(0.0),
                 FontId::proportional(13.0),
             );
             let color = if enabled {
@@ -694,7 +728,31 @@ impl ComboUi<'_> {
                 color,
             );
         }
-        response
+        let mut removed = false;
+        if remove && !self.hidden {
+            let action = Rect::from_min_max(Pos2::new(rect.right() - 26.0, rect.top()), rect.max);
+            let response = self.ui.interact(action, id.with("remove"), Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "移除此设备保存的账号")
+            });
+            self.ui.painter().text(
+                action.center(),
+                egui::Align2::CENTER_CENTER,
+                "×",
+                FontId::proportional(16.0),
+                if response.hovered() {
+                    theme::palette(self.ui.ctx()).accent
+                } else {
+                    theme::palette(self.ui.ctx()).text
+                },
+            );
+            removed = enabled && response.clicked();
+            response.on_hover_text("移除此设备保存的账号");
+            if removed {
+                egui::Popup::close_id(self.ui.ctx(), self.id.with("popup"));
+            }
+        }
+        (response, removed)
     }
     pub fn selectable_value<Value: PartialEq>(
         &mut self,
@@ -1080,6 +1138,60 @@ mod tests {
         assert!(ctx.memory(|memory| memory.has_focus(editor)));
     }
     #[test]
+    fn editable_popup_anchors_to_full_field_not_trailing_arrow() {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::new(48.0, 120.0), Vec2::new(260.0, 28.0));
+        let mut value = String::from("Player");
+        let mut toggle_id = Id::NULL;
+        let mut draw = |events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                            let mut combo =
+                                PclComboBox::from_id_salt("editable-anchor").width(rect.width());
+                            combo.arrow_only = true;
+                            toggle_id = combo
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut value, "Player".into(), "Player");
+                                })
+                                .response
+                                .id;
+                        });
+                    });
+                },
+            );
+            toggle_id
+        };
+        draw(vec![]);
+        let pos = Pos2::new(rect.right() - 10.0, rect.center().y);
+        let id = draw(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        draw(vec![]);
+        let popup = ctx
+            .read_response(id.with("popup"))
+            .expect("opened popup")
+            .rect;
+        assert!((popup.left() - rect.left()).abs() < 1.0, "{popup:?}");
+        assert!((popup.right() - rect.right()).abs() < 1.0, "{popup:?}");
+        assert!(
+            (popup.top() - (rect.bottom() - 1.5)).abs() < 1.0,
+            "{popup:?}"
+        );
+    }
+    #[test]
     fn higher_modal_keeps_its_enter_key_and_closes_the_background_popup() {
         let mut f = Fixture::new();
         f.frame(vec![], true, 30);
@@ -1128,8 +1240,85 @@ mod tests {
             let target = if shift { f.before } else { f.after };
             assert!(
                 f.ctx.memory(|memory| memory.has_focus(target)),
-                "Tab direction must remain with egui, shift={shift}, focused={:?}, before={:?}, combo={:?}, after={:?}", f.ctx.memory(|m| m.focused()), f.before, f.id, f.after
+                "Tab direction must remain with egui, shift={shift}, focused={:?}, before={:?}, combo={:?}, after={:?}",
+                f.ctx.memory(|m| m.focused()),
+                f.before,
+                f.id,
+                f.after
             );
         }
+    }
+    #[test]
+    fn positioned_form_keeps_text_and_combo_mouse_targets_after_idle_frames() {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let mut selected = 0;
+        let mut anchor = Rect::NOTHING;
+        let mut combo_id = Id::NULL;
+        let mut edit_id = Id::NULL;
+        let mut render = |events: Vec<egui::Event>| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let start = ui.cursor().min;
+                        ui.allocate_space(Vec2::new(700.0, 65.0));
+                        edit_id = ui
+                            .place(
+                                Rect::from_min_size(start, Vec2::new(400.0, 28.0)),
+                                egui::TextEdit::singleline(&mut text),
+                            )
+                            .id;
+                        for (index, y) in [0.0, 37.0].into_iter().enumerate() {
+                            let rect = Rect::from_min_size(
+                                start + Vec2::new(450.0, y),
+                                Vec2::new(200.0, 28.0),
+                            );
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                                let response = PclComboBox::from_id_salt(("positioned", index))
+                                    .width(188.0)
+                                    .selected_text("Choice")
+                                    .show_ui(ui, |ui| {
+                                        for value in 0..30 {
+                                            ui.selectable_value(
+                                                &mut selected,
+                                                value,
+                                                format!("Choice {value}"),
+                                            );
+                                        }
+                                    })
+                                    .response;
+                                if index == 1 {
+                                    anchor = response.rect;
+                                    combo_id = response.id;
+                                }
+                            });
+                        }
+                        let _ = ui.button("Search");
+                    });
+                },
+            );
+            (anchor, combo_id, edit_id)
+        };
+        for _ in 0..4 {
+            render(vec![]);
+        }
+        let (rect, id, _) = render(vec![]);
+        let pos = rect.center();
+        render(vec![egui::Event::PointerMoved(pos)]);
+        render(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(
+            egui::Popup::is_id_open(&ctx, id.with("popup")),
+            "positioned selector must open on a real pointer press"
+        );
     }
 }

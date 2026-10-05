@@ -309,57 +309,20 @@ impl Launcher {
                             egui::pos2(rect.left() + 20.0, login_center + 23.0),
                             Vec2::new(260.0, 28.0),
                         );
-                        ui.scope(|ui| {
-                            ui.visuals_mut().widgets.inactive.bg_stroke =
-                                egui::Stroke::new(1.0_f32, theme::palette(ui.ctx()).control_border);
-                            ui.put(
-                                r,
-                                egui::TextEdit::singleline(&mut self.settings.offline_name)
-                                    .margin(egui::Margin {
-                                        left: 7,
-                                        right: 28,
-                                        top: 6,
-                                        bottom: 6,
-                                    })
-                                    .hint_text("游戏用户名"),
-                            );
-                            let arrow = egui::Rect::from_min_max(
-                                egui::pos2(r.right() - 27.0, r.top()),
-                                r.max,
-                            );
-                            let response = ui.interact(
-                                arrow,
-                                ui.id().with("offline-history"),
-                                egui::Sense::click(),
-                            );
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    "历史用户名",
-                                )
-                            });
-                            let center = arrow.center();
-                            ui.painter().add(egui::Shape::line(
-                                vec![
-                                    center + Vec2::new(-4.0, -2.0),
-                                    center + Vec2::new(0.0, 2.0),
-                                    center + Vec2::new(4.0, -2.0),
-                                ],
-                                egui::Stroke::new(1.0_f32, theme::palette(ui.ctx()).accent),
-                            ));
-                            egui::Popup::from_toggle_button_response(&response).show(|ui| {
-                                ui.set_min_width(220.0);
-                                for name in &self.settings.offline_history {
-                                    if ui
-                                        .selectable_label(self.settings.offline_name == *name, name)
-                                        .clicked()
-                                    {
-                                        self.settings.offline_name = name.clone();
-                                    }
-                                }
-                            });
-                        });
+                        let history: Vec<&str> = self
+                            .settings
+                            .offline_history
+                            .iter()
+                            .map(String::as_str)
+                            .collect();
+                        ui_style::editable_combo(
+                            ui,
+                            r,
+                            "offline-history",
+                            &mut self.settings.offline_name,
+                            &history,
+                            "游戏用户名",
+                        );
                     }
                     let version = self
                         .settings

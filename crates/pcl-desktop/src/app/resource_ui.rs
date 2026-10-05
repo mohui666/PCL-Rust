@@ -1,5 +1,5 @@
 //! Community resources use PageResource.xaml / MyResourceItem.xaml geometry.
-use super::{loading_ui, Event, Launcher, MUTED};
+use super::{Event, Launcher, MUTED, loading_ui};
 use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 use pcl_core::{
@@ -10,8 +10,8 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -685,7 +685,8 @@ impl Launcher {
             );
             let name_response = ui.place(
                 Rect::from_min_size(Pos2::new(left_x, start.y), Vec2::new(field_width, 28.0)),
-                egui::TextEdit::singleline(&mut self.resource_browser.query),
+                egui::TextEdit::singleline(&mut self.resource_browser.query)
+                    .id_salt("resource-search-name"),
             );
             crate::ui_style::place_left(
                 ui,
@@ -2209,6 +2210,87 @@ fn resource_target_info(version: &serde_json::Value) -> Option<(String, String)>
 mod tests {
     use super::*;
     #[test]
+    fn resource_form_accepts_pointer_and_text_after_idle_frames() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(folder.path());
+        app.download_tab = 1;
+        app.resource_browser.auto_searched = true;
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            egui::FontFamily::Name("PCL Bold".into()),
+            fonts.families[&egui::FontFamily::Proportional].clone(),
+        );
+        ctx.set_fonts(fonts);
+        let frame = |app: &mut Launcher, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.resource_page(ui);
+                    });
+                },
+            );
+        };
+        let click = |app: &mut Launcher, pos| {
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        };
+        for _ in 0..5 {
+            frame(&mut app, vec![]);
+        }
+        click(&mut app, Pos2::new(670.0, 99.0));
+        assert!(
+            egui::Popup::is_any_open(&ctx),
+            "download form dropdown must open by pointer"
+        );
+        click(&mut app, Pos2::new(200.0, 60.0));
+        frame(&mut app, vec![egui::Event::Text("abc".into())]);
+        assert_eq!(
+            app.resource_browser.query, "abc",
+            "clicking the input must close the popup and accept typing"
+        );
+        frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
+        frame(
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Preedit("zhongwen".into()))],
+        );
+        frame(
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Commit("中文".into()))],
+        );
+        frame(&mut app, vec![egui::Event::Ime(egui::ImeEvent::Disabled)]);
+        assert_eq!(app.resource_browser.query, "abc中文");
+        click(&mut app, Pos2::new(200.0, 99.0));
+        frame(&mut app, vec![egui::Event::Text("1.21.1".into())]);
+        assert_eq!(app.resource_browser.minecraft, "1.21.1");
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![egui::Event::Text("1".into())]);
+        assert_eq!(
+            app.resource_browser.minecraft, "1.21.11",
+            "showing loader selector must not steal editor focus"
+        );
+        assert_eq!(app.resource_browser.query, "abc中文");
+    }
+    #[test]
     fn list_cancel_waits_for_the_matching_terminal_and_late_reply_keeps_new_busy() {
         let temp = tempfile::tempdir().unwrap();
         let mut app = super::super::event_tests::fixture(temp.path());
@@ -2266,9 +2348,11 @@ mod tests {
         let groups = version_groups(&state);
         assert_eq!(groups[0].title, "Fabric 1.21.1（所选版本）");
         assert_eq!(groups[0].versions, vec![0]);
-        assert!(groups
-            .iter()
-            .any(|g| g.title == "Forge 1.21.1" && g.versions == vec![1]));
+        assert!(
+            groups
+                .iter()
+                .any(|g| g.title == "Forge 1.21.1" && g.versions == vec![1])
+        );
         assert!(groups.iter().any(|g| g.title == "Fabric 1.20.1"));
         assert!(!groups.iter().any(|g| g.title == "Fabric 1.21.1"));
         state.version_filter = "1.20.1".into();

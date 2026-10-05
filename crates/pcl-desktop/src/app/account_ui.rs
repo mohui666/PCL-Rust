@@ -1,6 +1,6 @@
+use super::modal_ui::{ModalOptions, account_modal_with_options, modal_frame_with_options};
 pub(super) use super::modal_ui::{account_input_modal, account_modal, modal_frame};
-use super::modal_ui::{account_modal_with_options, modal_frame_with_options, ModalOptions};
-use super::{hint_ui::HintKind, Event, Launcher, MUTED};
+use super::{Event, Launcher, MUTED, hint_ui::HintKind};
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
@@ -1053,16 +1053,6 @@ impl Launcher {
                         .map(|account| account.username.clone())
                 })
                 .unwrap_or_else(|| "添加新账号".into());
-            let response = ui_style::outline_button(ui, combo, &label, None, false, enabled);
-            let arrow = combo.right_center() - Vec2::new(12.0, 0.0);
-            ui.painter().add(egui::Shape::line(
-                vec![
-                    arrow + Vec2::new(-4.0, -2.0),
-                    arrow + Vec2::new(0.0, 2.0),
-                    arrow + Vec2::new(4.0, -2.0),
-                ],
-                egui::Stroke::new(1.0_f32, theme::palette(ui.ctx()).accent),
-            ));
             let mut chosen = None;
             let mut remove = None;
             let entries = self
@@ -1071,37 +1061,32 @@ impl Launcher {
                 .as_ref()
                 .map(|catalog| catalog.accounts.clone())
                 .unwrap_or_default();
-            egui::Popup::from_toggle_button_response(&response).show(|ui| {
-                ui.set_min_width(combo.width());
-                if ui
-                    .selectable_label(self.accounts.selected.is_none(), "添加新账号")
-                    .clicked()
-                {
-                    chosen = Some(None);
-                    ui.close();
-                }
-                for account in entries {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(
-                                self.accounts.selected.as_ref() == Some(&account.id),
-                                &account.username,
-                            )
-                            .clicked()
-                        {
-                            chosen = Some(Some(account.id.clone()));
-                            ui.close();
-                        }
-                        if ui
-                            .small_button("×")
-                            .on_hover_text("移除此设备保存的账号")
-                            .clicked()
-                        {
-                            remove = Some(account.id.clone());
-                            ui.close();
-                        }
-                    });
-                }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(combo), |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui_style::PclComboBox::from_id_salt("microsoft-account-selector")
+                        .width(combo.width())
+                        .selected_text(&label)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(self.accounts.selected.is_none(), "添加新账号")
+                                .clicked()
+                            {
+                                chosen = Some(None);
+                            }
+                            for account in &entries {
+                                let (response, removed) = ui.selectable_label_with_remove(
+                                    self.accounts.selected.as_ref() == Some(&account.id),
+                                    &account.username,
+                                );
+                                if response.clicked() {
+                                    chosen = Some(Some(account.id.clone()));
+                                }
+                                if removed {
+                                    remove = Some(account.id.clone());
+                                }
+                            }
+                        });
+                });
             });
             if enabled {
                 if let Some(selected) = chosen {
@@ -1155,7 +1140,10 @@ impl Launcher {
     }
     pub(super) fn account_dialogs(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.accounts.upload.clone() {
-            let caption = format!("已选择 {}。\n请选择皮肤模型。经典模型为 4 像素手臂，纤细模型为 3 像素手臂。\n选择后会上传并应用到当前正版账号。", path.file_name().unwrap_or_default().to_string_lossy());
+            let caption = format!(
+                "已选择 {}。\n请选择皮肤模型。经典模型为 4 像素手臂，纤细模型为 3 像素手臂。\n选择后会上传并应用到当前正版账号。",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
             if let Some(action) = account_modal(
                 ctx,
                 "skin-model",
@@ -1227,7 +1215,16 @@ impl Launcher {
                 device.opened = true;
             }
             let expired = Instant::now() >= device.expires;
-            let caption=format!("登录网页将自动开启，请在网页中输入 {}（已自动复制）。\n\n如果网络环境不佳，网页可能一直加载不出来，届时请检查网络连接。\n你也可以用其他设备打开 {} 并输入上述代码。{}",device.code,device.url,if expired{"\n\n设备代码已过期，请重新登录。"}else{""});
+            let caption = format!(
+                "登录网页将自动开启，请在网页中输入 {}（已自动复制）。\n\n如果网络环境不佳，网页可能一直加载不出来，届时请检查网络连接。\n你也可以用其他设备打开 {} 并输入上述代码。{}",
+                device.code,
+                device.url,
+                if expired {
+                    "\n\n设备代码已过期，请重新登录。"
+                } else {
+                    ""
+                }
+            );
             let action = account_modal_with_options(
                 ctx,
                 "device-login",
@@ -1333,8 +1330,8 @@ fn failure_presentation(
     issue: Option<auth::AuthenticationIssue>,
     purpose: LoginPurpose,
 ) -> FailurePresentation {
-    use auth::AuthenticationIssue as Issue;
     use FailurePresentation::{Hint, Modal};
+    use auth::AuthenticationIssue as Issue;
     match issue {
         Some(Issue::PasswordLoginRequired) => Modal("需要使用密码登录", false),
         Some(Issue::ClientConfiguration) => Modal("登录设置提示", false),
@@ -1361,17 +1358,48 @@ fn recovery_actions(
     issue: Option<auth::AuthenticationIssue>,
     relogin: bool,
 ) -> Vec<(&'static str, RecoveryAction)> {
-    use auth::AuthenticationIssue as Issue;
     use RecoveryAction::{Close, Relogin, Settings, Web};
+    use auth::AuthenticationIssue as Issue;
     match issue {
-        Some(Issue::ClientConfiguration | Issue::MinecraftAccessDenied) => vec![("应用设置", Settings), ("关闭", Close)],
-        Some(Issue::XboxProfileRequired) => vec![("注册", Web("https://www.xbox.com/zh-CN/")), ("取消", Close)],
-        Some(Issue::FamilyPermissionRequired) => vec![("查看家庭设置", Web("https://account.microsoft.com/family/")), ("取消", Close)],
-        Some(Issue::OwnershipRequired) => vec![("购买 Minecraft", Web("https://www.xbox.com/zh-cn/games/store/minecraft-java-bedrock-edition-for-pc/9nxp44l49shj")), ("取消", Close)],
-        Some(Issue::MinecraftProfileRequired) => vec![("创建档案", Web("https://www.minecraft.net/zh-hans/msaprofile/mygames/editprofile")), ("取消", Close)],
-        Some(Issue::SecurityInterrupt | Issue::Suspended) => vec![("微软账户", Web("https://account.microsoft.com/")), ("关闭", Close)],
-        Some(Issue::PasswordLoginRequired) => vec![("重新登录", Relogin), ("设置密码", Web("https://account.live.com/password/Change")), ("取消", Close)],
-        Some(Issue::RegionUnavailable | Issue::RateLimited | Issue::ServiceUnavailable) => vec![("我知道了", Close)],
+        Some(Issue::ClientConfiguration | Issue::MinecraftAccessDenied) => {
+            vec![("应用设置", Settings), ("关闭", Close)]
+        }
+        Some(Issue::XboxProfileRequired) => vec![
+            ("注册", Web("https://www.xbox.com/zh-CN/")),
+            ("取消", Close),
+        ],
+        Some(Issue::FamilyPermissionRequired) => vec![
+            ("查看家庭设置", Web("https://account.microsoft.com/family/")),
+            ("取消", Close),
+        ],
+        Some(Issue::OwnershipRequired) => vec![
+            (
+                "购买 Minecraft",
+                Web(
+                    "https://www.xbox.com/zh-cn/games/store/minecraft-java-bedrock-edition-for-pc/9nxp44l49shj",
+                ),
+            ),
+            ("取消", Close),
+        ],
+        Some(Issue::MinecraftProfileRequired) => vec![
+            (
+                "创建档案",
+                Web("https://www.minecraft.net/zh-hans/msaprofile/mygames/editprofile"),
+            ),
+            ("取消", Close),
+        ],
+        Some(Issue::SecurityInterrupt | Issue::Suspended) => vec![
+            ("微软账户", Web("https://account.microsoft.com/")),
+            ("关闭", Close),
+        ],
+        Some(Issue::PasswordLoginRequired) => vec![
+            ("重新登录", Relogin),
+            ("设置密码", Web("https://account.live.com/password/Change")),
+            ("取消", Close),
+        ],
+        Some(Issue::RegionUnavailable | Issue::RateLimited | Issue::ServiceUnavailable) => {
+            vec![("我知道了", Close)]
+        }
         Some(_) => vec![("重新登录", Relogin), ("取消", Close)],
         None if relogin => vec![("重新登录", Relogin), ("关闭", Close)],
         None => vec![("关闭", Close)],
