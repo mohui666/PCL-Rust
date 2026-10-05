@@ -25,7 +25,7 @@
 | 个性化 → 主页、更多 → 帮助 | 本地/联网/固定预设主页与有界缓存；惰性 XAML、常见控件/静态资源/模板、单向 Binding、状态 Trigger/DataTrigger、DockPanel；临时附加服务器启动参数；拖入 XAML 校验、替换确认和原件备份 | 新闻预设只读解析通过，未点击远程动作。无自动执行事件；文件/程序/下载/设置/变量和服务器动作仍按内容确认，设置白名单。完整 WPF/CLR、任意自动事件和全部预设不等价。 |
 | 崩溃分析与文件拖放 | 实际 PID/cwd/启动时间收集异常退出日志；手选或拖入 log/txt/ZIP 共用有界分析与已知凭据脱敏，25 类线索、无覆盖 ZIP 导出；拖放分类另支持主页、Mod 和受支持包 | 本地导入分析/分类夹具通过，无自动上传；合成线索不证明真实崩溃根因。真正 RAR、文件夹和鉴权文本不纳入本批拖放；原生拖动 GUI 尚未实测。 |
 
-本轮新增实现细节分别见 `test-output/remaining-{installers,management,personalization}-implementation.md`；公网只读清单见 `remaining-installers-live-probe.log`，单文件真实断点续传见 `remaining-resumable-live.log`。旧 `nonlogin-parity/` 和 `personalization-home-crash/` 记录只支持各自时点。新增代码的最终统一测试数、平台产物与新包实机结果待根代理验证后填写，不能拼接旧证据宣布整包通过。
+本轮新增实现细节分别见 `test-output/remaining-{installers,management,personalization}-implementation.md`；公网只读清单见 `remaining-installers-live-probe.log`，单文件真实断点续传见 `remaining-resumable-live.log`。旧 `nonlogin-parity/` 和 `personalization-home-crash/` 记录只支持各自时点。新增代码的统一测试数、平台产物与新包实机结果集中记录于 [本批验证记录](validation.md)，不能拼接旧证据宣布整包通过。
 
 | 版本/任务管理 | 当前实现 | 验证与边界 |
 | --- | --- | --- |
