@@ -388,11 +388,17 @@ impl MoreState {
             "PCL2.png"
         ]
         .into_iter()
-        .chain([(
-            "mohui666-avatar.jpg",
-            // GitHub avatar source: https://avatars.githubusercontent.com/u/68949739?v=4
-            include_bytes!("../../assets/mohui666-avatar.jpg").as_slice(),
-        )]) {
+        .chain([
+            (
+                "mohui666-avatar.jpg",
+                // GitHub avatar source: https://avatars.githubusercontent.com/u/68949739?v=4
+                include_bytes!("../../assets/mohui666-avatar.jpg").as_slice(),
+            ),
+            (
+                "PCL-Rust.png",
+                include_bytes!("../../assets/icon.png").as_slice(),
+            ),
+        ]) {
             if let Ok(image) = image::load_from_memory(bytes) {
                 let rgba = image.to_rgba8();
                 self.textures.insert(
@@ -749,7 +755,7 @@ impl Launcher {
                 credit_row(
                     ui,
                     textures,
-                    "Logo.png",
+                    "PCL-Rust.png",
                     "PCL Rust",
                     &format!("版本：{} · 第三方版本", env!("CARGO_PKG_VERSION")),
                     "检查更新",
