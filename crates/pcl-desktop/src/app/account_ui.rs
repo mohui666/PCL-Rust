@@ -1,6 +1,6 @@
-use super::modal_ui::{ModalOptions, account_modal_with_options, modal_frame_with_options};
 pub(super) use super::modal_ui::{account_input_modal, account_modal, modal_frame};
-use super::{Event, Launcher, MUTED, hint_ui::HintKind};
+use super::modal_ui::{account_modal_with_options, modal_frame_with_options, ModalOptions};
+use super::{hint_ui::HintKind, Event, Launcher, MUTED};
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
@@ -1330,8 +1330,8 @@ fn failure_presentation(
     issue: Option<auth::AuthenticationIssue>,
     purpose: LoginPurpose,
 ) -> FailurePresentation {
-    use FailurePresentation::{Hint, Modal};
     use auth::AuthenticationIssue as Issue;
+    use FailurePresentation::{Hint, Modal};
     match issue {
         Some(Issue::PasswordLoginRequired) => Modal("需要使用密码登录", false),
         Some(Issue::ClientConfiguration) => Modal("登录设置提示", false),
@@ -1358,8 +1358,8 @@ fn recovery_actions(
     issue: Option<auth::AuthenticationIssue>,
     relogin: bool,
 ) -> Vec<(&'static str, RecoveryAction)> {
-    use RecoveryAction::{Close, Relogin, Settings, Web};
     use auth::AuthenticationIssue as Issue;
+    use RecoveryAction::{Close, Relogin, Settings, Web};
     match issue {
         Some(Issue::ClientConfiguration | Issue::MinecraftAccessDenied) => {
             vec![("应用设置", Settings), ("关闭", Close)]

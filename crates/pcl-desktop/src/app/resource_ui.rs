@@ -1,5 +1,5 @@
 //! Community resources use PageResource.xaml / MyResourceItem.xaml geometry.
-use super::{Event, Launcher, MUTED, loading_ui};
+use super::{loading_ui, Event, Launcher, MUTED};
 use crate::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 use pcl_core::{
@@ -10,8 +10,8 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
 };
 
@@ -2348,11 +2348,9 @@ mod tests {
         let groups = version_groups(&state);
         assert_eq!(groups[0].title, "Fabric 1.21.1（所选版本）");
         assert_eq!(groups[0].versions, vec![0]);
-        assert!(
-            groups
-                .iter()
-                .any(|g| g.title == "Forge 1.21.1" && g.versions == vec![1])
-        );
+        assert!(groups
+            .iter()
+            .any(|g| g.title == "Forge 1.21.1" && g.versions == vec![1]));
         assert!(groups.iter().any(|g| g.title == "Fabric 1.20.1"));
         assert!(!groups.iter().any(|g| g.title == "Fabric 1.21.1"));
         state.version_filter = "1.20.1".into();
