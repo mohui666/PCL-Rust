@@ -11,12 +11,12 @@
 </p>
 
 <p align="center">
-  <a href="#快速运行">快速运行</a> · <a href="docs/README.md">文档</a> · <a href="docs/migration-matrix.md">迁移进度</a> · <a href="docs/validation.md">验证记录</a>
+  <a href="https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0">下载预览版</a> · <a href="#快速运行">源码运行</a> · <a href="docs/README.md">文档</a> · <a href="docs/migration-matrix.md">迁移进度</a> · <a href="docs/validation.md">验证记录</a>
 </p>
 
-由 **[mohui666](https://github.com/mohui666)** 开发的第三方 Minecraft 启动器，以 Rust 重构 PCL，提供 **macOS、Windows 与 Linux x86_64** 构建。界面以 Windows 官方 **PCL 2.13.1.1** 为基准，macOS 使用苹方。
+由 **[mohui666](https://github.com/mohui666)** 开发的第三方 Minecraft 启动器，以 Rust 重构 PCL，提供 **macOS、Windows 与 Linux x86_64** 构建。界面以 Windows 官方 **PCL 2.13.1.1** 为基准，macOS 本地构建使用苹方。
 
-目前提供源码和构建脚本，尚未发布安装包。
+**[下载 v0.1.0 开发预览版](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)**：Windows x86_64、macOS arm64、Linux x86_64（glibc 2.35+）。
 
 ## 功能
 
@@ -72,13 +72,14 @@ cargo run --locked -p pcl-desktop
 - **界面验证**：已检查部分 Mac 页面；Windows、Linux 实机和全页面像素对照尚未完成。
 - **微软登录**：Minecraft AppID 审核已提交，未确认获批；本次按用户选择跳过登录复测。
 - **CurseForge**：申请已提交、待审核，尚未取得 API Key，真实 API 流程未验证。
+- **内置联机**：尚未实现。
 
 ## 署名与许可
 
 原版作者 **龙腾猫跃** · [官方 PCL](https://github.com/Meloong-Git/PCL) · [支持原作者](https://meloong.com/afd/a/LTCat)<br />
 Rust 跨平台版作者 **[mohui666](https://github.com/mohui666)**。图标基于 Patrick 设计的原版 PCL 图标改编，见[素材来源](docs/assets/README.md)。
 
-保留上游[许可原文](UPSTREAM-LICENCE)，第三方材料按各自条款使用。此项目不是 PCL、Mojang 或 Microsoft 的官方产品。Mac 字体在本机生成，导出时随所选应用完整保留；Linux 包含 Noto Sans SC 和 OFL 许可。生成字体不提交到源码仓库。
+保留上游[许可原文](UPSTREAM-LICENCE)，第三方材料按各自条款使用。此项目不是 PCL、Mojang 或 Microsoft 的官方产品。公开 macOS 与 Linux 包使用 Noto Sans SC，附 OFL 许可；本机 macOS 源码构建默认从系统生成苹方字库。字体与资源的分发说明见[来源记录](docs/upstream.md#分发状态)。
 
 <details>
 <summary><b>English · Minecraft AppID review</b></summary>
@@ -95,6 +96,6 @@ Personal Microsoft accounts sign in through device authorization, followed by Xb
 
 The AppID review was submitted and a receipt received. Approval is unconfirmed. Sign-in was not retested in this update. See [login status](docs/login.md).
 
-Source, build scripts and required assets are public. No formal application release is published. The Linux CI workflow builds a package artifact; generated fonts are not committed to the source repository.
+Source, build scripts and required assets are public. [v0.1.0 development preview downloads](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0) target Windows x86_64, macOS arm64 and Linux x86_64 (glibc 2.35+). Generated fonts are not committed to the source repository.
 
 </details>

@@ -8,6 +8,7 @@
 
 | 你想了解 | 阅读 |
 | --- | --- |
+| 下载开发预览版 | [v0.1.0 · Windows / macOS / Linux](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0) |
 | 如何从源码运行、打包，配置放在哪里 | [开发与构建](development.md) |
 | 如何导出附带三端启动器的整合包 | [三端导出](development.md#导出时附带三端启动器) |
 | 现在有哪些功能，哪些仍有限制 | [当前范围与剩余边界](remaining-migration.md) · [功能与 UI 核对](ui-gap-audit.md) |

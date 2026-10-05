@@ -2,9 +2,23 @@
 
 [项目首页](../README.md) / [文档索引](README.md)
 
-更新日期：2026-10-05。下表列当前源码的检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+更新日期：2026-10-05。[v0.1.0 开发预览版下载](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)。以下按提交分别记录检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
 
-## 当前结果速览
+## v0.1.0 公开预览包
+
+Mac 公开包对应 [e494d84](https://github.com/mohui666/PCL-Rust/commit/e494d84cc7c9de794d1fe53966b1f509ea5bdd91)：增加 Noto 字体路径与公开打包模式，本机重新运行 **619 项测试通过、4 项忽略**，严格 Clippy 和 release 构建通过。公开包已原生打开，标题和中文显示正常；ZIP 解压后签名校验通过。字体为 Noto Sans SC，附 OFL，未附系统苹方；签名为本机 ad-hoc，未进行 Apple 公证。
+
+Windows/Linux 程序复用下节 `3c83f20` 的已验构建，解压后哈希一致；其后源码变化仅涉及 Mac 字体路径、Mac 打包与文档。两个平台的 GUI 和游戏未新增验证。
+
+| 平台 | 发布主程序 SHA256 |
+| --- | --- |
+| macOS arm64 | `42a9f2b38f73677b9faf166d1ba59fb6a6a956a723e81c45a669130e42918fcf` |
+| Windows x86_64 | `9b81dd3290fc650ebf7c2eb13d0d3c970e29d7b4c74d1f68f4994ecef0f21dac` |
+| Linux x86_64 | `62a2850638cfdd184f6f7884882c46d36724798f17fb77c40f90b59380c0c23d` |
+
+各压缩包的完整校验值见 Release 的 `SHA256SUMS.txt`，程序来源提交见 `release-manifest.json`。预览版需手动下载，当前更新器只检查稳定版本。
+
+## 三端导出验证基线
 
 本批源码：[3c83f20](https://github.com/mohui666/PCL-Rust/commit/3c83f208450c0845db10909acdb23aac9fed47e7)。
 

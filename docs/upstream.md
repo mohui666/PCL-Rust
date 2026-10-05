@@ -47,7 +47,9 @@ Rust 跨平台版作者：**mohui666**。本项目为第三方重构。
 
 源码、二进制与第三方材料按各自条款使用；源码公开不构成对所有材料的无限制再分发授权。完整二进制分发条件仍需逐项核验。
 
-源码仓库不包含应用发行包、生成字体、原始日志、游戏文件或账号资料。macOS 苹方在本机生成，导出时随所选 `.app` 完整保留；Linux 打包脚本使用 Noto Sans SC，附带 SIL OFL 1.1 与来源记录。CI 的 Linux job 会生成并上传构建产物，Mac/Windows job 只做检查和 release 构建。
+开发预览版下载入口：[v0.1.0](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)，面向 Windows x86_64、macOS arm64 和 Linux x86_64（glibc 2.35+）。发行文件通过 GitHub Releases 提供，不提交到源码目录。
+
+源码仓库不包含生成字体、原始日志、游戏文件或账号资料。本地 macOS 源码构建默认从系统苹方生成字库；公开 macOS 与 Linux 包使用 Noto Sans SC，附带 SIL OFL 1.1 与来源记录。整合包导出会保留使用者所选 `.app` 的资源。
 
 ## 已明确排除的范围
 

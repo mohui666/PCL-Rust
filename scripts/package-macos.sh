@@ -27,6 +27,16 @@ else
 fi
 cp UPSTREAM-LICENCE "$PCL_BUNDLE/Contents/Resources/UPSTREAM-LICENCE"
 cp crates/pcl-desktop/assets/icon.icns "$PCL_BUNDLE/Contents/Resources/PCL-Rust.icns"
+PCL_NOTICES="$PCL_BUNDLE/Contents/Resources/licenses"
+mkdir -p "$PCL_NOTICES"
+cp crates/pcl-core/assets/launch/JavaWrapper-LICENCE crates/pcl-core/assets/launch/LwjglUnsafeAgent-LICENSE "$PCL_NOTICES/"
+cp crates/pcl-core/assets/launch/SOURCES.md "$PCL_NOTICES/LAUNCH-PATCH-SOURCES.md"
+cp crates/pcl-desktop/assets/upstream/README-SOURCES.md "$PCL_NOTICES/UPSTREAM-RESOURCES.md"
+cp crates/pcl-desktop/assets/upstream/SOURCE-MANIFEST.json "$PCL_NOTICES/UPSTREAM-SOURCE-MANIFEST.json"
+cp crates/pcl-desktop/assets/help/README.md "$PCL_NOTICES/HELP-RESOURCES.md"
+cp crates/pcl-desktop/assets/help/SOURCE.json "$PCL_NOTICES/HELP-SOURCE.json"
+cp crates/pcl-core/assets/wiki/SOURCES.md "$PCL_NOTICES/WIKI-SOURCES.md"
+cp docs/assets/README.md "$PCL_NOTICES/ICON-SOURCES.md"
 cat > "$PCL_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

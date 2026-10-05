@@ -15,7 +15,7 @@
 | `crates/pcl-desktop/assets/` | 构建所需资产及来源记录 |
 | `.github/workflows/build.yml` | Mac/Windows 格式、Clippy、测试与 release 检查；Linux 构建、静态字体与包产物 |
 | `test-output/` | 本地生成目录，含字体和验证产物；不提交 |
-| `dist/` | 打包生成的应用目录，不提交到源码；Linux CI 上传压缩包产物 |
+| `dist/` | 打包生成的应用目录，不提交到源码；预览包下载见 [v0.1.0](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0) |
 
 工作区使用 Rust 2021 edition，声明最低 Rust 版本为 1.88。当前记录中的开发验证使用 Rust 1.99；这不代表已经在最低版本上完成测试。依赖由 `Cargo.lock` 锁定。
 
@@ -52,7 +52,17 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 bash scripts/package-macos.sh
 ```
 
-脚本在本机生成字体、构建 release、创建 `dist/PCL Rust.app` 并进行本机签名检查。当前本机 ad-hoc 签名不是 Developer ID 公证或公开发行证明。
+默认模式从本机生成苹方字库，构建 release、创建 `dist/PCL Rust.app` 并检查 ad-hoc 签名；此签名不是 Developer ID 公证。
+
+公开 macOS 包改用可分发的 Noto Sans SC，并附 OFL 许可。构建公开包时先准备 fontTools：
+
+```sh
+python3 -m venv test-output/linux-fonts-venv
+test-output/linux-fonts-venv/bin/pip install fonttools==4.60.1
+PCL_MACOS_FONT_MODE=noto PYTHON_BIN="$PWD/test-output/linux-fonts-venv/bin/python" bash scripts/package-macos.sh
+```
+
+也可将 `PYTHON_BIN` 指向已经安装该版本 fontTools 的解释器。
 
 本机系统苹方使用当前渲染库无法直接处理的轮廓格式。已有脚本通过 CoreText 导出本机字形并生成可渲染字体，需 `python3`、`xcrun swift` 与系统 CoreText：
 
@@ -60,7 +70,7 @@ bash scripts/package-macos.sh
 python3 scripts/build-local-pingfang-sfnt.py --style all
 ```
 
-新增中文文案后需重新生成字库；macOS 打包入口会执行这一步。生成的 Regular/Semibold 字体放在应用 Resources 内，不提交到源码仓库。整合包附带 Mac 启动器时完整保留所选 .app 的字体、资源和签名文件。
+默认苹方模式下，新增中文文案后需重新生成字库，macOS 打包入口会执行这一步；Noto 模式使用静态 Regular/Semibold 字体。字库放在应用 Resources 内，不提交到源码仓库。整合包附带 Mac 启动器时完整保留所选 .app 的字体、资源和签名文件。
 
 ### Windows
 
@@ -91,7 +101,7 @@ PYTHON_BIN="$PWD/test-output/linux-fonts-venv/bin/python" bash scripts/package-l
 
 导出页默认勾选“PCL Rust 启动器（Windows、macOS、Linux）”。取消勾选后按所选格式导出普通整合包；勾选时导出外层 ZIP，内含 `modpack.mrpack` 和三端程序。
 
-启动器会寻找应用旁的 `launcher-bundle`，也可点击“选择启动器目录”。目录结构：
+可以从 [v0.1.0 下载页](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0) 获取 `launcher-bundle.zip` 三端目录包。启动器会寻找应用旁的 `launcher-bundle`，也可点击“选择启动器目录”。目录结构：
 
 ```text
 launcher-bundle/
@@ -129,4 +139,4 @@ Windows 与 Linux 的运行依赖、资源和许可文件放在各自目录内�
 
 ## 发布与验证
 
-构建、签名、CI 与实机结果见 [验证记录](validation.md)。仓库目前不提供应用发行包；许可和资产分发范围见 [来源说明](upstream.md)。
+[v0.1.0 开发预览版下载](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)：Windows x86_64、macOS arm64、Linux x86_64（glibc 2.35+）。构建、签名、CI 与实机结果见 [验证记录](validation.md)，许可和资产来源见 [来源说明](upstream.md)。
