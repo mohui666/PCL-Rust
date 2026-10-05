@@ -290,6 +290,8 @@ impl Launcher {
         if let Ok(executable) = std::env::current_exe() {
             if let Some(contents) = executable.parent().and_then(|p| p.parent()) {
                 paths.push(contents.join("Resources/PingFang-Regular.otf"));
+                #[cfg(target_os = "macos")]
+                paths.push(contents.join("Resources/NotoSansSC-Regular.ttf"));
             }
         }
         #[cfg(target_os = "linux")]
@@ -358,6 +360,8 @@ impl Launcher {
         if let Ok(executable) = std::env::current_exe() {
             if let Some(contents) = executable.parent().and_then(|p| p.parent()) {
                 bold_paths.push(contents.join("Resources/PingFang-Semibold.otf"));
+                #[cfg(target_os = "macos")]
+                bold_paths.push(contents.join("Resources/NotoSansSC-Semibold.ttf"));
             }
         }
         #[cfg(target_os = "linux")]
