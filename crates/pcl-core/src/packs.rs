@@ -18,7 +18,12 @@ use std::{
 #[derive(Debug)]
 struct Dependencies {
     minecraft: String,
-    loader: Option<(LoaderKind, String)>,
+    loader: Option<(PackLoader, String)>,
+}
+#[derive(Debug, Clone, Copy)]
+enum PackLoader {
+    Meta(LoaderKind),
+    Forge(crate::forge::ForgeKind),
 }
 
 fn dependencies(info: &ModpackInfo) -> Result<Dependencies> {
@@ -33,10 +38,12 @@ fn dependencies(info: &ModpackInfo) -> Result<Dependencies> {
         validate_id(version)?;
         let kind = match name.as_str() {
             "minecraft" => continue,
-            "fabric-loader" => LoaderKind::Fabric,
-            "quilt-loader" => LoaderKind::Quilt,
+            "fabric-loader" => PackLoader::Meta(LoaderKind::Fabric),
+            "quilt-loader" => PackLoader::Meta(LoaderKind::Quilt),
+            "forge" => PackLoader::Forge(crate::forge::ForgeKind::Forge),
+            "neoforge" => PackLoader::Forge(crate::forge::ForgeKind::NeoForge),
             _ => bail!(
-                "暂不支持整合包依赖 {name}；当前仅支持 Minecraft 加一个 Fabric 或 Quilt，未开始下载"
+                "暂不支持整合包依赖 {name}；当前仅支持 Minecraft 加一个 Fabric、Quilt、Forge 或 NeoForge，未开始下载"
             ),
         };
         if loader.is_some() {
@@ -149,6 +156,31 @@ pub fn install_pack(
     cancel: &AtomicBool,
     progress: impl Fn(Progress) + Sync,
 ) -> Result<String> {
+    install_pack_with_java(
+        root,
+        pack,
+        instance_id,
+        include_optional,
+        None,
+        platform,
+        cancel,
+        progress,
+    )
+}
+
+/// A caller-selected Java is used only for official Forge/NeoForge processors.
+/// Without one, inspect installed Java runtimes; never auto-download or launch a game.
+#[allow(clippy::too_many_arguments)]
+pub fn install_pack_with_java(
+    root: &Path,
+    pack: &Path,
+    instance_id: &str,
+    include_optional: bool,
+    java: Option<&Path>,
+    platform: &Platform,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress) + Sync,
+) -> Result<String> {
     install_with(
         root,
         pack,
@@ -158,12 +190,23 @@ pub fn install_pack(
         cancel,
         &progress,
         |dependency| {
-            if let Some((kind, version)) = &dependency.loader {
+            if let Some((PackLoader::Meta(kind), version)) = &dependency.loader {
                 loaders::install_loader(
                     root,
                     *kind,
                     &dependency.minecraft,
                     version,
+                    platform,
+                    cancel,
+                    &progress,
+                )
+            } else if let Some((PackLoader::Forge(kind), version)) = &dependency.loader {
+                ensure_forge_version(
+                    root,
+                    *kind,
+                    &dependency.minecraft,
+                    version,
+                    java,
                     platform,
                     cancel,
                     &progress,
@@ -192,6 +235,87 @@ pub fn install_pack(
                 Ok(dependency.minecraft.clone())
             }
         },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn ensure_forge_version(
+    root: &Path,
+    kind: crate::forge::ForgeKind,
+    minecraft: &str,
+    version: &str,
+    java: Option<&Path>,
+    platform: &Platform,
+    cancel: &AtomicBool,
+    progress: &(impl Fn(Progress) + Sync),
+) -> Result<String> {
+    let id = match kind {
+        crate::forge::ForgeKind::Forge => format!("{minecraft}-forge-{version}"),
+        crate::forge::ForgeKind::NeoForge => format!("neoforge-{version}"),
+    };
+    let profile = install::safe_target(root, &PathBuf::from(format!("versions/{id}/{id}.json")))?;
+    if profile.exists() {
+        let resolved = resolve_version(root, &id)?;
+        let receipt = &resolved["_pcl_forge_install"];
+        let kind_name = match kind {
+            crate::forge::ForgeKind::Forge => "forge",
+            crate::forge::ForgeKind::NeoForge => "neoforge",
+        };
+        let coordinate = match kind {
+            crate::forge::ForgeKind::Forge => {
+                format!("net.minecraftforge:forge:{minecraft}-{version}")
+            }
+            crate::forge::ForgeKind::NeoForge => format!("net.neoforged:neoforge:{version}"),
+        };
+        let declared = resolved["libraries"].as_array().is_some_and(|libraries| {
+            libraries.iter().any(|library| {
+                library["name"].as_str().is_some_and(|name| {
+                    name == coordinate || name.starts_with(&format!("{coordinate}:"))
+                })
+            })
+        });
+        anyhow::ensure!(
+            receipt["kind"].as_str() == Some(kind_name)
+                && receipt["minecraft"].as_str() == Some(minecraft)
+                && (receipt["loader"].as_str() == Some(version)
+                    || receipt["loader"].is_null() && declared),
+            "既有加载器来源/版本不匹配，未覆盖用户版本"
+        );
+        install::repair_version_with_java(root, &id, java, platform, cancel, progress)?;
+        return Ok(id);
+    }
+    let base = install::safe_target(
+        root,
+        &PathBuf::from(format!("versions/{minecraft}/{minecraft}.json")),
+    )?;
+    if !base.exists() {
+        install::install_version(root, minecraft, platform, cancel, progress)?;
+    }
+    let parent = install::verify_vanilla_parent(root, minecraft, platform, cancel)?;
+    let required = parent["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32;
+    let runtime = if let Some(path) = java {
+        crate::java::inspect_java_with_cancel(path, cancel)?
+    } else {
+        crate::java::discover_java_with_cancel(cancel)?
+            .runtimes
+            .into_iter()
+            .find(|runtime| runtime.major == required && runtime.architecture == platform.arch)
+            .with_context(|| {
+                format!(
+                    "整合包的 {} 安装器需要 Java {required}；请先在设置中选择或下载 Java",
+                    kind.label()
+                )
+            })?
+    };
+    crate::forge::install_forge(
+        root,
+        kind,
+        minecraft,
+        version,
+        &runtime.path,
+        platform,
+        cancel,
+        progress,
     )
 }
 
@@ -332,8 +456,7 @@ mod tests {
         let pack = temp.path().join("fixture.mrpack");
         let root = temp.path().join("not-created");
         for dependency in [
-            json!({"minecraft":"1.21.1","forge":"52.0.1"}),
-            json!({"minecraft":"1.21.1","neoforge":"21.1.1"}),
+            json!({"minecraft":"1.21.1","forge":"52.0.1","neoforge":"21.1.1"}),
             json!({"minecraft":"1.21.1","unknown-loader":"1"}),
             json!({"minecraft":"1.21.1","fabric-loader":"0.19.5","quilt-loader":"0.29.0"}),
         ] {
@@ -354,6 +477,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn forge_and_neoforge_dependencies_reach_the_real_dependency_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let pack = temp.path().join("test.mrpack");
+        for (key, version) in [("forge", "52.0.1"), ("neoforge", "21.1.1")] {
+            let root = temp.path().join(key);
+            fixture_pack(&pack, json!({"minecraft":"1.21.1",key:version}));
+            let error = install_with(
+                &root,
+                &pack,
+                "pack",
+                false,
+                &Platform::current(),
+                &AtomicBool::new(false),
+                &|_| {},
+                |dependency| {
+                    assert!(matches!(dependency.loader, Some((PackLoader::Forge(_), _))));
+                    bail!("fixture reached official processor dispatch")
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("processor dispatch"));
+            assert!(!root.exists());
+        }
+    }
     #[test]
     fn existing_instance_or_version_is_never_reused_or_overwritten() {
         let temp = tempfile::tempdir().unwrap();
@@ -563,5 +711,72 @@ mod tests {
             .join("instances/new-pack/config/settings.txt")
             .is_file());
         assert!(!root.join("versions/new-pack/new-pack.json").exists());
+    }
+    #[test]
+    fn existing_forge_can_supply_named_instances_without_rewriting_user_profile() {
+        use sha1::{Digest, Sha1};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |path: &str, bytes: &[u8]| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        };
+        let file = |bytes: &[u8], url: &str| json!({"url":url,"sha1":format!("{:x}",Sha1::digest(bytes)),"size":bytes.len()});
+        let index = br#"{"objects":{}}"#;
+        let mut asset = file(index, "https://piston-meta.mojang.com/index.json");
+        asset["id"] = json!("fixture");
+        put("assets/indexes/fixture.json", index);
+        put("versions/1.21.1/1.21.1.jar", b"client");
+        put("versions/1.21.1/1.21.1.json",&serde_json::to_vec(&json!({"id":"1.21.1","libraries":[],"downloads":{"client":file(b"client","https://piston-data.mojang.com/client.jar")},"assetIndex":asset})).unwrap());
+        let id = "1.21.1-forge-52.0.16";
+        let coordinate = "net.minecraftforge:forge:1.21.1-52.0.16";
+        let libpath = "net/minecraftforge/forge/1.21.1-52.0.16/forge-1.21.1-52.0.16.jar";
+        put(&format!("libraries/{libpath}"), b"forge fixture");
+        let mut download = file(
+            b"forge fixture",
+            &format!("https://maven.minecraftforge.net/{libpath}"),
+        );
+        download["path"] = json!(libpath);
+        let profile = json!({"id":id,"inheritsFrom":"1.21.1","arguments":{"jvm":["-Duser.custom=true"]},"libraries":[{"name":coordinate,"downloads":{"artifact":download}}],"_pcl_forge_install":{"kind":"forge","minecraft":"1.21.1","loader":"52.0.16","files":[]}});
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let profile_path = format!("versions/{id}/{id}.json");
+        put(&profile_path, &bytes);
+        put(&format!("versions/{id}/natives/user-file"), b"keep");
+        assert_eq!(
+            ensure_forge_version(
+                root,
+                crate::forge::ForgeKind::Forge,
+                "1.21.1",
+                "52.0.16",
+                None,
+                &Platform::current(),
+                &AtomicBool::new(false),
+                &|_| {}
+            )
+            .unwrap(),
+            id
+        );
+        assert_eq!(fs::read(root.join(&profile_path)).unwrap(), bytes);
+        assert_eq!(
+            fs::read(root.join(format!("versions/{id}/natives/user-file"))).unwrap(),
+            b"keep"
+        );
+        let mut changed = profile;
+        changed["_pcl_forge_install"]["loader"] = json!("other");
+        let changed = serde_json::to_vec(&changed).unwrap();
+        put(&profile_path, &changed);
+        assert!(ensure_forge_version(
+            root,
+            crate::forge::ForgeKind::Forge,
+            "1.21.1",
+            "52.0.16",
+            None,
+            &Platform::current(),
+            &AtomicBool::new(false),
+            &|_| {}
+        )
+        .is_err());
+        assert_eq!(fs::read(root.join(profile_path)).unwrap(), changed);
     }
 }

@@ -317,7 +317,7 @@ def build_font(style, weight_class, source_characters):
             "style":style,"os2_weight_class":weight_class,
             "os2_fs_selection":selection,"head_mac_style":mac_style,
             "rust_source_character_count":len(source_characters),
-            "source_text_scope":"Rust source files and bundled help/catalog.json when present",
+            "source_text_scope":"Rust UI source, bundled help/catalog.json, and CJK ideographs in the frozen wiki index",
             "missing_rust_source_codepoints":missing_source,
             "local_font_omitted_source_codepoints":local_missing,
             "egui_fallback_glyphs":fallbacks,
@@ -347,6 +347,15 @@ def main():
     help_catalog = ROOT / "crates/pcl-desktop/assets/help/catalog.json"
     if help_catalog.is_file():
         source_characters.update(help_catalog.read_text(encoding="utf-8"))
+    wiki_index = ROOT / "crates/pcl-core/assets/wiki/WikiEntries.txt"
+    if wiki_index.is_file():
+        # Catalog titles are external project names and may contain invisible
+        # shaping controls or color-only emoji. Extend the Chinese subset;
+        # ordinary Latin/emoji still use egui's existing fallback fonts.
+        source_characters.update(char for char in wiki_index.read_text(encoding="utf-8")
+                                 if 0x3400 <= ord(char) <= 0x9FFF
+                                 or 0xF900 <= ord(char) <= 0xFAFF
+                                 or 0x20000 <= ord(char) <= 0x323AF)
     source_characters = {char for char in source_characters if ord(char) >= 32 and ord(char) != 127}
     for style, weight_class in [("Regular", 400), ("Semibold", 600)]:
         if args.style in ("all", style.lower()):

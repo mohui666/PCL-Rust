@@ -65,6 +65,7 @@ enum Action {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let settings = config::load_settings(&config::settings_path())?;
+    pcl_core::network::configure(&settings.downloads)?;
     let root = cli.root.unwrap_or(settings.game_root);
     anyhow::ensure!(root.is_absolute(), "--root 必须是绝对路径");
     match cli.command {

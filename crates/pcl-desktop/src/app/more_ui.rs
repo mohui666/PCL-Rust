@@ -1,9 +1,16 @@
 //! The fixed upstream help is inert display data, never executable XAML.
-use super::{account_ui, Launcher, MUTED};
+use super::{account_ui, xaml_ui, Launcher, MUTED};
 use crate::{theme, ui_style};
+use anyhow::{Context, Result};
 use eframe::egui::{self, Color32, FontId, Rect, RichText, Vec2};
 use serde::Deserialize;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read,
+    path::Path,
+    sync::{mpsc, Arc},
+};
 
 #[derive(Default, Deserialize)]
 struct Catalog {
@@ -43,17 +50,7 @@ struct HelpMetadata {
 fn yes() -> bool {
     true
 }
-#[derive(Deserialize)]
-struct HelpNode {
-    tag: String,
-    attrs: HashMap<String, String>,
-    children: Vec<HelpNode>,
-}
-impl HelpNode {
-    fn attr(&self, key: &str) -> &str {
-        self.attrs.get(key).map(String::as_str).unwrap_or("")
-    }
-}
+type HelpNode = xaml_ui::Node;
 #[derive(Deserialize)]
 struct Credit {
     title: String,
@@ -72,7 +69,17 @@ pub(super) struct MoreState {
     load_error: Option<String>,
     textures: HashMap<String, egui::TextureHandle>,
     message: Option<(String, String)>,
+    renderer: xaml_ui::Renderer,
+    external: Option<ExternalHelp>,
+    pending_external: Option<mpsc::Receiver<Result<ExternalHelp>>>,
+    external_target: Option<String>,
 }
+struct ExternalHelp {
+    title: String,
+    nodes: Vec<HelpNode>,
+    origin: xaml_ui::Origin,
+}
+
 impl Default for MoreState {
     fn default() -> Self {
         let (catalog, load_error) =
@@ -92,6 +99,10 @@ impl Default for MoreState {
             load_error,
             textures: HashMap::new(),
             message: None,
+            renderer: xaml_ui::Renderer::default(),
+            external: None,
+            pending_external: None,
+            external_target: None,
         }
     }
 }
@@ -317,8 +328,84 @@ impl MoreState {
     }
 }
 impl Launcher {
+    pub(super) fn open_help_content(&mut self, target: &str, ctx: &egui::Context) -> Result<()> {
+        let id = target.trim_end_matches(".json");
+        if self.more.catalog.entries.iter().any(|entry| entry.id == id) {
+            self.open_local_help(id);
+            return Ok(());
+        }
+        let target = target.to_owned();
+        let folder = self
+            .settings_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("help");
+        let (sender, receiver) = mpsc::channel();
+        let request = target.clone();
+        let repaint = ctx.clone();
+        std::thread::Builder::new()
+            .name("pcl-help-content".into())
+            .spawn(move || {
+                let result = load_external_help(&request, &folder);
+                let _ = sender.send(result);
+                repaint.request_repaint();
+            })?;
+        self.more.pending_external = Some(receiver);
+        self.more.external = None;
+        self.more.detail = Some(format!("external:{target}"));
+        self.more.external_target = Some(target);
+        self.more.message = None;
+        self.more.renderer.clear();
+        self.page = super::Page::More;
+        self.more.tab = 0;
+        self.task_view = false;
+        Ok(())
+    }
+    fn external_help_page(&mut self, ui: &mut egui::Ui) {
+        if let Some(receiver) = &self.more.pending_external {
+            match receiver.try_recv() {
+                Ok(Ok(entry)) => {
+                    self.more.external = Some(entry);
+                    self.more.pending_external = None;
+                }
+                Ok(Err(error)) => {
+                    self.more.pending_external = None;
+                    self.more.message = Some(("帮助读取失败".into(), format!("{error:#}")));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.more.pending_external = None;
+                    self.more.message = Some(("帮助读取失败".into(), "读取任务提前结束".into()));
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+        if self.more.pending_external.is_some() {
+            ui.label("正在获取帮助内容……");
+        }
+        if let Some(entry) = &self.more.external {
+            let values = self.custom_values();
+            let actions = self
+                .more
+                .renderer
+                .render(ui, &entry.nodes, &entry.origin, &values);
+            self.queue_custom_actions(actions);
+        } else if self.more.pending_external.is_none() && ui.button("重新获取帮助").clicked()
+        {
+            if let Some(target) = self.more.external_target.clone() {
+                if let Err(error) = self.open_help_content(&target, ui.ctx()) {
+                    self.more.message = Some(("帮助读取失败".into(), format!("{error:#}")));
+                }
+            }
+        }
+    }
     pub(super) fn open_local_help(&mut self, id: &str) {
         if self.more.catalog.entries.iter().any(|entry| entry.id == id) {
+            self.more.external = None;
+            self.more.external_target = None;
+            self.more.pending_external = None;
             self.page = super::Page::More;
             self.more.tab = 0;
             self.more.history.clear();
@@ -329,6 +416,14 @@ impl Launcher {
         }
     }
     pub(super) fn more_detail_title(&self) -> Option<&str> {
+        if self.more.external_target.is_some() {
+            return Some(
+                self.more
+                    .external
+                    .as_ref()
+                    .map_or("正在获取帮助", |entry| entry.title.as_str()),
+            );
+        }
         let id = self.more.detail.as_ref()?;
         self.more
             .catalog
@@ -338,6 +433,9 @@ impl Launcher {
             .map(|entry| entry.meta.title.as_str())
     }
     pub(super) fn leave_more_detail(&mut self) {
+        self.more.external = None;
+        self.more.external_target = None;
+        self.more.pending_external = None;
         self.more.detail = self.more.history.pop();
     }
     pub(super) fn more_scroll_key(&self) -> (usize, Option<&str>) {
@@ -348,6 +446,9 @@ impl Launcher {
             self.more.tab = tab;
             self.more.detail = None;
             self.more.history.clear();
+            self.more.external = None;
+            self.more.external_target = None;
+            self.more.pending_external = None;
         }
     }
 
@@ -377,6 +478,10 @@ impl Launcher {
         }
     }
     fn help_page(&mut self, ui: &mut egui::Ui) {
+        if self.more.external_target.is_some() {
+            self.external_help_page(ui);
+            return;
+        }
         let catalog = self.more.catalog.clone();
         if let Some(error) = &self.more.load_error {
             ui.colored_label(Color32::DARK_RED, error);
@@ -385,7 +490,13 @@ impl Launcher {
         let mut action = None;
         if let Some(id) = &self.more.detail {
             if let Some(entry) = catalog.entries.iter().find(|entry| &entry.id == id) {
-                ui.label(RichText::new("上游 2.13.1.1 随附帮助 · 本地文本版。说明面向原版 Windows，部分功能尚未迁移；远程图片以链接保留。").size(12.0).color(MUTED));
+                ui.label(
+                    RichText::new(
+                        "上游随附帮助。说明面向原版 Windows；图片按来源加载，操作仅在点击时执行。",
+                    )
+                    .size(12.0)
+                    .color(MUTED),
+                );
                 ui.add_space(10.0);
                 if entry.meta.is_event {
                     more_card(ui, &entry.id, &entry.meta.title, None, TEXT_MARGIN, |ui| {
@@ -399,20 +510,31 @@ impl Launcher {
                                     .unwrap_or(&entry.meta.event_data),
                             );
                         } else {
-                            render_link(
-                                ui,
-                                &entry.meta.title,
-                                &entry.meta.event_type,
-                                &entry.meta.event_data,
-                                &catalog,
-                                &mut action,
-                            );
+                            if ui
+                                .add_sized([160.0, 35.0], egui::Button::new(&entry.meta.title))
+                                .clicked()
+                            {
+                                self.queue_custom_actions(vec![xaml_ui::Action {
+                                    kind: entry.meta.event_type.clone(),
+                                    data: entry.meta.event_data.clone(),
+                                }]);
+                            }
                         }
                     });
                 } else {
-                    ui.push_id(&entry.id, |ui| {
-                        render_nodes(ui, &entry.nodes, &catalog, &mut action)
-                    });
+                    let values = self.custom_values();
+                    let origin = xaml_ui::Origin {
+                        directory: Some(super::home_ui::folder(&self.settings_path)),
+                        url: None,
+                    };
+                    let actions = ui
+                        .push_id(&entry.id, |ui| {
+                            self.more
+                                .renderer
+                                .render(ui, &entry.nodes, &origin, &values)
+                        })
+                        .inner;
+                    self.queue_custom_actions(actions);
                 }
             }
         } else {
@@ -534,7 +656,7 @@ impl Launcher {
                     "PCL Rust · 第三方重构",
                     &format!("当前版本：{} · 非官方版本", env!("CARGO_PKG_VERSION")),
                     "检查更新",
-                    None,
+                    Some("pcl-rust:check-update"),
                     &mut url,
                 );
             },
@@ -631,11 +753,31 @@ impl Launcher {
         {
             self.show_logs = true;
         }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_sized([150.0, 35.0], egui::Button::new("分析当前版本日志"))
+                .clicked()
+            {
+                self.analyze_selected_logs(ui.ctx());
+            }
+            if ui
+                .add_sized([150.0, 35.0], egui::Button::new("导入日志 / 崩溃报告"))
+                .clicked()
+            {
+                self.import_crash_logs(ui.ctx());
+            }
+        });
         if let Some(url) = url {
-            self.perform_help_action(HelpAction::Web(url));
+            if url == "pcl-rust:check-update" {
+                self.open_system_update_check();
+            } else {
+                self.perform_help_action(HelpAction::Web(url));
+            }
         }
     }
     pub(super) fn more_dialogs(&mut self, ctx: &egui::Context) {
+        self.appearance_music_dialog(ctx);
+        self.custom_content_dialogs(ctx);
         if let Some((title, message)) = self.more.message.clone() {
             if account_ui::account_modal(ctx, "help-message", &title, &message, &["关闭"]).is_some()
             {
@@ -657,7 +799,7 @@ impl Launcher {
                 "运行日志",
                 (size.x - 50.0).clamp(400.0, 820.0),
                 height,
-                &["复制日志", "关闭"],
+                &["复制日志", "导出日志", "关闭"],
                 |ui| {
                     ui.label(RichText::new("访问令牌已隐藏。仅保留本次运行日志，复制前请检查目录、用户名和服务器地址。").size(12.0).color(MUTED));
                     ui.add_space(8.0);
@@ -676,12 +818,94 @@ impl Launcher {
             );
             match action {
                 Some(0) => ctx.copy_text(text),
-                Some(1) => self.show_logs = false,
+                Some(1) => {
+                    self.show_logs = false;
+                    self.export_runtime_logs(ctx);
+                }
+                Some(2) => self.show_logs = false,
                 _ => (),
             }
         }
     }
 }
+fn load_external_help(target: &str, folder: &Path) -> Result<ExternalHelp> {
+    let remote = target.starts_with("https://") || target.starts_with("http://");
+    let (metadata, origin) = if remote {
+        let mut url = xaml_ui::http_url(target)?;
+        let path = url.path().to_string();
+        if !path.ends_with(".json") {
+            anyhow::bail!("联网帮助入口必须是 .json 元数据地址");
+        }
+        let bytes = xaml_ui::fetch_bytes(url.as_str(), 64 * 1024)?;
+        let metadata: HelpMetadata =
+            serde_json::from_slice(&bytes).context("帮助元数据不是有效 JSON")?;
+        url.set_path(&format!("{}.xaml", path.trim_end_matches(".json")));
+        (
+            metadata,
+            xaml_ui::Origin {
+                directory: None,
+                url: Some(url.to_string()),
+            },
+        )
+    } else {
+        let relative = pcl_core::metadata::safe_relative(&target.replace('\\', "/"))?;
+        let root = folder.canonicalize().context("本地帮助文件夹不存在")?;
+        let path = root.join(relative).with_extension("json").canonicalize()?;
+        if !path.starts_with(&root) {
+            anyhow::bail!("帮助文件超出本地帮助文件夹");
+        }
+        let metadata: HelpMetadata = serde_json::from_slice(&read_help_file(&path, 64 * 1024)?)
+            .context("帮助元数据不是有效 JSON")?;
+        (
+            metadata,
+            xaml_ui::Origin {
+                directory: path.parent().map(Path::to_owned),
+                url: None,
+            },
+        )
+    };
+    let nodes = if metadata.is_event {
+        vec![HelpNode {
+            tag: "MyButton".into(),
+            attrs: HashMap::from([
+                ("Text".into(), metadata.title.clone()),
+                ("EventType".into(), metadata.event_type),
+                ("EventData".into(), metadata.event_data),
+            ]),
+            children: Vec::new(),
+        }]
+    } else {
+        let content = if let Some(url) = &origin.url {
+            xaml_ui::fetch_bytes(url, xaml_ui::MAX_DOCUMENT)?
+        } else {
+            let relative = pcl_core::metadata::safe_relative(&target.replace('\\', "/"))?;
+            let root = folder.canonicalize()?;
+            let path = root.join(relative).with_extension("xaml").canonicalize()?;
+            if !path.starts_with(&root) {
+                anyhow::bail!("帮助内容超出本地帮助文件夹");
+            }
+            read_help_file(&path, xaml_ui::MAX_DOCUMENT)?
+        };
+        xaml_ui::parse(&String::from_utf8(content).context("帮助内容必须使用 UTF-8")?)?
+    };
+    Ok(ExternalHelp {
+        title: metadata.title,
+        nodes,
+        origin,
+    })
+}
+
+fn read_help_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        anyhow::bail!("帮助文件过大");
+    }
+    Ok(bytes)
+}
+
 fn help_search_box(ui: &mut egui::Ui, query: &mut String) {
     let (rect, _) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
@@ -860,9 +1084,6 @@ fn credit_row(
                 *clicked = Some(url.into());
             }
         }
-        if url.is_none() {
-            response.on_hover_text("此第三方重构版尚未接入自动更新服务");
-        }
     }
 }
 fn render_link(
@@ -997,6 +1218,24 @@ mod tests {
             .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
         ctx.set_fonts(fonts);
         ctx
+    }
+    #[test]
+    fn local_event_help_needs_no_xaml_and_local_document_stays_confined() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("event.json"),
+            r#"{"Title":"Copy","IsEvent":true,"EventType":"复制文本","EventData":"fixture"}"#,
+        )
+        .unwrap();
+        let event = load_external_help("event.json", root.path()).unwrap();
+        assert_eq!(event.nodes[0].attr("EventType"), "复制文本");
+        assert!(load_external_help("../outside.json", root.path()).is_err());
+        fs::write(root.path().join("doc.json"), br#"{"Title":"Doc"}"#).unwrap();
+        fs::write(root.path().join("doc.xaml"), "<TextBlock Text='document'/>").unwrap();
+        assert_eq!(
+            load_external_help("doc.json", root.path()).unwrap().nodes[0].attr("Text"),
+            "document"
+        );
     }
     #[test]
     fn help_cards_keep_source_40_header_18_footer_15_gap() {

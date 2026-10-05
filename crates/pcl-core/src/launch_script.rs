@@ -162,7 +162,7 @@ fn render(plan: &LaunchPlan, format: ScriptFormat) -> Result<(String, bool)> {
             && arguments.iter().all(|arg| !arg.contains('\0')),
         "启动计划含不能传递给操作系统的 NUL 字符"
     );
-    let text = match format {
+    let mut text = match format {
         ScriptFormat::MacCommand => render_posix(
             java,
             cwd,
@@ -182,6 +182,12 @@ fn render(plan: &LaunchPlan, format: ScriptFormat) -> Result<(String, bool)> {
             &environment,
         )?,
     };
+    // Native launcher work is intentionally not silently serialized into a shell script.
+    let note = "Game window control, launcher memory/GPU preferences, initial language and offline skin preparation require launching from PCL Rust.";
+    match format {
+        ScriptFormat::MacCommand => text.push_str(&format!("# {note}\n")),
+        ScriptFormat::WindowsBatch => text.push_str(&format!("\r\nrem {note}\r\n")),
+    }
     Ok((text, !removed))
 }
 

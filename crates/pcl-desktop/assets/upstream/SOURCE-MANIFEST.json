@@ -287,6 +287,20 @@
       "size": 963,
       "sha256": "afce6a2cd3d931cc162b7f843d29a8d07bbcd5446074e86ff89626d7ce3b5394",
       "git_blob_sha1": "58b23d461892c4e963ae278806cbfeb8c0bffb92"
+    },
+    {
+      "path": "Images/Skins/Alex.png",
+      "source": "https://raw.githubusercontent.com/Meloong-Git/PCL/0e0d12fdce6a2804916fb2be60e41144da637c18/Plain%20Craft%20Launcher%202/Images/Skins/Alex.png",
+      "acquisition": {
+        "method": "local-fixed-checkout",
+        "checkout": "test-output/upstream",
+        "commit": "0e0d12fdce6a2804916fb2be60e41144da637c18",
+        "source_path": "Plain Craft Launcher 2/Images/Skins/Alex.png"
+      },
+      "size": 999,
+      "sha256": "394b483392052fb28d6271c736ba0df0394223c93b6348f1f1d135fdb7412daa",
+      "git_blob_sha1": "984d92b72053fac384174c36c7232037b00646ce",
+      "verification": "Bundled bytes equal git show at the pinned commit; Git blob SHA1 independently recomputed."
     }
   ],
   "derived_files": [

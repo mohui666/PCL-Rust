@@ -18,6 +18,7 @@ use std::{
 #[derive(Default)]
 pub(super) struct ResourceBrowser {
     kind: ResourceKind,
+    provider: resources::ResourceProvider,
     generation: u64,
     epoch: Arc<()>,
     pending: Option<RequestKey>,
@@ -306,6 +307,14 @@ impl Launcher {
             Some((version["_pcl_jar_id"].as_str()?.to_owned(), String::new()))
         }
     }
+    pub(super) fn open_local_pack_import(&mut self) {
+        self.page = super::Page::Download;
+        self.download_tab = 2;
+        self.task_view = false;
+        self.ensure_resource_target();
+        self.resource_browser.local_pack = true;
+    }
+
     pub(super) fn ensure_resource_target(&mut self) {
         let kind = tab_kind(self.download_tab);
         if self.resource_browser.kind != kind {
@@ -393,6 +402,7 @@ impl Launcher {
     fn search_resources(&mut self, offset: u32, use_form: bool) {
         let state = &self.resource_browser;
         let mut request = resources::SearchOptions {
+            provider: state.provider,
             query: state.query.trim().into(),
             minecraft: (!state.minecraft.trim().is_empty()).then(|| state.minecraft.trim().into()),
             loader: (state.kind == ResourceKind::Mod && !state.loader.is_empty())
@@ -698,10 +708,23 @@ impl Launcher {
             ui.scope_builder(egui::UiBuilder::new().max_rect(source_rect), |ui| {
                 crate::ui_style::PclComboBox::from_id_salt("resource-source")
                     .width(star - 12.0)
-                    .selected_text("Modrinth")
+                    .selected_text(self.resource_browser.provider.label())
                     .show_ui(ui, |ui| {
-                        ui.selectable_label(true, "Modrinth");
-                        ui.selectable_label_enabled(false, false, "CurseForge 需要 API Key");
+                        for provider in [
+                            resources::ResourceProvider::Modrinth,
+                            resources::ResourceProvider::CurseForge,
+                        ] {
+                            if ui
+                                .selectable_value(
+                                    &mut self.resource_browser.provider,
+                                    provider,
+                                    provider.label(),
+                                )
+                                .changed()
+                            {
+                                self.resource_browser.category.clear();
+                            }
+                        }
                     });
             });
             crate::ui_style::place_left(
@@ -759,13 +782,13 @@ impl Launcher {
                 crate::ui_style::PclComboBox::from_id_salt("resource-category")
                     .width(star - 12.0)
                     .selected_text(
-                        categories(kind)
+                        categories_for(kind, self.resource_browser.provider)
                             .iter()
                             .find(|(key, _)| *key == self.resource_browser.category)
                             .map_or("全部", |(_, label)| *label),
                     )
                     .show_ui(ui, |ui| {
-                        for (key, label) in categories(kind) {
+                        for (key, label) in categories_for(kind, self.resource_browser.provider) {
                             ui.selectable_value(
                                 &mut self.resource_browser.category,
                                 (*key).into(),
@@ -1014,14 +1037,26 @@ impl Launcher {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 20.0;
                         if ui
-                            .add_sized(Vec2::new(140.0, 35.0), egui::Button::new("转到 Modrinth"))
+                            .add_sized(
+                                Vec2::new(140.0, 35.0),
+                                egui::Button::new(if hit.project_id.starts_with("cf:") {
+                                    "转到 CurseForge"
+                                } else {
+                                    "转到 Modrinth"
+                                }),
+                            )
                             .clicked()
                         {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
-                                "https://modrinth.com/{}/{}",
-                                kind.web_type(),
-                                hit.project_id
-                            )));
+                            ui.ctx()
+                                .open_url(egui::OpenUrl::new_tab(resource_url(kind, hit)));
+                        }
+                        if let Some(entry) = wiki_entry(hit) {
+                            if ui
+                                .add_sized(Vec2::new(120.0, 35.0), egui::Button::new("MC 百科"))
+                                .clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(entry.url()));
+                            }
                         }
                         if ui
                             .add_sized(Vec2::new(140.0, 35.0), egui::Button::new("复制名称"))
@@ -1572,7 +1607,7 @@ fn resource_item(
             Vec2::new(rect.width() - 72.0, 17.0),
         ),
         egui::Label::new(
-            RichText::new(&hit.title)
+            RichText::new(display_title(hit))
                 .size(14.0)
                 .color(theme::palette(ui.ctx()).text),
         )
@@ -1583,10 +1618,17 @@ fn resource_item(
         .categories
         .iter()
         .filter_map(|tag| {
-            categories(kind)
-                .iter()
-                .find(|(key, _)| key == tag)
-                .map(|(_, label)| *label)
+            categories_for(
+                kind,
+                if hit.project_id.starts_with("cf:") {
+                    resources::ResourceProvider::CurseForge
+                } else {
+                    resources::ResourceProvider::Modrinth
+                },
+            )
+            .iter()
+            .find(|(key, _)| key == tag)
+            .map(|(_, label)| *label)
         })
         .take(3)
     {
@@ -1717,7 +1759,16 @@ fn resource_item(
         [c - Vec2::new(5.0, 0.0), c + Vec2::new(5.0, 0.0)],
         egui::Stroke::new(0.8_f32, MUTED),
     );
-    metadata_text(ui, Pos2::new(px + 16.5, origin.y), 57.0, "Modrinth");
+    metadata_text(
+        ui,
+        Pos2::new(px + 16.5, origin.y),
+        57.0,
+        if hit.project_id.starts_with("cf:") {
+            "CurseForge"
+        } else {
+            "Modrinth"
+        },
+    );
 }
 fn metadata_text(ui: &mut egui::Ui, pos: Pos2, width: f32, text: &str) {
     crate::ui_style::place_left(
@@ -2024,6 +2075,16 @@ fn resource_icon(kind: ResourceKind) -> &'static str {
     }
 }
 // Modrinth values are the right-hand tags in the corresponding upstream PageDownload*.xaml.
+fn categories_for(
+    kind: ResourceKind,
+    provider: resources::ResourceProvider,
+) -> &'static [(&'static str, &'static str)] {
+    if provider == resources::ResourceProvider::CurseForge {
+        curseforge_categories(kind)
+    } else {
+        categories(kind)
+    }
+}
 fn categories(kind: ResourceKind) -> &'static [(&'static str, &'static str)] {
     match kind {
         ResourceKind::Modpack => &[
@@ -2206,9 +2267,153 @@ fn resource_target_info(version: &serde_json::Value) -> Option<(String, String)>
     Some((version["_pcl_jar_id"].as_str()?.to_owned(), loader.into()))
 }
 
+fn resource_url(kind: ResourceKind, hit: &resources::ProjectHit) -> String {
+    let cf = hit.project_id.starts_with("cf:");
+    let mut url = reqwest::Url::parse(if cf {
+        "https://www.curseforge.com/minecraft/"
+    } else {
+        "https://modrinth.com/"
+    })
+    .expect("fixed URL");
+    let category = if cf {
+        match kind {
+            ResourceKind::Mod => "mc-mods",
+            ResourceKind::Modpack => "modpacks",
+            ResourceKind::ResourcePack => "texture-packs",
+            ResourceKind::Shader => "shaders",
+            ResourceKind::DataPack => "data-packs",
+        }
+    } else {
+        kind.web_type()
+    };
+    url.path_segments_mut()
+        .expect("base URL")
+        .pop_if_empty()
+        .push(category)
+        .push(if cf { &hit.slug } else { &hit.project_id });
+    url.into()
+}
+
+// CurseForge IDs from upstream PageDownload*.xaml; see UPSTREAM-LICENSE.
+fn curseforge_categories(kind: ResourceKind) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        ResourceKind::Mod => &[
+            ("", "全部"),
+            ("406", "世界元素"),
+            ("407", "生物群系"),
+            ("410", "维度"),
+            ("408", "矿物与资源"),
+            ("409", "天然结构"),
+            ("412", "科技"),
+            ("415", "管道与物流"),
+            ("4843", "自动化"),
+            ("417", "能源"),
+            ("4558", "红石"),
+            ("436", "食物与烹饪"),
+            ("416", "农业"),
+            ("414", "运输"),
+            ("420", "仓储"),
+            ("419", "魔法"),
+            ("422", "冒险"),
+            ("424", "装饰"),
+            ("411", "生物"),
+            ("5191", "实用"),
+            ("434", "装备与工具"),
+            ("9026", "创造模式"),
+            ("6814", "性能优化"),
+            ("423", "信息显示"),
+            ("435", "服务器"),
+            ("421", "支持库"),
+        ],
+        ResourceKind::Modpack => &[
+            ("", "全部"),
+            ("4484", "多人"),
+            ("4479", "硬核"),
+            ("4483", "战斗"),
+            ("4478", "任务"),
+            ("4472", "科技"),
+            ("4473", "魔法"),
+            ("4475", "冒险"),
+            ("4476", "探索"),
+            ("4477", "小游戏"),
+            ("4474", "科幻"),
+            ("4736", "空岛"),
+            ("5128", "原版改良"),
+            ("4487", "FTB"),
+            ("4480", "基于地图"),
+            ("4481", "轻量整合"),
+            ("4482", "大型整合"),
+        ],
+        ResourceKind::DataPack => &[
+            ("", "全部"),
+            ("6951", "科技"),
+            ("6952", "魔法"),
+            ("6948", "冒险"),
+            ("6949", "幻想"),
+            ("6953", "实用"),
+            ("6950", "支持库"),
+            ("6946", "Mod 相关"),
+        ],
+        ResourceKind::ResourcePack => &[
+            ("", "全部"),
+            ("403", "原版风"),
+            ("400", "写实风"),
+            ("401", "现代风"),
+            ("402", "中世纪"),
+            ("399", "蒸汽朋克"),
+            ("5244", "含字体"),
+            ("404", "动态效果"),
+            ("4465", "兼容 Mod"),
+            ("393", "16x"),
+            ("394", "32x"),
+            ("395", "64x"),
+            ("396", "128x"),
+            ("397", "256x"),
+            ("398", "512x 或更高"),
+        ],
+        ResourceKind::Shader => &[
+            ("", "全部"),
+            ("6555", "原版风"),
+            ("6554", "幻想风"),
+            ("6553", "写实风"),
+        ],
+    }
+}
+
+fn wiki_entry(hit: &resources::ProjectHit) -> Option<&'static pcl_core::wiki::Entry> {
+    pcl_core::wiki::find(
+        if hit.project_id.starts_with("cf:") {
+            resources::ResourceProvider::CurseForge
+        } else {
+            resources::ResourceProvider::Modrinth
+        },
+        &hit.slug,
+    )
+}
+fn display_title(hit: &resources::ProjectHit) -> &str {
+    wiki_entry(hit)
+        .and_then(|entry| entry.chinese.as_deref())
+        .unwrap_or(&hit.title)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_pack_entry_survives_resource_kind_reset() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(root.path());
+        app.resource_browser.kind = ResourceKind::Mod;
+        app.task_view = true;
+        app.open_local_pack_import();
+        assert!(app.page == super::super::Page::Download);
+        assert_eq!(app.download_tab, 2);
+        assert_eq!(app.resource_browser.kind, ResourceKind::Modpack);
+        assert!(app.resource_browser.local_pack);
+        assert!(!app.task_view);
+        app.ensure_resource_target();
+        assert!(app.resource_browser.local_pack);
+    }
     #[test]
     fn resource_form_accepts_pointer_and_text_after_idle_frames() {
         let folder = tempfile::tempdir().unwrap();
@@ -2336,6 +2541,7 @@ mod tests {
                 version("snapshot", &["24w20a"], &["fabric"]),
             ],
             last_search: Some(resources::SearchOptions {
+                provider: resources::ResourceProvider::Modrinth,
                 query: String::new(), minecraft: Some("1.21.1".into()), loader: Some("fabric".into()), offset: 0, limit: 20,
             }),
             project: Some(serde_json::from_value(serde_json::json!({

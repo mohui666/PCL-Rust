@@ -2,22 +2,28 @@ use crate::theme;
 use crate::ui_style::{self, Assets};
 mod account_ui;
 mod appearance_ui;
+mod crash_ui;
 mod download_ui;
 mod game_window_ui;
 mod hint_ui;
+mod home_ui;
 mod install_ui;
 mod instance_setup_ui;
 mod java_ui;
 mod job;
 mod loading_ui;
+mod mod_update_ui;
 mod modal_ui;
 mod more_ui;
+mod offline_skin_ui;
 mod pack_export_ui;
 mod resource_ui;
 mod setup_launch_ui;
+mod setup_system_ui;
 mod shell_ui;
 mod task_ui;
 mod version_ui;
+mod xaml_ui;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use install_ui::InstallKind;
 use pcl_core::{
@@ -74,17 +80,32 @@ pub(crate) enum Event {
         result: Result<pcl_core::deletion::DeleteReport, String>,
     },
     VersionList(download_ui::VersionListEvent),
+    OptiFineList(install_ui::OptiFineListEvent),
     Java(u64, Result<Vec<JavaRuntime>, String>),
     Versions(PathBuf, u64, Result<Vec<InstalledVersion>, String>),
     Mods(PathBuf, String, u64, Result<Vec<mods::LocalMod>, String>),
     Progress(Progress),
     Log(String),
     Installed(String),
+    ModsUpdated {
+        target: String,
+        report: pcl_core::mod_updates::UpdateReport,
+    },
     VersionRenamed {
         root: PathBuf,
         old: String,
         new: String,
         result: Result<(), String>,
+    },
+    GameContext {
+        pid: u32,
+        game_dir: PathBuf,
+        started: std::time::SystemTime,
+        secret: String,
+    },
+    GameLog {
+        pid: u32,
+        line: String,
     },
     GameStarted(u32),
     GameReady {
@@ -111,6 +132,7 @@ impl Event {
         matches!(
             self,
             Self::Installed(_)
+                | Self::ModsUpdated { .. }
                 | Self::DownloadFailed { .. }
                 | Self::Error(_)
                 | Self::Done(_)
@@ -142,11 +164,16 @@ impl Event {
 pub struct Launcher {
     assets: Assets,
     appearance: appearance_ui::AppearanceState,
+    home: home_ui::HomeState,
+    crash: crash_ui::CrashUiState,
     more: more_ui::MoreState,
     accounts: account_ui::AccountUiState,
     java_download: java_ui::JavaDownloadState,
     instance_setup: instance_setup_ui::InstanceSetupState,
     setup_launch: setup_launch_ui::SetupLaunchState,
+    setup_system: setup_system_ui::SetupSystemState,
+    mod_update: mod_update_ui::ModUpdateState,
+    offline_skin: offline_skin_ui::OfflineSkinState,
     pending_version_delete: Option<pcl_core::deletion::VersionDeletePreview>,
     script_export_result: Option<ScriptExport>,
     pack_export: pack_export_ui::PackExportState,
@@ -165,6 +192,7 @@ pub struct Launcher {
     mods_request: u64,
     manifest: Vec<Value>,
     version_lists: download_ui::VersionLists,
+    optifine: install_ui::OptiFineState,
     java: Vec<JavaRuntime>,
     java_request: u64,
     tx: Sender<Event>,
@@ -354,11 +382,16 @@ impl Launcher {
         let mut app = Self {
             assets: Assets::new(ctx),
             appearance: appearance_ui::AppearanceState::default(),
+            home: home_ui::HomeState::default(),
+            crash: crash_ui::CrashUiState::default(),
             more: more_ui::MoreState::default(),
             accounts: account_ui::AccountUiState::default(),
             java_download: java_ui::JavaDownloadState::default(),
             instance_setup: instance_setup_ui::InstanceSetupState::default(),
             setup_launch: setup_launch_ui::SetupLaunchState::default(),
+            setup_system: setup_system_ui::SetupSystemState::default(),
+            mod_update: mod_update_ui::ModUpdateState::default(),
+            offline_skin: offline_skin_ui::OfflineSkinState::default(),
             pending_version_delete: None,
             script_export_result: None,
             pack_export: Default::default(),
@@ -381,6 +414,7 @@ impl Launcher {
             mods_request: 0,
             manifest: vec![],
             version_lists: Default::default(),
+            optifine: Default::default(),
             java: vec![],
             java_request: 0,
             tx,
@@ -421,6 +455,7 @@ impl Launcher {
         app.refresh_versions();
         app.detect_java();
         app.init_accounts();
+        app.init_system_settings();
         app
     }
 
@@ -433,6 +468,8 @@ impl Launcher {
     fn persist(&mut self) {
         if let Err(e) = config::save_settings(&self.settings_path, &self.settings) {
             self.error = Some(format!("保存失败：{e:#}"));
+        } else if let Err(e) = pcl_core::network::configure(&self.settings.downloads) {
+            self.error = Some(format!("应用下载设置失败：{e:#}"));
         }
     }
     fn refresh_versions(&mut self) {
@@ -590,21 +627,33 @@ impl Launcher {
     }
     fn install(&mut self, id: String) {
         let Some((tx, cancel)) =
-            self.start_download_job(&format!("正在安装 {id}"), Some(id.clone()))
+            self.start_download_job(&format!("正在补全 {id}"), Some(id.clone()))
         else {
             return;
         };
         if let Some(task) = self.task.as_mut() {
-            task.set_overall_plan_known(true);
+            task.set_overall_plan_known(false);
         }
         let root = self.settings.game_root.clone();
+        let java = self
+            .settings
+            .java_path
+            .clone()
+            .or_else(|| self.settings.java_priority.first().cloned());
         std::thread::spawn(move || {
-            let result = install::install_version(&root, &id, &Platform::current(), &cancel, |p| {
-                let _ = tx.send(Event::Progress(p));
-            });
+            let result = install::repair_version_with_java(
+                &root,
+                &id,
+                java.as_deref(),
+                &Platform::current(),
+                &cancel,
+                |p| {
+                    let _ = tx.send(Event::Progress(p));
+                },
+            );
             let event = match result {
                 Ok(()) => Event::Installed(id),
-                Err(e) => Event::download_failed("安装未完成", e),
+                Err(e) => Event::download_failed("文件补全未完成", e),
             };
             let _ = tx.send(event);
         });
@@ -770,14 +819,32 @@ impl Launcher {
                     width: 1100,
                     height: 700,
                 };
-                let plan = launch::build_plan_with_settings_and_viewport(
+                let prepared_skin = if matches!(action, LaunchAction::Run) {
+                    let prepared = pcl_core::offline_skin::prepare(
+                        &options.root,
+                        &options.version_id,
+                        &settings,
+                        &session,
+                        &cancel,
+                    )?;
+                    for warning in &prepared.warnings {
+                        let _ = tx.send(Event::Log(warning.clone()));
+                    }
+                    Some(prepared)
+                } else {
+                    None
+                };
+                let mut plan = launch::build_plan_with_settings_and_viewport(
                     &options,
-                    &session,
+                    prepared_skin
+                        .as_ref()
+                        .map_or(&session, |prepared| &prepared.session),
                     &current,
                     &settings,
                     runtime.major,
                     launcher_size,
                 )?;
+                plan.behavior.offline_skin = prepared_skin.map(|prepared| prepared.update);
                 if cancel.load(Ordering::Relaxed) {
                     return Err(pcl_core::model::OperationCancelled.into());
                 }
@@ -878,6 +945,7 @@ impl Launcher {
         if matches!(
             &event,
             Event::Installed(_)
+                | Event::ModsUpdated { .. }
                 | Event::DownloadFailed { .. }
                 | Event::Resource(resource_ui::ResourceEvent::Installed(..))
                 | Event::Runtime(java_ui::RuntimeEvent::Installed(_))
@@ -982,6 +1050,16 @@ impl Launcher {
                     self.refresh_mods();
                 }
             }
+            Event::ModsUpdated { target, report } => {
+                if active.context.target.as_deref() != Some(target.as_str()) {
+                    self.handle_event(Event::DownloadFailed {
+                        message: "Mod 更新返回了不同的目标，未刷新当前列表".into(),
+                        cancelled: false,
+                    });
+                } else {
+                    self.complete_mod_updates(target, report, current_root);
+                }
+            }
             Event::Runtime(java_ui::RuntimeEvent::Installed(runtime)) => {
                 self.record(format!(
                     "{}：Java {} 已下载并验证。",
@@ -1023,6 +1101,7 @@ impl Launcher {
             Event::Job(_) => (),
 
             Event::VersionList(event) => self.handle_version_list_event(event),
+            Event::OptiFineList(event) => self.handle_optifine_list(event),
             Event::Resource(event) => self.handle_resource_event(event),
             Event::Account(event) => self.handle_account_event(event),
             Event::Runtime(event) => self.handle_runtime_event(event),
@@ -1168,6 +1247,16 @@ impl Launcher {
                     }
                 }
             }
+            Event::GameContext {
+                pid,
+                game_dir,
+                started,
+                secret,
+            } => self.crash.context(pid, game_dir, started, secret),
+            Event::GameLog { pid, line } => {
+                self.crash.line(pid, line.clone());
+                self.record(line);
+            }
             Event::GameStarted(pid) => {
                 self.game_pid = Some(pid);
                 self.game_window.started();
@@ -1177,6 +1266,9 @@ impl Launcher {
             Event::GameReady { pid, visibility } => {
                 if self.game_pid == Some(pid) {
                     self.game_window.ready(pid, visibility);
+                    if let Err(error) = self.appearance.music_game_changed(true, &self.settings) {
+                        self.error = Some(format!("背景音乐联动失败：{error:#}"));
+                    }
                 }
             }
             Event::GameFinished {
@@ -1188,7 +1280,11 @@ impl Launcher {
                 if self.game_pid != Some(pid) {
                     return;
                 }
+                self.crash.finished(pid, success, stopped);
                 self.game_window.finished(pid, success, stopped);
+                if let Err(error) = self.appearance.music_game_changed(false, &self.settings) {
+                    self.error = Some(format!("背景音乐联动失败：{error:#}"));
+                }
                 self.game_pid = None;
                 self.status = message.clone();
                 self.record(message);
@@ -1197,6 +1293,7 @@ impl Launcher {
                 self.record(message.clone());
                 self.push_hint(hint_ui::HintKind::Error, message);
             }
+            Event::ModsUpdated { .. } => (),
             Event::Done(message) => {
                 self.status = message;
                 self.busy = None;
@@ -1226,8 +1323,8 @@ impl Launcher {
         }
     }
 
-    fn home(&mut self, _ui: &mut egui::Ui) {
-        // The upstream default PanCustom is empty. Do not invent homepage cards.
+    fn home(&mut self, ui: &mut egui::Ui) {
+        self.custom_home_page(ui);
     }
     fn modpack_page(&mut self, ui: &mut egui::Ui) {
         card(ui, "导入整合包", |ui| {
@@ -1239,7 +1336,7 @@ impl Launcher {
                 .clicked()
             {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Modrinth 整合包", &["mrpack"])
+                    .add_filter("整合包", &["mrpack", "zip"])
                     .pick_file()
                 {
                     match modpack::inspect_mrpack(&path) {
@@ -1269,7 +1366,7 @@ impl Launcher {
                 }
             }
             ui.label(
-                RichText::new("支持 Modrinth .mrpack，安装到新实例。已有实例文件不会覆盖。")
+                RichText::new("支持 Modrinth、MultiMC / Prism、HMCL 和 MCBBS 整合包，安装到新实例。已有文件不会覆盖。")
                     .small()
                     .color(MUTED),
             );
@@ -1279,11 +1376,14 @@ impl Launcher {
         };
         card(ui, &info.name, |ui| {
             ui.label(format!(
-                "{} · Minecraft {}",
-                info.version_id, info.minecraft
+                "{} · {} · Minecraft {}",
+                info.format, info.version_id, info.minecraft
             ));
             if let Some(summary) = &info.summary {
                 ui.label(summary);
+            }
+            for warning in &info.warnings {
+                ui.label(RichText::new(warning).small().color(MUTED));
             }
             for (dependency, version) in &info.dependencies {
                 ui.label(format!("{dependency}：{version}"));
@@ -1319,12 +1419,18 @@ impl Launcher {
             };
             let root = self.settings.game_root.clone();
             let optional = self.pack_optional;
+            let java = self
+                .settings
+                .java_path
+                .clone()
+                .or_else(|| self.settings.java_priority.first().cloned());
             std::thread::spawn(move || {
-                let result = pcl_core::packs::install_pack(
+                let result = pcl_core::packs::install_pack_with_java(
                     &root,
                     &path,
                     &id,
                     optional,
+                    java.as_deref(),
                     &Platform::current(),
                     &cancel,
                     |p| {
@@ -1377,6 +1483,9 @@ impl eframe::App for Launcher {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         theme::apply(ctx, &self.settings);
         self.receive();
+        self.system_tick(ctx);
+        self.mod_update_tick(ctx);
+        self.offline_skin_tick(ctx);
         self.game_window.apply(ctx);
         let size = ctx.content_rect().size();
         let scale = ctx.pixels_per_point();
@@ -1420,6 +1529,7 @@ impl eframe::App for Launcher {
             && self.busy.is_some()
             && !self.resource_request_active()
             && !self.version_list_request_active()
+            && !self.optifine_request_active()
         {
             egui::TopBottomPanel::bottom("status")
                 .exact_height(if self.progress.is_some() { 57.0 } else { 31.0 })
@@ -1551,9 +1661,11 @@ impl eframe::App for Launcher {
         self.dialogs(ctx);
         self.version_delete_dialog(ctx);
         self.account_dialogs(ctx);
+        self.mod_update_dialog(ctx);
         self.java_download_dialog(ctx);
         self.script_export_dialog(ctx);
         self.more_dialogs(ctx);
+        self.crash_dialogs(ctx);
         modal_ui::finish_frame(ctx);
     }
 }
@@ -1723,11 +1835,16 @@ mod event_tests {
         Launcher {
             assets: Assets::new(&egui::Context::default()),
             appearance: appearance_ui::AppearanceState::default(),
+            home: home_ui::HomeState::default(),
+            crash: crash_ui::CrashUiState::default(),
             more: more_ui::MoreState::default(),
             accounts: account_ui::AccountUiState::default(),
             java_download: java_ui::JavaDownloadState::default(),
             instance_setup: instance_setup_ui::InstanceSetupState::default(),
             setup_launch: setup_launch_ui::SetupLaunchState::default(),
+            setup_system: setup_system_ui::SetupSystemState::default(),
+            mod_update: mod_update_ui::ModUpdateState::default(),
+            offline_skin: offline_skin_ui::OfflineSkinState::default(),
             pending_version_delete: None,
             script_export_result: None,
             pack_export: Default::default(),
@@ -1750,6 +1867,7 @@ mod event_tests {
             mods_request: 0,
             manifest: vec![],
             version_lists: Default::default(),
+            optifine: Default::default(),
             java: vec![],
             java_request: 0,
             tx,

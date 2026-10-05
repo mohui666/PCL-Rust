@@ -7,7 +7,7 @@ use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 use pcl_core::config::{
-    self, GcMode, IsolationPolicy, LauncherVisibility, ProcessPriority, WindowMode,
+    self, GcMode, IsolationPolicy, LauncherVisibility, OfflineSkinMode, ProcessPriority, WindowMode,
 };
 use std::{
     path::PathBuf,
@@ -85,6 +85,7 @@ impl Launcher {
         let previous = serde_json::to_value(&self.settings).ok();
         let mut java_action = None;
         let mut pick_root = false;
+        let mut pick_skin = false;
         let mut open_root = false;
         let mut save_paths = false;
         let mut preview = false;
@@ -104,7 +105,7 @@ impl Launcher {
                         }).response.on_hover_text("当安装新版本时，据此自动设置新版本的隔离选项。若想调整已有版本，请前往它的版本设置。");
                     });
                     ui.add_space(9.0);
-                    argument_row(ui,"游戏窗口标题",|ui| { unavailable_text(ui,"默认","游戏窗口标题修改尚未迁移。"); });
+                    argument_row(ui,"游戏窗口标题",|ui| { text_edit(ui,&mut settings.game_window_title,"默认").on_hover_text(WINDOW_HELP); });
                     ui.add_space(9.0);
                     argument_row(ui,"自定义信息",|ui| {
                         text_edit(ui,&mut settings.custom_info,"默认").on_hover_text("在支持此选项的游戏中显示于主界面与 F3 信息。Minecraft 26.1 起不再显示这项自定义信息。");
@@ -129,10 +130,10 @@ impl Launcher {
                         let width = if custom { (ui.available_width()-177.0).max(110.0) } else {ui.available_width()};
                         ui_style::PclComboBox::from_id_salt("global-window").width(width).selected_text(window_label(settings.window_mode)).show_ui(ui,|ui| {
                             for mode in [WindowMode::Fullscreen,WindowMode::Default,WindowMode::LauncherSize,WindowMode::Custom,WindowMode::Maximized] {
-                                let available = !matches!(mode,WindowMode::Maximized);
+                                let available = mode!=WindowMode::Maximized || cfg!(any(windows,target_os="macos"));
                                 let response = ui.selectable_label_enabled(available,settings.window_mode==mode,window_label(mode));
                                 if response.clicked(){settings.window_mode=mode;}
-                                if !available {response.on_hover_text("跨平台游戏窗口控制尚未迁移。");}
+                                if mode==WindowMode::Maximized {response.on_hover_text(WINDOW_HELP);}
                             }
                         });
                         if custom {
@@ -164,20 +165,34 @@ impl Launcher {
                         if memory_slider(ui,&mut value,maximum,!settings.memory_auto).changed(){settings.memory_mb=slider_memory(value).clamp(512,65536);}
                     });
                     ui.add_space(9.0);
-                    disabled_checkbox(ui,"启动游戏前进行内存优化",false,"操作系统内存优化尚未迁移；不会清空其他程序的工作集。",22.0);
+                    ui.checkbox(&mut settings.memory_optimize,"启动游戏前回收启动器可释放内存").on_hover_text(MEMORY_HELP);
                     ui.add_space(14.0);
                     let allocation=if settings.memory_auto {state.automatic_mb} else {Some(settings.memory_mb)};
                     if let (Some(memory),Some(allocated))=(state.memory,allocation){memory_bar(ui,memory,allocated);}
                     else{ui.label(RichText::new("暂时无法读取内存分配信息").color(MUTED));}
                 });
                 setup_card(ui,"离线皮肤",15,Some(&mut state.skin_open),|ui| {
-                    hint(ui,"离线皮肤替换尚未迁移；当前由游戏决定离线角色的默认皮肤。",true);
-                    ui.add_space(10.0);
                     ui.columns(5,|columns| {
-                        for (column,label) in columns.iter_mut().zip(["随机","Steve","Alex","正版皮肤","自定义"]) {
-                            column.add_enabled(false,egui::RadioButton::new(false,label)).on_hover_text("此离线皮肤模式尚未迁移。");
+                        for (column,(value,label)) in columns.iter_mut().zip([(OfflineSkinMode::Default,"随机"),(OfflineSkinMode::Steve,"Steve"),(OfflineSkinMode::Alex,"Alex"),(OfflineSkinMode::OfficialName,"正版皮肤"),(OfflineSkinMode::Custom,"自定义")]) {
+                            column.radio_value(&mut settings.offline_skin_mode,value,label);
                         }
                     });
+                    ui.add_space(10.0);
+                    if settings.offline_skin_mode==OfflineSkinMode::OfficialName {
+                        argument_row(ui,"正版玩家名",|ui|{text_edit(ui,&mut settings.offline_skin_name,"玩家名");});
+                        hint(ui,"原版的正版名称离线皮肤方式仅适用于 Minecraft 1.20 以前；新版请使用本地 PNG。",false);
+                    }
+                    if settings.offline_skin_mode==OfflineSkinMode::Custom {
+                        ui.horizontal(|ui|{
+                            if ui.button("选择皮肤 PNG…").clicked(){pick_skin=true;}
+                            ui.label(settings.offline_skin_path.as_ref().map(|p|p.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_else(||"尚未选择".into()));
+                        });
+                        ui.checkbox(&mut settings.offline_skin_slim,"使用 Alex（纤细）模型");
+                        hint(ui,"支持 64×32 或 64×64 PNG。启动时生成独立皮肤资源包；原图和其他资源包不会被覆盖。",false);
+                    }
+                    if settings.offline_skin_mode!=OfflineSkinMode::Default {
+                        ui.label(RichText::new("皮肤模型按原版方式选择离线 UUID，切换后服务器内的离线玩家资料可能不同。").size(12.0).color(MUTED));
+                    }
                 });
                 setup_card(ui,"高级选项",15,Some(&mut state.advanced_open),|ui| {
                     ui.horizontal_top(|ui| {
@@ -226,9 +241,9 @@ impl Launcher {
                         });
                     });
                     ui.add_space(12.0);
-                    disabled_checkbox(ui,"禁用 Java Launch Wrapper",true,"Java Launch Wrapper 尚未接入，当前不会注入。",28.0);
-                    disabled_checkbox(ui,"禁用 LWJGL Unsafe Agent",true,"LWJGL Unsafe Agent 尚未接入，当前不会注入。",28.0);
-                    disabled_checkbox(ui,"使用高性能显卡",false,"Windows 显卡偏好设置尚未迁移。",28.0);
+                    ui.checkbox(&mut settings.disable_java_wrapper,"禁用 Java Launch Wrapper").on_hover_text(JLW_HELP);
+                    ui.checkbox(&mut settings.disable_lwjgl_unsafe_agent,"禁用 LWJGL Unsafe Agent").on_hover_text(LUA_HELP);
+                    ui.add_enabled(cfg!(windows),egui::Checkbox::new(&mut settings.prefer_high_performance_gpu,"使用高性能显卡")).on_hover_text(GPU_HELP);
                     ui.add_space(9.0);
                     hint(ui,"版本独立设置中还有更多高级选项可供调整。",false);
                     ui.add_space(10.0);
@@ -263,6 +278,20 @@ impl Launcher {
                 }
             });
         });
+        if pick_skin {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("选择离线皮肤 PNG")
+                .add_filter("PNG", &["png"])
+                .pick_file()
+            {
+                match pcl_core::offline_skin::read_skin(&path)
+                    .and_then(|_| path.canonicalize().map_err(Into::into))
+                {
+                    Ok(path) => self.settings.offline_skin_path = Some(path),
+                    Err(error) => state.error = Some(format!("皮肤文件不可用：{error:#}")),
+                }
+            }
+        }
         if let Some(action) = java_action {
             match action {
                 JavaAction::Refresh => self.detect_java(),
@@ -413,7 +442,7 @@ fn java_list_row(
     action
 }
 
-fn setup_card(
+pub(super) fn setup_card(
     ui: &mut egui::Ui,
     title: &str,
     bottom: i8,
@@ -523,13 +552,6 @@ fn setup_row(ui: &mut egui::Ui, label: &str, width: f32, body: impl FnOnce(&mut 
         );
     });
 }
-fn unavailable_text(ui: &mut egui::Ui, hint: &str, reason: &str) {
-    ui.add_enabled_ui(false, |ui| {
-        text_edit(ui, &mut String::new(), hint);
-    })
-    .response
-    .on_hover_text(reason);
-}
 fn disabled_checkbox(ui: &mut egui::Ui, text: &str, checked: bool, reason: &str, height: f32) {
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), height),
@@ -626,6 +648,13 @@ fn gc_label(value: GcMode) -> &'static str {
         GcMode::Custom => "不指定（可自定义）",
     }
 }
+
+// These limits describe implemented platform behavior, not a system-wide cleanup.
+pub(super) const WINDOW_HELP:&str="启动后仅控制本次 Java 的游戏窗口。支持 {name}、{version}、{date}、{time} 等路径/版本标记。macOS 需要用户手动授予辅助功能权限；游戏可能不允许外部改标题，失败会提示并继续启动。最大化在游戏加载完成后请求，不等于全屏。";
+pub(super) const MEMORY_HELP:&str="只回收启动器自身可释放的内存（Windows 工作集 / macOS 分配器空闲页），不清理其他程序，不保证释放量或性能提升。原版全系统优化实现未公开。";
+pub(super) const JLW_HELP:&str="使用已随程序校验的 Java Launch Wrapper 修复 Windows Java 6–18 的非 GBK 编码问题。Java 19+、macOS 或自定义 Java Agent 不使用此补丁。任一全局/版本禁用开关生效。";
+pub(super) const LUA_HELP:&str="仅 LWJGL 3.4.1 且 Java 25+ 时注入随程序提供的 LWJGL Unsafe Agent。其他版本不注入；任一全局/版本禁用开关生效。";
+pub(super) const GPU_HELP:&str="Windows：仅临时设置当前用户下本次 Java 应用的高性能 GPU 偏好，图形初始化或进程结束后恢复原值；不提权，不改全局显卡。驱动决定最终设备。若启动器被强制终止，可能需要在系统图形设置中手动恢复。macOS 由系统管理 GPU。";
 
 #[cfg(test)]
 mod tests {

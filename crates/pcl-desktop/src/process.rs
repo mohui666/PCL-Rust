@@ -1,7 +1,7 @@
 use crate::app::Event;
 use pcl_core::{
     config::{LauncherVisibility, ProcessPriority},
-    launch::{LaunchBehavior, LaunchPlan},
+    launch::{GameWindowOptions, LaunchBehavior, LaunchPlan},
 };
 use std::{
     io::{BufRead, BufReader},
@@ -34,6 +34,49 @@ pub fn run_game_with_cancel(
 ) -> anyhow::Result<()> {
     check_cancel(&cancel)?;
     std::fs::create_dir_all(&plan.cwd)?;
+    for warning in &plan.behavior.warnings {
+        let _ = tx.send(Event::LaunchWarning(warning.clone()));
+    }
+    if plan.behavior.memory_optimize {
+        match crate::native_window::reclaim_launcher_memory() {
+            Ok(bytes) => {
+                let message = bytes.map_or_else(
+                    || "已请求回收启动器自身工作集；未清理其他进程内存。".into(),
+                    |n| format!("已回收启动器可释放内存 {n} 字节；未清理其他进程内存。"),
+                );
+                let _ = tx.send(Event::Log(message));
+            }
+            Err(error) => {
+                let _ = tx.send(Event::LaunchWarning(format!(
+                    "回收启动器内存失败：{error:#}；继续启动。"
+                )));
+            }
+        }
+    }
+    if let Some(update) = &plan.behavior.offline_skin {
+        if let Err(error) = pcl_core::offline_skin::apply(&plan.cwd, update, &cancel) {
+            if error.is::<pcl_core::model::OperationCancelled>() {
+                return Err(error);
+            }
+            let _ = tx.send(Event::LaunchWarning(format!(
+                "离线皮肤资源包设置失败：{error:#}；继续启动。"
+            )));
+        }
+    }
+    if plan.behavior.auto_chinese {
+        if let Err(error) = pcl_core::offline_skin::set_initial_language(
+            &plan.cwd,
+            &plan.behavior.language_code,
+            &cancel,
+        ) {
+            if error.is::<pcl_core::model::OperationCancelled>() {
+                return Err(error);
+            }
+            let _ = tx.send(Event::LaunchWarning(format!(
+                "首次设置游戏中文失败：{error:#}；继续启动。"
+            )));
+        }
+    }
     let mut preceding = run_pre_launch(&plan.behavior, &tx, &cancel)?;
     if cancel.load(Ordering::Relaxed) {
         stop_commands(&mut preceding, &tx);
@@ -51,9 +94,24 @@ pub fn run_game_with_cancel(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+    let mut gpu = if plan.behavior.high_performance_gpu {
+        match crate::native_window::GpuPreference::request(&plan.java) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                let _ = tx.send(Event::LaunchWarning(format!(
+                    "设置本次 Java 的高性能 GPU 偏好失败：{error:#}；继续启动。"
+                )));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let launch_started = std::time::SystemTime::now();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            restore_gpu(&mut gpu, &tx);
             reap_commands(preceding);
             return Err(error.into());
         }
@@ -62,6 +120,7 @@ pub fn run_game_with_cancel(
         let _ = child.kill();
         let _ = child.wait();
         stop_commands(&mut preceding, &tx);
+        restore_gpu(&mut gpu, &tx);
         check_cancel(&cancel)?;
     }
     reap_commands(preceding);
@@ -70,7 +129,21 @@ pub fn run_game_with_cancel(
             "设置游戏进程优先级失败：{error}；继续使用系统允许的优先级。"
         )));
     }
-    run_child_with_visibility(child, token, tx, stop, plan.behavior.visibility)
+    let _ = tx.send(Event::GameContext {
+        pid: child.id(),
+        game_dir: plan.cwd.clone(),
+        started: launch_started,
+        secret: token.clone(),
+    });
+    run_child_with_visibility(
+        child,
+        token,
+        tx,
+        stop,
+        plan.behavior.visibility,
+        plan.behavior.window,
+        gpu,
+    )
 }
 
 fn check_cancel(cancel: &AtomicBool) -> anyhow::Result<()> {
@@ -281,7 +354,15 @@ fn run_child(
     tx: Sender<Event>,
     stop: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    run_child_with_visibility(child, token, tx, stop, LauncherVisibility::Keep)
+    run_child_with_visibility(
+        child,
+        token,
+        tx,
+        stop,
+        LauncherVisibility::Keep,
+        GameWindowOptions::default(),
+        None,
+    )
 }
 
 fn run_child_with_visibility(
@@ -290,6 +371,8 @@ fn run_child_with_visibility(
     tx: Sender<Event>,
     stop: Arc<AtomicBool>,
     visibility: LauncherVisibility,
+    window: GameWindowOptions,
+    mut gpu: Option<crate::native_window::GpuPreference>,
 ) -> anyhow::Result<()> {
     let pid = child.id();
     let _ = tx.send(Event::GameStarted(pid));
@@ -297,7 +380,10 @@ fn run_child_with_visibility(
         pid,
         visibility,
         sent: Arc::new(AtomicBool::new(false)),
+        defer: true,
     };
+    let ready_flag = ready.sent.clone();
+    let mut window_control = GameWindowControl::new(pid, window);
     if let Some(stream) = child.stdout.take() {
         let _ = read_game_output(stream, tx.clone(), token.clone(), Some(ready.clone()));
     }
@@ -305,6 +391,7 @@ fn run_child_with_visibility(
         let _ = read_game_output(stream, tx.clone(), token, Some(ready));
     }
     let mut killed = false;
+    let mut ready_published = false;
     let status = loop {
         // Observe a natural exit before handling a possibly simultaneous click.
         if let Some(status) = child.try_wait()? {
@@ -327,11 +414,26 @@ fn run_child_with_visibility(
                 }
             }
         }
+        if !killed && !stop.load(Ordering::Relaxed) && ready_flag.load(Ordering::Acquire) {
+            window_control.tick(
+                std::time::Instant::now(),
+                &tx,
+                crate::native_window::game_window,
+            );
+            if !ready_published
+                && (visibility != LauncherVisibility::CloseOnLaunch || window_control.maximize_done)
+            {
+                restore_gpu(&mut gpu, &tx);
+                let _ = tx.send(Event::GameReady { pid, visibility });
+                ready_published = true;
+            }
+        }
         std::thread::sleep(Duration::from_millis(100));
     };
     // A descendant can inherit stdout/stderr and keep their pipes open after
     // this child exits. Readers finish independently at EOF; they may drain
     // remaining redacted logs, but must not hold the game's UI state open.
+    restore_gpu(&mut gpu, &tx);
     let message = if status.success() {
         "游戏已正常退出".into()
     } else if killed {
@@ -353,6 +455,7 @@ struct ReadySignal {
     pid: u32,
     visibility: LauncherVisibility,
     sent: Arc<AtomicBool>,
+    defer: bool,
 }
 fn game_ready_line(line: &str) -> bool {
     !line.contains("[CHAT]")
@@ -403,30 +506,47 @@ fn read_game_output(
                     reader.consume(consumed);
                     ended = newline;
                 }
-                if tx.send(Event::Log("[超长日志行已省略]".into())).is_err() {
+                if tx
+                    .send(game_log_event(ready.as_ref(), "[超长日志行已省略]".into()))
+                    .is_err()
+                {
                     break;
                 }
                 continue;
             }
             let line = String::from_utf8_lossy(&line);
             if let Some(signal) = ready.as_ref().filter(|_| game_ready_line(&line)) {
-                if !signal.sent.swap(true, Ordering::Relaxed) {
+                if !signal.sent.swap(true, Ordering::Release) && !signal.defer {
                     let _ = tx.send(Event::GameReady {
                         pid: signal.pid,
                         visibility: signal.visibility,
                     });
                 }
             }
-            let safe = if token.is_empty() || token == "0" {
-                line.into_owned()
+            let secrets = if token.is_empty() || token == "0" {
+                &[][..]
             } else {
-                line.replace(&token, "<redacted>")
+                std::slice::from_ref(&token)
             };
-            if tx.send(Event::Log(safe.trim_end().to_owned())).is_err() {
+            let safe = pcl_core::crash::redact(&line, secrets);
+            if tx
+                .send(game_log_event(ready.as_ref(), safe.trim_end().to_owned()))
+                .is_err()
+            {
                 break;
             }
         }
     })
+}
+
+fn game_log_event(ready: Option<&ReadySignal>, line: String) -> Event {
+    match ready {
+        Some(signal) => Event::GameLog {
+            pid: signal.pid,
+            line,
+        },
+        None => Event::Log(line),
+    }
 }
 
 pub fn open_folder(path: &Path) -> std::io::Result<()> {
@@ -437,6 +557,96 @@ pub fn open_folder(path: &Path) -> std::io::Result<()> {
     #[cfg(not(any(target_os = "macos", windows)))]
     let mut command = Command::new("xdg-open");
     command.arg(path).spawn().map(|_| ())
+}
+
+fn restore_gpu(gpu: &mut Option<crate::native_window::GpuPreference>, tx: &Sender<Event>) {
+    if let Some(guard) = gpu.as_mut() {
+        match guard.restore() {
+            Ok(()) => *gpu = None,
+            Err(error) => {
+                // Retain the original value for another attempt at real exit.
+                let _ = tx.send(Event::LaunchWarning(format!(
+                    "还原所选 Java 的 GPU 偏好失败：{error:#}"
+                )));
+            }
+        }
+    }
+}
+
+struct GameWindowControl {
+    pid: u32,
+    options: GameWindowOptions,
+    ready_at: Option<std::time::Instant>,
+    next: Option<std::time::Instant>,
+    title_done: bool,
+    maximize_done: bool,
+}
+impl GameWindowControl {
+    fn new(pid: u32, options: GameWindowOptions) -> Self {
+        Self {
+            pid,
+            title_done: options.title.is_empty(),
+            maximize_done: !options.maximize,
+            options,
+            ready_at: None,
+            next: None,
+        }
+    }
+    fn tick(
+        &mut self,
+        now: std::time::Instant,
+        tx: &Sender<Event>,
+        mut apply: impl FnMut(u32, Option<&str>, bool) -> anyhow::Result<bool>,
+    ) {
+        if (self.title_done && self.maximize_done) || self.next.is_some_and(|next| now < next) {
+            return;
+        }
+        let began = *self.ready_at.get_or_insert(now);
+        self.next = Some(now + Duration::from_millis(500));
+        let timed_out = now.duration_since(began) > Duration::from_secs(45);
+        if !self.title_done {
+            let date = chrono::Local::now();
+            let title = self
+                .options
+                .title
+                .replace("{date}", &date.format("%Y/%-m/%-d").to_string())
+                .replace("{time}", &date.format("%H:%M:%S").to_string());
+            match apply(self.pid, Some(&title), false) {
+                Ok(true) => (), // Keep the title current, like the upstream watcher.
+                Ok(false) if !timed_out => (),
+                Ok(false) => {
+                    self.title_done = true;
+                    let _ = tx.send(Event::LaunchWarning(
+                        "未找到本次游戏进程的可控制窗口，未修改游戏标题。".into(),
+                    ));
+                }
+                Err(error) => {
+                    self.title_done = true;
+                    let _ = tx.send(Event::LaunchWarning(format!(
+                        "设置游戏窗口标题失败：{error:#}"
+                    )));
+                }
+            }
+        }
+        if !self.maximize_done && now.duration_since(began) >= Duration::from_secs(2) {
+            match apply(self.pid, None, true) {
+                Ok(true) => self.maximize_done = true,
+                Ok(false) if !timed_out => (),
+                Ok(false) => {
+                    self.maximize_done = true;
+                    let _ = tx.send(Event::LaunchWarning(
+                        "未找到本次游戏进程的可控制窗口，未请求最大化。".into(),
+                    ));
+                }
+                Err(error) => {
+                    self.maximize_done = true;
+                    let _ = tx.send(Event::LaunchWarning(format!(
+                        "请求游戏窗口最大化失败：{error:#}"
+                    )));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -477,7 +687,7 @@ mod tests {
         let mut log = Vec::new();
         loop {
             match rx.recv_timeout(Duration::from_secs(4)) {
-                Ok(Event::Log(line)) => log.push(line),
+                Ok(Event::Log(line) | Event::GameLog { line, .. }) => log.push(line),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 event => panic!(
                     "unexpected post-exit event: {}",
@@ -571,6 +781,13 @@ mod tests {
         LaunchBehavior {
             visibility: LauncherVisibility::Keep,
             priority: ProcessPriority::Normal,
+            window: Default::default(),
+            memory_optimize: false,
+            auto_chinese: false,
+            language_code: "zh_cn".into(),
+            high_performance_gpu: false,
+            offline_skin: None,
+            warnings: vec![],
             command_cwd: root.into(),
             commands,
             variables: vec![],
@@ -710,6 +927,7 @@ mod tests {
             pid: 55,
             visibility: LauncherVisibility::HideThenRestore,
             sent: Arc::new(AtomicBool::new(false)),
+            defer: false,
         };
         read_game_output(std::io::Cursor::new(b"[CHAT] Created textures x-atlas\nSetting user: Player\nLWJGL Version\nCreated: textures x-atlas\nFound animation info\n"),tx,String::new(),Some(signal)).join().unwrap();
         let ready = rx
@@ -725,5 +943,83 @@ mod tests {
             })
             .count();
         assert_eq!(ready, 1);
+    }
+    #[test]
+    fn window_control_keeps_pid_delays_maximize_and_does_not_retry_a_failed_title() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut control = GameWindowControl::new(
+            771,
+            GameWindowOptions {
+                title: "Fixture {date} {time}".into(),
+                maximize: true,
+            },
+        );
+        let now = std::time::Instant::now();
+        let mut calls = Vec::new();
+        control.tick(now, &tx, |pid, title, maximize| {
+            calls.push((pid, title.map(str::to_owned), maximize));
+            anyhow::bail!("fixture read-only title")
+        });
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, 771);
+        assert!(!calls[0].1.as_ref().unwrap().contains("{date}"));
+        assert!(!calls[0].2);
+        control.tick(now + Duration::from_millis(100), &tx, |_, _, _| {
+            panic!("must be throttled")
+        });
+        control.tick(now + Duration::from_secs(2), &tx, |pid, title, maximize| {
+            assert_eq!(pid, 771);
+            assert!(title.is_none() && maximize);
+            Ok(true)
+        });
+        control.tick(now + Duration::from_secs(3), &tx, |_, _, _| {
+            panic!("completed controls must not toggle zoom again")
+        });
+        assert_eq!(
+            rx.try_iter()
+                .filter(|event| matches!(event, Event::LaunchWarning(_)))
+                .count(),
+            1
+        );
+    }
+    #[test]
+    fn empty_window_settings_never_touch_native_apis() {
+        let (tx, _) = std::sync::mpsc::channel();
+        GameWindowControl::new(771, GameWindowOptions::default()).tick(
+            std::time::Instant::now(),
+            &tx,
+            |_, _, _| panic!("no user window request"),
+        );
+        assert!(crate::native_window::game_window(0, None, true).is_err());
+        assert!(crate::native_window::game_window(std::process::id(), Some("x"), false).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_real_child_publishes_ready_once_before_exit_without_window_requests() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let child = Command::new("/bin/sh")
+            .args(["-c", "printf 'Created textures fixture-atlas\n'; sleep 0.3"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        run_child(child, "0".into(), tx, Arc::new(AtomicBool::new(false))).unwrap();
+        let events = rx.try_iter().collect::<Vec<_>>();
+        let ready = events
+            .iter()
+            .position(|e| matches!(e,Event::GameReady{pid:p,..} if *p==pid))
+            .unwrap();
+        let finished = events
+            .iter()
+            .position(|e| matches!(e,Event::GameFinished{pid:p,..} if *p==pid))
+            .unwrap();
+        assert!(ready < finished);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::GameReady { .. }))
+                .count(),
+            1
+        );
     }
 }

@@ -18,6 +18,10 @@ pub struct InstanceSettings {
     pub java_range: String,
     pub memory_mb: Option<u32>,
     pub memory_auto: bool,
+    pub game_window_title: String,
+    pub memory_optimize: Option<bool>,
+    pub disable_java_wrapper: bool,
+    pub disable_lwjgl_unsafe_agent: bool,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fullscreen: bool,
@@ -55,6 +59,10 @@ impl Default for InstanceSettings {
             java_range: String::new(),
             memory_mb: None,
             memory_auto: false,
+            game_window_title: String::new(),
+            memory_optimize: None,
+            disable_java_wrapper: false,
+            disable_lwjgl_unsafe_agent: false,
             width: None,
             height: None,
             fullscreen: false,
@@ -101,6 +109,7 @@ pub fn load_instance_settings(root: &Path, id: &str) -> Result<InstanceSettings>
 }
 
 pub fn validate_instance_settings(settings: &InstanceSettings) -> Result<()> {
+    validate_window_title(&settings.game_window_title)?;
     if !matches!(
         settings.display_icon.as_str(),
         "" | "block-cobblestone"
@@ -430,6 +439,17 @@ pub enum ProcessPriority {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OfflineSkinMode {
+    #[default]
+    Default,
+    Steve,
+    Alex,
+    OfficialName,
+    Custom,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WindowMode {
     #[default]
     Default,
@@ -478,6 +498,8 @@ pub enum GcMode {
 pub struct Settings {
     pub game_root: PathBuf,
     pub game_roots: Vec<PathBuf>,
+    pub downloads: crate::network::DownloadOptions,
+    pub system: crate::system::SystemSettings,
     pub ui_background_folder: Option<PathBuf>,
     pub ui_background_colorful: bool,
     pub ui_background_opacity: u16,
@@ -485,6 +507,14 @@ pub struct Settings {
     pub ui_background_fit: u8,
     pub ui_launcher_logo: bool,
     pub ui_launcher_opacity: u16,
+    pub ui_music_volume: u16,
+    pub ui_music_random: bool,
+    pub ui_music_auto: bool,
+    pub ui_music_start: bool,
+    pub ui_music_stop: bool,
+    pub ui_custom_type: u8,
+    pub ui_custom_preset: u8,
+    pub ui_custom_net: String,
     pub ui_theme: u8,
     pub ui_theme_hue: f32,
     pub ui_theme_saturation: f32,
@@ -496,6 +526,15 @@ pub struct Settings {
     pub java_excluded: Vec<PathBuf>,
     pub memory_mb: u32,
     pub memory_auto: bool,
+    pub game_window_title: String,
+    pub memory_optimize: bool,
+    pub offline_skin_mode: OfflineSkinMode,
+    pub offline_skin_name: String,
+    pub offline_skin_path: Option<PathBuf>,
+    pub offline_skin_slim: bool,
+    pub disable_java_wrapper: bool,
+    pub disable_lwjgl_unsafe_agent: bool,
+    pub prefer_high_performance_gpu: bool,
     pub custom_info: String,
     pub jvm_arguments: String,
     pub game_arguments: String,
@@ -523,6 +562,8 @@ impl Default for Settings {
                 .join("pcl-rust")
                 .join("game"),
             game_roots: Vec::new(),
+            downloads: Default::default(),
+            system: Default::default(),
             ui_background_folder: None,
             ui_background_colorful: true,
             ui_background_opacity: 1000,
@@ -530,6 +571,14 @@ impl Default for Settings {
             ui_background_fit: 0,
             ui_launcher_logo: true,
             ui_launcher_opacity: 100,
+            ui_music_volume: 500,
+            ui_music_random: true,
+            ui_music_auto: true,
+            ui_music_start: false,
+            ui_music_stop: false,
+            ui_custom_type: 0,
+            ui_custom_preset: 0,
+            ui_custom_net: String::new(),
             ui_theme: 0,
             ui_theme_hue: 180.0,
             ui_theme_saturation: 80.0,
@@ -540,6 +589,15 @@ impl Default for Settings {
             java_excluded: Vec::new(),
             memory_mb: 4096,
             memory_auto: false,
+            game_window_title: String::new(),
+            memory_optimize: false,
+            offline_skin_mode: OfflineSkinMode::Default,
+            offline_skin_name: String::new(),
+            offline_skin_path: None,
+            offline_skin_slim: false,
+            disable_java_wrapper: false,
+            disable_lwjgl_unsafe_agent: false,
+            prefer_high_performance_gpu: false,
             custom_info: String::new(),
             jvm_arguments: String::new(),
             game_arguments: String::new(),
@@ -568,7 +626,45 @@ pub fn settings_path() -> PathBuf {
         .join("settings.json")
 }
 
+fn validate_window_title(title: &str) -> Result<()> {
+    if title.len() > 2048 || title.chars().any(char::is_control) {
+        bail!("游戏窗口标题过长或包含控制字符");
+    }
+    Ok(())
+}
+
 pub fn validate_settings(settings: &Settings) -> Result<()> {
+    settings.downloads.validate()?;
+    settings.system.validate()?;
+    validate_window_title(&settings.game_window_title)?;
+    if settings.ui_music_volume > 1000
+        || settings.ui_custom_type > 3
+        || settings.ui_custom_preset > 19
+    {
+        bail!("音乐音量或自定义主页选项超出范围");
+    }
+    if settings.ui_music_start && settings.ui_music_stop {
+        bail!("游戏启动时播放和暂停音乐不能同时启用");
+    }
+    if settings.ui_custom_net.len() > 4096 || settings.ui_custom_net.contains('\0') {
+        bail!("自定义主页地址过长或包含空字符");
+    }
+    if !settings.offline_skin_name.is_empty()
+        && (settings.offline_skin_name.len() > 16
+            || !settings
+                .offline_skin_name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_'))
+    {
+        bail!("皮肤玩家名需为 1–16 个英文字母、数字或下划线");
+    }
+    if settings
+        .offline_skin_path
+        .as_ref()
+        .is_some_and(|p| !p.is_absolute())
+    {
+        bail!("离线皮肤文件必须使用绝对路径");
+    }
     if settings.ui_background_opacity > 1000
         || settings.ui_background_blur > 40
         || settings.ui_background_fit > 12

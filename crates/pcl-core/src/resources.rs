@@ -67,8 +67,24 @@ impl ResourceKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceProvider {
+    #[default]
+    Modrinth,
+    CurseForge,
+}
+impl ResourceProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Modrinth => "Modrinth",
+            Self::CurseForge => "CurseForge",
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchOptions {
+    #[serde(default)]
+    pub provider: ResourceProvider,
     pub query: String,
     pub minecraft: Option<String>,
     pub loader: Option<String>,
@@ -328,7 +344,10 @@ fn resource_search_url(kind: ResourceKind, options: &SearchOptions, category: &s
     }
     let mut url = api_url(&["search"])?;
     url.query_pairs_mut()
-        .append_pair("query", &options.query)
+        .append_pair(
+            "query",
+            &crate::wiki::search_query(ResourceProvider::Modrinth, &options.query),
+        )
         .append_pair("facets", &serde_json::to_string(&facets)?)
         .append_pair("index", "relevance")
         .append_pair("offset", &options.offset.to_string())
@@ -347,6 +366,9 @@ pub fn search_resources(
     category: &str,
     cancel: &AtomicBool,
 ) -> Result<SearchPage> {
+    if options.provider == ResourceProvider::CurseForge {
+        return crate::curseforge::search(kind, options, category, cancel);
+    }
     json(
         client("api.modrinth.com")?.get(resource_search_url(kind, options, category)?),
         cancel,
@@ -354,6 +376,9 @@ pub fn search_resources(
 }
 
 pub fn get_project(id: &str, cancel: &AtomicBool) -> Result<ModrinthProject> {
+    if id.starts_with("cf:") {
+        return crate::curseforge::get_project(crate::curseforge::project_id(id)?, cancel);
+    }
     json(
         client("api.modrinth.com")?.get(api_url(&["project", id])?),
         cancel,
@@ -384,6 +409,15 @@ pub fn list_resource_versions(
         },
         if loader.is_empty() { "fabric" } else { loader },
     )?;
+    if project.starts_with("cf:") {
+        return crate::curseforge::list_files(
+            crate::curseforge::project_id(project)?,
+            kind,
+            minecraft,
+            loader,
+            cancel,
+        );
+    }
     let resolved = get_project(project, cancel)?;
     ensure!(project_matches(kind, &resolved), "此项目不属于所选资源类别");
     let project = resolved.id.as_str();
@@ -468,7 +502,7 @@ fn primary_file(version: &ModrinthVersion) -> Result<&VersionFile> {
     resource_file(ResourceKind::Mod, version)
 }
 
-fn resource_file(kind: ResourceKind, version: &ModrinthVersion) -> Result<&VersionFile> {
+pub(crate) fn resource_file(kind: ResourceKind, version: &ModrinthVersion) -> Result<&VersionFile> {
     ensure!(
         version.files.iter().filter(|f| f.primary).count() <= 1,
         "Mod 版本含多个主文件"
@@ -482,10 +516,13 @@ fn resource_file(kind: ResourceKind, version: &ModrinthVersion) -> Result<&Versi
     validate_id(&file.filename)?;
     ensure!(
         file.filename.len() <= 240
-            && file
-                .filename
-                .to_ascii_lowercase()
-                .ends_with(kind.extension()),
+            && file.filename.to_ascii_lowercase().ends_with(
+                if kind == ResourceKind::Modpack && version.id.starts_with("cf:") {
+                    ".zip"
+                } else {
+                    kind.extension()
+                }
+            ),
         "资源下载文件名与所选资源类型不匹配"
     );
     ensure!(
@@ -496,7 +533,11 @@ fn resource_file(kind: ResourceKind, version: &ModrinthVersion) -> Result<&Versi
         file.size > 0 && file.size <= MOD_LIMIT,
         "Mod 文件大小无效或超过 512 MiB"
     );
+    let curseforge = version.id.starts_with("cf:");
     for (algorithm, length) in [("sha1", 40), ("sha512", 128)] {
+        if curseforge && algorithm == "sha512" && !file.hashes.contains_key(algorithm) {
+            continue;
+        }
         ensure!(
             file.hashes
                 .get(algorithm)
@@ -506,15 +547,25 @@ fn resource_file(kind: ResourceKind, version: &ModrinthVersion) -> Result<&Versi
     }
     let url = Url::parse(&file.url).context("Mod 下载地址无效")?;
     ensure!(
-        trusted(&url, "cdn.modrinth.com"),
-        "Mod 下载仅允许官方 Modrinth HTTPS CDN"
+        if curseforge {
+            crate::curseforge::trusted_file(&url)
+        } else {
+            trusted(&url, "cdn.modrinth.com")
+        },
+        "资源下载仅允许所选平台的官方 HTTPS CDN"
     );
     Ok(file)
 }
 
 /// Fetch a small raster icon only. SVG and other active/unsupported formats are rejected.
 pub fn fetch_project_icon(url: &str, cancel: &AtomicBool) -> Result<Vec<u8>> {
-    let url = Url::parse(url).context("图标地址无效")?;
+    let parsed = Url::parse(url).context("图标地址无效")?;
+    if parsed.host_str() == Some("media.forgecdn.net") {
+        let bytes = crate::curseforge::fetch_icon(url, cancel)?;
+        ensure!(raster_icon(&bytes), "图标格式无效");
+        return Ok(bytes);
+    }
+    let url = parsed;
     ensure!(
         trusted(&url, "cdn.modrinth.com"),
         "图标仅允许官方 Modrinth HTTPS CDN"
@@ -639,6 +690,7 @@ fn verified_download(
         sha1.update(&buffer[..count]);
         sha512.update(&buffer[..count]);
         output.write_all(&buffer[..count])?;
+        crate::network::throttle(count, cancel)?;
         progress(Progress {
             message: format!("下载 {}", file.filename),
             completed: total,
@@ -649,13 +701,18 @@ fn verified_download(
     cancelled(cancel)?;
     ensure!(total == file.size, "资源下载文件大小不匹配");
     ensure!(
+        file.hashes.contains_key("sha512")
+            || Url::parse(&file.url).is_ok_and(|url| crate::curseforge::trusted_file(&url)),
+        "Modrinth 资源缺少 SHA512 校验值"
+    );
+    ensure!(
         file.hashes
             .get("sha1")
             .is_some_and(|hash| hash.eq_ignore_ascii_case(&format!("{:x}", sha1.finalize())))
             && file
                 .hashes
                 .get("sha512")
-                .is_some_and(|hash| hash.eq_ignore_ascii_case(&format!("{:x}", sha512.finalize()))),
+                .is_none_or(|hash| hash.eq_ignore_ascii_case(&format!("{:x}", sha512.finalize()))),
         "资源 SHA1/SHA512 校验失败"
     );
     output.sync_all()?;
@@ -841,7 +898,7 @@ fn inspect_archive(
         let name = entry.name();
         metadata |= !entry.is_dir()
             && match kind {
-                ResourceKind::Modpack => name == "modrinth.index.json",
+                ResourceKind::Modpack => matches!(name, "modrinth.index.json" | "manifest.json"),
                 ResourceKind::Shader if !vanilla_shader => name.starts_with("shaders/"),
                 _ => name == "pack.mcmeta",
             };
@@ -895,8 +952,7 @@ fn resource_version(
     version_id: &str,
     cancel: &AtomicBool,
 ) -> Result<ModrinthVersion> {
-    let api = client("api.modrinth.com")?;
-    let version: ModrinthVersion = json(api.get(api_url(&["version", version_id])?), cancel)?;
+    let version = get_version(version_id, cancel)?;
     ensure!(
         version.id == version_id && version.project_id == project_id,
         "下载版本不属于所选项目"
@@ -1069,16 +1125,23 @@ trait DependencySource {
     fn versions(&mut self, project: &str) -> Result<Vec<ModrinthVersion>>;
     fn project(&mut self, id: &str) -> Result<ModrinthProject>;
 }
+pub fn get_version(id: &str, cancel: &AtomicBool) -> Result<ModrinthVersion> {
+    if id.starts_with("cf:") {
+        let (p, f) = crate::curseforge::version_id(id)?;
+        return crate::curseforge::get_file(p, f, cancel);
+    }
+    json(
+        client("api.modrinth.com")?.get(api_url(&["version", id])?),
+        cancel,
+    )
+}
 struct OnlineDependencies<'a> {
     context: &'a PlanContext,
     cancel: &'a AtomicBool,
 }
 impl DependencySource for OnlineDependencies<'_> {
     fn version(&mut self, id: &str) -> Result<ModrinthVersion> {
-        let version: ModrinthVersion = json(
-            client("api.modrinth.com")?.get(api_url(&["version", id])?),
-            self.cancel,
-        )?;
+        let version = get_version(id, self.cancel)?;
         ensure!(version.id == id, "依赖版本标识不匹配");
         Ok(version)
     }
@@ -1435,7 +1498,12 @@ fn snapshot_versions(
     snapshot: &BTreeMap<PathBuf, String>,
     cancel: &AtomicBool,
 ) -> Result<Vec<ModrinthVersion>> {
-    let hashes = enabled_snapshot_hashes(snapshot);
+    identify_hashes(&enabled_snapshot_hashes(snapshot), cancel)
+}
+pub(crate) fn identify_hashes(
+    hashes: &[String],
+    cancel: &AtomicBool,
+) -> Result<Vec<ModrinthVersion>> {
     let mut versions = BTreeMap::new();
     let api = client("api.modrinth.com")?;
     for chunk in hashes.chunks(100) {
@@ -1485,7 +1553,11 @@ fn prepare_plan(
     );
     let directory = context.directory(&root, false)?;
     let existing = directory_snapshot(&directory, cancel)?;
-    let installed = snapshot_versions(&existing, cancel)?;
+    let installed = if root.id.starts_with("cf:") {
+        crate::curseforge::identify_files(&existing, context.kind, cancel)?
+    } else {
+        snapshot_versions(&existing, cancel)?
+    };
     let cloned = context.clone();
     build_dependency_plan(&mut source, cloned, root, installed, existing, cancel)
 }
@@ -1571,16 +1643,23 @@ fn rollback_new_files(files: &[(PathBuf, String)], created_directory: Option<&Pa
 
 /// Download everything first, then commit exclusive files. On failure, rollback
 /// only tracked new files whose hashes still match what this operation wrote.
+fn download_response(file: &VersionFile, cancel: &AtomicBool) -> Result<Response> {
+    let url = Url::parse(&file.url)?;
+    if crate::curseforge::trusted_file(&url) {
+        crate::curseforge::download_file(file, cancel)
+    } else {
+        ensure!(trusted(&url, "cdn.modrinth.com"), "资源下载地址不可信");
+        send(client("cdn.modrinth.com")?.get(url), cancel)
+    }
+}
+
 pub fn execute_install_plan(
     plan: &InstallPlan,
     cancel: &AtomicBool,
     progress: impl Fn(Progress),
 ) -> Result<Vec<PathBuf>> {
     execute_plan_with(plan, cancel, &progress, |file, source| {
-        let response = send(
-            client("cdn.modrinth.com")?.get(Url::parse(&file.url)?),
-            cancel,
-        )?;
+        let response = download_response(file, cancel)?;
         ensure!(
             response
                 .content_length()
@@ -1663,6 +1742,7 @@ fn execute_plan_with(
             );
             no_conflict(&directory, &file.filename)?;
             let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+            let committed_hash = hash_local(&source, cancel)?;
             std::io::copy(&mut File::open(source)?, temporary.as_file_mut())?;
             temporary.as_file().sync_all()?;
             cancelled(cancel)?;
@@ -1675,7 +1755,7 @@ fn execute_plan_with(
                 .persist_noclobber(&path)
                 .map_err(|e| e.error)
                 .context("资源文件已存在或无法提交，未覆盖原文件")?;
-            committed.push((path, file.hashes["sha512"].clone()));
+            committed.push((path, committed_hash));
             progress(Progress {
                 message: format!("安装 {}", item.title),
                 completed: committed.len() as u64,
@@ -1708,17 +1788,20 @@ pub fn download_modpack(
         "此整合包不支持客户端环境"
     );
     let file = resource_file(ResourceKind::Modpack, &version)?;
-    let response = send(
-        client("cdn.modrinth.com")?.get(Url::parse(&file.url)?),
-        cancel,
-    )?;
+    let response = download_response(file, cancel)?;
     ensure!(
         response
             .content_length()
             .is_none_or(|length| length == file.size),
         "整合包 Content-Length 不匹配"
     );
-    let temporary = tempfile::Builder::new().suffix(".mrpack").tempfile()?;
+    let temporary = tempfile::Builder::new()
+        .suffix(if version.id.starts_with("cf:") {
+            ".zip"
+        } else {
+            ".mrpack"
+        })
+        .tempfile()?;
     verified_download(response, temporary.path(), file, cancel, &progress)?;
     inspect_archive(ResourceKind::Modpack, temporary.path(), false, cancel)?;
     crate::modpack::inspect_mrpack(temporary.path())?;
@@ -1745,6 +1828,36 @@ mod tests {
         v.files[0].url = "https://cdn.modrinth.com/data/project1/versions/version1/safe.zip".into();
         v.loaders = vec![loader.into()];
         v
+    }
+    #[test]
+    fn curseforge_sha1_download_keeps_modrinth_hash_requirements() {
+        let bytes = jar();
+        let mut v = version(&bytes);
+        v.id = "cf:10:20".into();
+        v.project_id = "cf:10".into();
+        v.files[0].url = "https://edge.forgecdn.net/files/1/2/test.jar".into();
+        v.files[0].hashes.remove("sha512");
+        assert!(resource_file(ResourceKind::Mod, &v).is_ok());
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("test.jar");
+        let cancel = AtomicBool::new(false);
+        verified_download(Cursor::new(&bytes), &path, &v.files[0], &cancel, &|_| {}).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(verified_download(
+            Cursor::new(vec![0; bytes.len()]),
+            &path,
+            &v.files[0],
+            &cancel,
+            &|_| {}
+        )
+        .is_err());
+        v.id = "version1".into();
+        v.project_id = "project1".into();
+        v.files[0].url = "https://cdn.modrinth.com/data/project1/versions/version1/test.jar".into();
+        assert!(resource_file(ResourceKind::Mod, &v).is_err());
+        assert!(
+            verified_download(Cursor::new(&bytes), &path, &v.files[0], &cancel, &|_| {}).is_err()
+        );
     }
     #[test]
     fn disabled_jars_never_satisfy_dependencies_even_with_uppercase_suffix() {
@@ -1807,6 +1920,7 @@ mod tests {
     #[test]
     fn resource_classes_filter_datapacks_and_preserve_primary_file_type() {
         let options = SearchOptions {
+            provider: ResourceProvider::Modrinth,
             query: "x & y".into(),
             minecraft: Some("1.21.1".into()),
             loader: None,
@@ -2385,6 +2499,7 @@ mod tests {
     #[test]
     fn search_encodes_query_and_ands_filters_with_pagination() {
         let options = SearchOptions {
+            provider: ResourceProvider::Modrinth,
             query: "sodium & other?token=x".into(),
             minecraft: Some("1.21.1".into()),
             loader: Some("fabric".into()),

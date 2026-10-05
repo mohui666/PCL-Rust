@@ -1,6 +1,8 @@
 //! Fabric / Quilt installation from their official launcher profiles.
 //! API sources: https://github.com/FabricMC/fabric-meta/blob/master/README.md
 //! and https://meta.quiltmc.org/openapi.yaml (v3 launcher profile endpoints).
+#[path = "optifine.rs"]
+pub mod optifine;
 use crate::{
     install::{
         self, cancelled, expected_hash, http_client, request_bytes, safe_target, validate_url,

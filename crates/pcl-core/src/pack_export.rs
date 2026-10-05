@@ -1,6 +1,5 @@
-//! Modrinth .mrpack export from an explicitly selected instance.
-//! Default rules follow PCL 2.13.1.1 PageInstanceExport.xaml. Launcher binaries,
-//! Java runtimes, launcher/account settings and arbitrary extra paths are not exported.
+//! Explicit instance export with no-clobber commit and credential filtering.
+//! Additional format adapters share the same selected-file snapshot and hashes.
 use crate::{config, install, instances, metadata, model::Progress, resources::ModrinthVersion};
 use anyhow::{bail, ensure, Context, Result};
 use regex::Regex;
@@ -17,6 +16,13 @@ use std::{
     time::{Duration, SystemTime},
 };
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+#[path = "pack_export_formats.rs"]
+mod formats;
+pub use formats::PackFormat;
+#[path = "pack_export_extras.rs"]
+mod extras;
+pub use extras::{available_java_roots, export_pack_with_launcher, validate_launcher_export};
 
 const MAX_FILE: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
@@ -104,6 +110,9 @@ pub struct PackExportOptions {
     pub summary: String,
     pub selection: ExportSelection,
     pub resource_mode: ResourceMode,
+    pub format: PackFormat,
+    pub include_java: bool,
+    pub include_launcher: bool,
 }
 impl Default for PackExportOptions {
     fn default() -> Self {
@@ -113,6 +122,9 @@ impl Default for PackExportOptions {
             summary: String::new(),
             selection: ExportSelection::default(),
             resource_mode: ResourceMode::default(),
+            format: PackFormat::default(),
+            include_java: false,
+            include_launcher: false,
         }
     }
 }
@@ -206,6 +218,10 @@ pub fn export_pack(
     cancel: &AtomicBool,
     progress: impl Fn(Progress),
 ) -> Result<PackExportReport> {
+    ensure!(
+        !options.include_launcher,
+        "附带启动器时须由桌面端提供当前程序路径"
+    );
     export_with(
         root,
         version_id,
@@ -371,8 +387,8 @@ fn export_with(
         destination
             .extension()
             .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("mrpack")),
-        "当前导出格式仅支持 .mrpack"
+            .is_some_and(|value| value.eq_ignore_ascii_case(options.format.extension())),
+        "保存文件扩展名与所选整合包格式不符"
     );
     let parent = destination
         .parent()
@@ -390,11 +406,17 @@ fn export_with(
         fs::symlink_metadata(&instance)?.is_dir(),
         "游戏实例目录不存在"
     );
+    let extra_files = if options.include_java {
+        extras::java_files(root, version_id, cancel)?
+    } else {
+        Vec::new()
+    };
     let rules = Rules::new(&options.selection)?;
     let tree = collect(&instance, &rules, cancel)?;
     let mut excluded = tree.excluded.clone();
     let mut hashed = Vec::new();
-    let mut total_size = 0u64;
+    let mut total_size = extra_files.iter().map(|file| file.stamp.len).sum::<u64>();
+    ensure!(total_size <= MAX_TOTAL, "Java 运行时导出超过 20 GiB 限制");
     for (index, candidate) in tree.files.iter().enumerate() {
         install::cancelled(cancel)?;
         total_size = total_size
@@ -423,6 +445,10 @@ fn export_with(
             resource: is_hosted_candidate(&candidate.relative),
         });
     }
+    extras::check_collisions(
+        &extra_files,
+        hashed.iter().map(|file| file.candidate.relative.as_str()),
+    )?;
     let queries: Vec<_> = hashed
         .iter()
         .filter(|file| file.resource)
@@ -430,7 +456,10 @@ fn export_with(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let hosted = if options.resource_mode == ResourceMode::PreferHosted && !queries.is_empty() {
+    let hosted = if options.format == PackFormat::Mrpack
+        && options.resource_mode == ResourceMode::PreferHosted
+        && !queries.is_empty()
+    {
         progress(Progress {
             message: "正在查询 Modrinth 托管文件信息".into(),
             ..Default::default()
@@ -466,7 +495,10 @@ fn export_with(
                 file_size: file.candidate.stamp.len,
             });
         } else {
-            if file.resource && options.resource_mode == ResourceMode::PreferHosted {
+            if file.resource
+                && options.format == PackFormat::Mrpack
+                && options.resource_mode == ResourceMode::PreferHosted
+            {
                 unhosted.push(file.candidate.relative.clone());
             }
             overrides.push(file);
@@ -481,9 +513,17 @@ fn export_with(
         files: index_files,
         dependencies,
     };
-    let json = serde_json::to_vec_pretty(&index)?;
-    ensure!(json.len() <= 8 * 1024 * 1024, "整合包索引超过大小限制");
-    ensure!(overrides.len() < 50_000, "整合包 ZIP 条目超过 50000 个限制");
+    let manifests = formats::manifests(&index, options.format)?;
+    ensure!(
+        manifests
+            .iter()
+            .all(|(_, bytes)| bytes.len() <= 8 * 1024 * 1024),
+        "整合包索引超过大小限制"
+    );
+    ensure!(
+        overrides.len() + extra_files.len() < 50_000,
+        "整合包 ZIP 条目超过 50000 个限制"
+    );
     let mut temporary = tempfile::Builder::new()
         .prefix(".pcl-pack-export-")
         .tempfile_in(&parent)
@@ -493,12 +533,18 @@ fn export_with(
         let zip_options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .unix_permissions(0o644);
-        archive.start_file("modrinth.index.json", zip_options)?;
-        archive.write_all(&json)?;
+        for (name, bytes) in manifests {
+            archive.start_file(name, zip_options)?;
+            archive.write_all(&bytes)?;
+        }
         for (position, file) in overrides.iter().enumerate() {
             install::cancelled(cancel)?;
             archive.start_file(
-                format!("overrides/{}", file.candidate.relative),
+                format!(
+                    "{}{}",
+                    options.format.payload_prefix(),
+                    file.candidate.relative
+                ),
                 zip_options,
             )?;
             let path = checked_source_path(&instance, &file.candidate.relative)?;
@@ -514,6 +560,13 @@ fn export_with(
                 message: format!("写入整合包：{}", file.candidate.relative),
                 ..Default::default()
             });
+        }
+        for file in &extra_files {
+            archive.start_file(
+                format!("{}{}", options.format.payload_prefix(), file.relative),
+                zip_options.unix_permissions(file.permissions),
+            )?;
+            file.copy_to(&mut archive, cancel)?;
         }
         archive.finish()?;
     }
@@ -532,6 +585,9 @@ fn export_with(
             file.candidate.relative
         );
     }
+    for file in &extra_files {
+        file.verify(cancel)?;
+    }
     install::cancelled(cancel)?;
     temporary.as_file().sync_all()?;
     let bytes = temporary.as_file().metadata()?.len();
@@ -547,9 +603,9 @@ fn export_with(
     });
     Ok(PackExportReport {
         path: output,
-        files: hashed.len(),
+        files: hashed.len() + extra_files.len(),
         hosted_files: index.files.len(),
-        override_files: overrides.len(),
+        override_files: overrides.len() + extra_files.len(),
         unhosted_files: unhosted,
         excluded_sensitive_files: excluded.into_iter().collect(),
         bytes,
@@ -2027,7 +2083,7 @@ mod tests {
         options.selection.worlds = vec!["World".into(), "world".into()];
         assert!(validate_export_options(&options).is_err());
         assert!(serde_json::from_value::<PackExportOptions>(
-            json!({"name":"test","include_java":true})
+            json!({"name":"test","include_credentials":true})
         )
         .is_err());
         assert!(serde_json::from_value::<PackExportOptions>(
@@ -2513,5 +2569,244 @@ mod tests {
         let files = archive(&output);
         assert_eq!(files.len(), 2);
         assert!(files.contains_key("overrides/config/worldedit/worldedit.properties"));
+    }
+    #[test]
+    fn common_zip_formats_roundtrip_selected_payload_without_network() {
+        let root = fixture();
+        put(root.path(), "instances/pack/options.txt", b"music:0.5");
+        for format in [PackFormat::MultiMc, PackFormat::Mcbbs] {
+            let output = root.path().join(format!("{format:?}.zip"));
+            let mut value = options();
+            value.format = format;
+            export_with(
+                root.path(),
+                "pack",
+                &output,
+                &value,
+                &AtomicBool::new(false),
+                |_| {},
+                |_, _| panic!("embedded formats must not query hosted services"),
+            )
+            .unwrap();
+            let info = crate::modpack::inspect_mrpack(&output).unwrap();
+            assert_eq!(info.dependencies["fabric-loader"], "0.16.0");
+            let target = root.path().join(format!("import-{format:?}"));
+            crate::modpack::import_mrpack(&output, &target, false, &AtomicBool::new(false), |_| {})
+                .unwrap();
+            assert_eq!(fs::read(target.join("options.txt")).unwrap(), b"music:0.5");
+            assert!(!target.join("instance.cfg").exists());
+        }
+        let mut value = options();
+        value.format = PackFormat::Hmcl;
+        let output = root.path().join("hmcl.zip");
+        assert!(export_with(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            &AtomicBool::new(false),
+            |_| {},
+            |_, _| panic!()
+        )
+        .is_err());
+        assert!(!output.exists());
+        put(
+            root.path(),
+            "versions/pack/pack.json",
+            br#"{"id":"pack","inheritsFrom":"1.21.1"}"#,
+        );
+        export_with(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            &AtomicBool::new(false),
+            |_| {},
+            |_, _| panic!(),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::modpack::inspect_mrpack(&output).unwrap().format,
+            "HMCL"
+        );
+    }
+    #[test]
+    fn explicit_version_java_and_launcher_bundle_roundtrip_without_executing_programs() {
+        let root = fixture();
+        put(root.path(), "instances/pack/options.txt", b"music:0.5");
+        put(
+            root.path(),
+            "versions/pack/jre/release",
+            b"JAVA_VERSION=\"21.0.7\"",
+        );
+        put(
+            root.path(),
+            "versions/pack/jre/bin/java",
+            b"not an executable fixture",
+        );
+        put(
+            root.path(),
+            "versions/pack/jre/legal/LICENSE",
+            b"fixture licence",
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                root.path().join("versions/pack/jre/bin/java"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let mut settings = config::load_instance_settings(root.path(), "pack").unwrap();
+        settings.java_mode = Some(crate::java_selection::JavaSelectionMode::VersionFolder);
+        config::save_instance_settings(root.path(), "pack", &settings).unwrap();
+        assert_eq!(available_java_roots(root.path(), "pack").unwrap().len(), 1);
+        let mut value = options();
+        value.include_java = true;
+        value.include_launcher = true;
+        value.resource_mode = ResourceMode::EmbedAll;
+        let launcher = root.path().join("launcher-fixture");
+        fs::write(&launcher, b"synthetic launcher, never executed").unwrap();
+        let output = root.path().join("bundle.zip");
+        export_pack_with_launcher(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            Some(&launcher),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        let files = archive(&output);
+        assert!(files.contains_key("modpack.mrpack"));
+        assert!(files.contains_key("使用说明.txt"));
+        let info = crate::modpack::inspect_mrpack(&output).unwrap();
+        assert!(info.warnings.iter().any(|s| s.contains("不会提取或执行")));
+        let target = root.path().join("import");
+        crate::modpack::import_mrpack(&output, &target, false, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(
+            fs::read(target.join("jre/bin/java")).unwrap(),
+            b"not an executable fixture"
+        );
+        assert!(!target.join("PCL-Rust").exists());
+        assert!(!target.join("settings.json").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(target.join("jre/bin/java"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
+        let before = fs::read(&output).unwrap();
+        assert!(export_pack_with_launcher(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            Some(&launcher),
+            &AtomicBool::new(false),
+            |_| {}
+        )
+        .is_err());
+        assert_eq!(fs::read(&output).unwrap(), before);
+        let cancelled = root.path().join("cancelled.zip");
+        assert!(export_pack_with_launcher(
+            root.path(),
+            "pack",
+            &cancelled,
+            &value,
+            Some(&launcher),
+            &AtomicBool::new(true),
+            |_| {}
+        )
+        .unwrap_err()
+        .is::<crate::model::OperationCancelled>());
+        assert!(!cancelled.exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn runtime_links_are_materialized_only_inside_selected_runtime() {
+        use std::os::unix::fs::symlink;
+        let root = fixture();
+        put(
+            root.path(),
+            "versions/pack/jre/release",
+            b"JAVA_VERSION=\"21\"",
+        );
+        put(root.path(), "versions/pack/jre/bin/java", b"java fixture");
+        put(root.path(), "versions/pack/jre/lib/original", b"library");
+        symlink("original", root.path().join("versions/pack/jre/lib/link")).unwrap();
+        let mut settings = config::load_instance_settings(root.path(), "pack").unwrap();
+        settings.java_mode = Some(crate::java_selection::JavaSelectionMode::VersionFolder);
+        config::save_instance_settings(root.path(), "pack", &settings).unwrap();
+        let mut value = options();
+        value.include_java = true;
+        value.resource_mode = ResourceMode::EmbedAll;
+        let output = root.path().join("java.mrpack");
+        export_pack(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(archive(&output)["overrides/jre/lib/link"], b"library");
+        symlink(
+            root.path().join("versions/pack/pack.json"),
+            root.path().join("versions/pack/jre/outside"),
+        )
+        .unwrap();
+        let rejected = root.path().join("outside.mrpack");
+        assert!(export_pack(
+            root.path(),
+            "pack",
+            &rejected,
+            &value,
+            &AtomicBool::new(false),
+            |_| {}
+        )
+        .is_err());
+        assert!(!rejected.exists());
+    }
+    #[test]
+    fn launcher_bundle_rejects_local_only_system_fonts_before_creating_archive() {
+        let root = fixture();
+        let app = root.path().join("Current.app");
+        put(&app, "Contents/Info.plist", b"fixture");
+        put(
+            &app,
+            "Contents/Resources/PingFang-Regular.otf",
+            b"local-only fixture font",
+        );
+        let mut value = options();
+        value.include_launcher = true;
+        let output = root.path().join("not-redistributable.zip");
+        assert!(export_pack_with_launcher(
+            root.path(),
+            "pack",
+            &output,
+            &value,
+            Some(&app),
+            &AtomicBool::new(false),
+            |_| {}
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("仅本机"));
+        assert!(!output.exists());
+        assert_eq!(
+            fs::read(app.join("Contents/Resources/PingFang-Regular.otf")).unwrap(),
+            b"local-only fixture font"
+        );
     }
 }

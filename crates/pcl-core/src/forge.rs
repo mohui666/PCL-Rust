@@ -454,12 +454,22 @@ fn expand(value: &str, data: &HashMap<String, String>, stage: &Path) -> Result<S
     }
     // Expanded filesystem parameters must remain inside the processor's private root.
     if Path::new(&output).is_absolute() {
-        confined_output(stage, &output)?;
+        return Ok(confined_output(stage, &output)?
+            .to_string_lossy()
+            .into_owned());
     }
     Ok(output)
 }
 
 fn confined_output(stage: &Path, value: &str) -> Result<PathBuf> {
+    // canonicalize() returns a verbatim Windows root (\\?\...). Metadata still
+    // appends '/' separators; in a verbatim Path those are literal characters.
+    // Normalize only Windows separators before checking components, and keep the
+    // prefix/traversal/symlink checks below rather than comparing string prefixes.
+    #[cfg(windows)]
+    let normalized = value.replace('/', "\\");
+    #[cfg(windows)]
+    let value = normalized.as_str();
     let path = Path::new(value);
     let relative = path.strip_prefix(stage).context("处理器输出超出临时目录")?;
     safe_target(stage, relative)
@@ -2628,6 +2638,19 @@ mod tests {
             outputs[0].sha1.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
+        let relative = Path::new("libraries").join("a.jar");
+        assert_eq!(outputs[0].relative_path, relative);
+        assert_eq!(
+            PathBuf::from(expand("{ROOT}/libraries/a.jar", &data, &stage).unwrap()),
+            stage.join(&relative)
+        );
+        for template in ["{ROOT}/libraries/../../escape", "{ROOT}-sibling/a.jar"] {
+            assert!(expand(template, &data, &stage).is_err(), "{template}");
+        }
+        #[cfg(windows)]
+        for template in [r"{ROOT}\..\escape", r"{ROOT}/libraries\..\..\escape"] {
+            assert!(expand(template, &data, &stage).is_err(), "{template}");
+        }
     }
     #[test]
     fn official_processor_templates_preserve_braces_spaces_and_unicode_in_root() {

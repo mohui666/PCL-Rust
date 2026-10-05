@@ -20,3 +20,18 @@ pub mod packs;
 pub mod resources;
 
 mod transfer;
+
+pub mod launch_patches;
+pub mod offline_skin;
+
+pub mod network;
+
+pub mod system;
+
+pub mod curseforge;
+
+pub mod wiki;
+
+pub mod crash;
+
+pub mod mod_updates;

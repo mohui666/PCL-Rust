@@ -1,6 +1,8 @@
 //! PageSetupUI geometry and local, persisted background controls.
 #[path = "background_effect.rs"]
 mod background_effect;
+#[path = "music.rs"]
+mod music;
 use super::Launcher;
 use crate::ui_style;
 use anyhow::{bail, Context, Result};
@@ -25,6 +27,9 @@ pub(super) struct AppearanceState {
     failed_blur: Option<background_effect::BlurKey>,
     startup_initialized: bool,
     startup: Option<(f64, egui::TextureHandle)>,
+    music: music::MusicState,
+    music_poll: Option<std::time::Instant>,
+    clear_music: bool,
 }
 
 struct PendingBlur {
@@ -37,6 +42,35 @@ struct LoadedBackground {
     texture: egui::TextureHandle,
     source: PathBuf,
     size: [usize; 2],
+    animation: Option<BackgroundAnimation>,
+}
+
+struct BackgroundAnimation {
+    frames: Vec<Arc<egui::ColorImage>>,
+    ends_ms: Vec<u64>,
+    loops: Option<u32>,
+    started: std::time::Instant,
+    index: usize,
+}
+
+impl BackgroundAnimation {
+    fn at(&self, elapsed_ms: u64) -> (usize, Option<std::time::Duration>) {
+        let total = *self.ends_ms.last().unwrap_or(&1);
+        if self
+            .loops
+            .is_some_and(|loops| elapsed_ms >= total.saturating_mul(u64::from(loops)))
+        {
+            return (self.frames.len() - 1, None);
+        }
+        let within = elapsed_ms % total;
+        let index = self.ends_ms.partition_point(|end| *end <= within);
+        (
+            index,
+            Some(std::time::Duration::from_millis(
+                self.ends_ms[index] - within,
+            )),
+        )
+    }
 }
 
 impl AppearanceState {
@@ -48,10 +82,44 @@ impl AppearanceState {
         settings: &Settings,
         settings_path: &Path,
     ) -> Result<()> {
+        if self
+            .music_poll
+            .is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(100))
+        {
+            self.music_poll = Some(std::time::Instant::now());
+            self.music
+                .tick(&settings_directory(settings_path).join("musics"), settings)?;
+        }
+        if self.music.visible() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if !self.initialized {
             self.initialized = true;
             self.background =
                 load_background(ctx, &background_folder(settings, settings_path), None)?;
+        }
+        if let Some(background) = &mut self.background {
+            if let Some(animation) = &mut background.animation {
+                let (index, next) = animation.at(animation
+                    .started
+                    .elapsed()
+                    .as_millis()
+                    .min(u128::from(u64::MAX))
+                    as u64);
+                if index != animation.index {
+                    animation.index = index;
+                    background.original = Arc::clone(&animation.frames[index]);
+                    // A new texture identity also invalidates an in-flight blur of the old frame.
+                    background.texture = ctx.load_texture(
+                        "pcl-background-frame",
+                        (*background.original).clone(),
+                        egui::TextureOptions::LINEAR_REPEAT,
+                    );
+                }
+                if let Some(next) = next {
+                    ctx.request_repaint_after(next);
+                }
+            }
         }
         let desired = self
             .background
@@ -109,6 +177,29 @@ impl AppearanceState {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn paint_music_icon(ui: &egui::Ui, rect: Rect, playing: bool) {
+        music::paint_icon(ui, rect, playing);
+    }
+
+    pub(super) fn music_info(&self) -> Option<(String, bool, f32)> {
+        self.music.visible().then(|| {
+            (
+                self.music.title(),
+                self.music.playing(),
+                self.music.progress,
+            )
+        })
+    }
+    pub(super) fn toggle_music(&mut self) -> Result<()> {
+        self.music.toggle()
+    }
+    pub(super) fn next_music(&mut self, settings: &Settings) -> Result<()> {
+        self.music.next(settings, true)
+    }
+    pub(super) fn music_game_changed(&mut self, started: bool, settings: &Settings) -> Result<()> {
+        self.music.game_changed(started, settings)
     }
 
     /// Replaces ui_style::background. Draw before the title/sidebar/content layers.
@@ -257,6 +348,11 @@ impl Launcher {
         let mut choose_background = false;
         let mut refresh_background = false;
         let mut open_home = false;
+        let mut refresh_home = false;
+        let mut tutorial_home = false;
+        let mut generate_home = false;
+        let mut open_music = false;
+        let mut refresh_music = false;
         let mut theme_settings = self.settings.clone();
         let mut theme_changed = false;
         let has_background = self.appearance.background.is_some();
@@ -461,7 +557,7 @@ impl Launcher {
                 );
                 open_background = open.clicked();
                 open.clone().on_hover_text(format!(
-                "{}\n放入 PNG、JPEG、WebP 或 GIF 后点击刷新。\n右键可选择其他文件夹；GIF 当前只显示首帧。\n图片限制：32 MiB、4096 × 4096 像素。",
+                "{}\n放入 PNG、JPEG、WebP 或 GIF 后点击刷新。\n右键可选择其他文件夹；GIF 按帧延时播放。\n图片限制：32 MiB、4096 × 4096 像素；动画解码总量最多 96 MiB。",
                 folder.display()
             ));
                 open.context_menu(|ui| {
@@ -481,24 +577,216 @@ impl Launcher {
             },
         );
 
-        section(ui, "背景音乐", 97.0, |ui, rect| {
-            action_button(ui, rect.min + Vec2::new(25.0, 42.0), "打开文件夹", false)
-                .on_hover_text("背景音乐播放尚未迁移，当前不创建音乐目录或假报播放成功。");
-            action_button(ui, rect.min + Vec2::new(185.0, 42.0), "刷新背景音乐", false)
-                .on_hover_text("背景音乐播放尚未迁移。");
-        });
-
-        section(ui, "主页", 112.0, |ui, rect| {
-            label(
-                ui,
-                rect.min + Vec2::new(25.0, 39.0),
-                rect.width() - 50.0,
-                "自定义主页渲染尚未迁移；可打开本地文件夹管理素材。",
-                13.0,
-            );
-            open_home = action_button(ui, rect.min + Vec2::new(25.0, 62.0), "打开主页文件夹", true)
+        let has_music = self.appearance.music.visible();
+        section(
+            ui,
+            "背景音乐",
+            if has_music { 240.0 } else { 97.0 },
+            |ui, rect| {
+                let offset = if has_music { 143.0 } else { 0.0 };
+                if has_music {
+                    let mut volume = f32::from(theme_settings.ui_music_volume);
+                    label(ui, rect.min + Vec2::new(25.0, 39.0), 72.0, "音量", 13.0);
+                    theme_changed |= slider_track(
+                        ui,
+                        Rect::from_min_size(
+                            rect.min + Vec2::new(97.0, 42.0),
+                            Vec2::new((rect.width() - 122.0).max(20.0), 16.0),
+                        ),
+                        "音乐音量",
+                        &mut volume,
+                        0.0,
+                        1000.0,
+                        10.0,
+                    )
+                    .changed();
+                    theme_settings.ui_music_volume = volume as u16;
+                    for (index, title) in [
+                        "随机播放",
+                        "打开启动器自动开始播放",
+                        "游戏启动后自动开始播放，游戏退出后自动暂停播放",
+                        "游戏启动后自动暂停播放，游戏退出后自动开始播放",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let checked = match index {
+                            0 => &mut theme_settings.ui_music_random,
+                            1 => &mut theme_settings.ui_music_auto,
+                            2 => &mut theme_settings.ui_music_start,
+                            _ => &mut theme_settings.ui_music_stop,
+                        };
+                        let changed = appearance_checkbox(
+                            ui,
+                            Rect::from_min_size(
+                                rect.min + Vec2::new(24.0, 71.0 + index as f32 * 27.0),
+                                Vec2::new(rect.width() - 49.0, 22.0),
+                            ),
+                            checked,
+                            title,
+                        )
+                        .changed();
+                        theme_changed |= changed;
+                        if changed && index == 2 && theme_settings.ui_music_start {
+                            theme_settings.ui_music_stop = false;
+                        }
+                        if changed && index == 3 && theme_settings.ui_music_stop {
+                            theme_settings.ui_music_start = false;
+                        }
+                    }
+                }
+                open_music = action_button(
+                    ui,
+                    rect.min + Vec2::new(25.0, 42.0 + offset),
+                    "打开文件夹",
+                    true,
+                )
+                .on_hover_text(
+                    "将本地 WAV、MP3、FLAC 等音频放入后刷新；支持格式取决于系统音频解码器。",
+                )
                 .clicked();
-        });
+                refresh_music = action_button(
+                    ui,
+                    rect.min + Vec2::new(185.0, 42.0 + offset),
+                    "刷新背景音乐",
+                    true,
+                )
+                .clicked();
+                if has_music {
+                    self.appearance.clear_music |= action_button(
+                        ui,
+                        rect.min + Vec2::new(345.0, 42.0 + offset),
+                        "清空背景音乐",
+                        true,
+                    )
+                    .clicked();
+                }
+            },
+        );
+
+        let home_mode = theme_settings.ui_custom_type;
+        section(
+            ui,
+            "主页",
+            match home_mode {
+                0 => 89.0,
+                3 => 135.0,
+                1 => 220.0,
+                _ => 195.0,
+            },
+            |ui, rect| {
+                let column = (rect.width() - 50.0) / 4.0;
+                for (index, (id, title)) in [
+                    (0, "空白"),
+                    (3, "预设"),
+                    (1, "读取本地文件"),
+                    (2, "联网更新"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let target = Rect::from_min_size(
+                        rect.min + Vec2::new(25.0 + index as f32 * column, 40.0),
+                        Vec2::new(column, 22.0),
+                    );
+                    let response = ui.place(
+                        target,
+                        egui::RadioButton::new(theme_settings.ui_custom_type == id, title),
+                    );
+                    if response.clicked() {
+                        theme_settings.ui_custom_type = id;
+                        theme_changed = true;
+                    }
+                }
+                if home_mode == 3 {
+                    label(ui, rect.min + Vec2::new(25.0, 78.0), 90.0, "主页预设", 13.0);
+                    let mut child =
+                        ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                            rect.min + Vec2::new(115.0, 73.0),
+                            Vec2::new(rect.width() - 150.0, 28.0),
+                        )));
+                    let before = theme_settings.ui_custom_preset;
+                    ui_style::PclComboBox::from_id_salt("home-preset")
+                        .width(rect.width() - 150.0)
+                        .selected_text(
+                            super::home_ui::PRESETS
+                                .iter()
+                                .find(|(id, _, _)| *id == before)
+                                .map_or("请选择", |(_, title, _)| *title),
+                        )
+                        .show_ui(&mut child, |ui| {
+                            for (id, title, _) in super::home_ui::PRESETS {
+                                ui.selectable_value(
+                                    &mut theme_settings.ui_custom_preset,
+                                    *id,
+                                    *title,
+                                );
+                            }
+                        });
+                    theme_changed |= before != theme_settings.ui_custom_preset;
+                } else if home_mode == 1 || home_mode == 2 {
+                    let message = if home_mode == 1 {
+                        "从主页文件夹的 Custom.xaml 读取内容。可添加文本、图片、网站及需要点击确认的程序操作。"
+                    } else {
+                        "从指定网址获取主页内容。主页只作为布局读取；文件、命令与设置操作需要点击并确认。"
+                    };
+                    let hint = Rect::from_min_size(
+                        rect.min + Vec2::new(25.0, 77.0),
+                        Vec2::new(rect.width() - 50.0, 58.0),
+                    );
+                    ui.painter()
+                        .rect_filled(hint, 3, crate::theme::palette(ui.ctx()).light);
+                    ui.place(
+                        hint.shrink(10.0),
+                        egui::Label::new(RichText::new(message).size(13.0)).wrap(),
+                    );
+                    if home_mode == 1 {
+                        for (index, title) in
+                            ["刷新主页", "生成教学文件", "查看教程", "打开主页文件夹"]
+                                .into_iter()
+                                .enumerate()
+                        {
+                            let width = ((rect.width() - 50.0 - 30.0) / 4.0).min(140.0);
+                            let response = ui.place(
+                                Rect::from_min_size(
+                                    rect.min
+                                        + Vec2::new(25.0 + index as f32 * (width + 10.0), 157.0),
+                                    Vec2::new(width, 32.0),
+                                ),
+                                egui::Button::new(title),
+                            );
+                            if response.clicked() {
+                                match index {
+                                    0 => refresh_home = true,
+                                    1 => generate_home = true,
+                                    2 => tutorial_home = true,
+                                    _ => open_home = true,
+                                }
+                            }
+                        }
+                    } else {
+                        label(
+                            ui,
+                            rect.min + Vec2::new(25.0, 155.0),
+                            90.0,
+                            "下载地址",
+                            13.0,
+                        );
+                        theme_changed |= ui
+                            .place(
+                                Rect::from_min_size(
+                                    rect.min + Vec2::new(115.0, 150.0),
+                                    Vec2::new(rect.width() - 140.0, 28.0),
+                                ),
+                                egui::TextEdit::singleline(&mut theme_settings.ui_custom_net)
+                                    .hint_text("https://…/Custom.xaml")
+                                    .char_limit(4096),
+                            )
+                            .changed();
+                    }
+                }
+            },
+        );
 
         if theme_changed {
             match config::save_settings(&self.settings_path, &theme_settings) {
@@ -517,6 +805,32 @@ impl Launcher {
                 fs::create_dir_all(&folder).and_then(|_| crate::process::open_folder(&folder));
             if let Err(error) = result {
                 self.error = Some(format!("打开背景文件夹失败：{error}"));
+            }
+        }
+        let music_folder = settings_directory(&self.settings_path).join("musics");
+        if open_music {
+            if let Err(error) = fs::create_dir_all(&music_folder)
+                .and_then(|_| crate::process::open_folder(&music_folder))
+            {
+                self.error = Some(format!("打开音乐文件夹失败：{error}"));
+            }
+        }
+        if refresh_music {
+            match self
+                .appearance
+                .music
+                .refresh(&music_folder, &self.settings, true)
+            {
+                Ok(()) => {
+                    self.status = if self.appearance.music.visible() {
+                        "背景音乐已刷新"
+                    } else {
+                        "未检测到可播放的背景音乐"
+                    }
+                    .into();
+                    self.error = None;
+                }
+                Err(error) => self.error = Some(format!("刷新背景音乐：{error:#}")),
             }
         }
         if choose_background {
@@ -568,6 +882,45 @@ impl Launcher {
                 fs::create_dir_all(&folder).and_then(|_| crate::process::open_folder(&folder))
             {
                 self.error = Some(format!("打开主页文件夹失败：{error}"));
+            }
+        }
+        if refresh_home {
+            self.refresh_custom_home();
+            self.status = "主页将在显示时重新读取".into();
+        }
+        if generate_home {
+            match super::home_ui::generate_tutorial(&self.settings_path) {
+                Ok(path) => self.status = format!("已生成教学文件：{}", path.display()),
+                Err(error) => self.error = Some(format!("生成教学文件失败：{error:#}")),
+            }
+        }
+        if tutorial_home {
+            self.home.message=Some(("主页自定义教程".into(),"1. 点击生成教学文件。\n2. 用文本编辑器修改主页文件夹的 Custom.xaml 并保存。\n3. 点击刷新主页后返回启动页。\n\n支持卡片、文本、图片、按钮与常用布局；按钮操作只在点击时执行。文件、程序、下载和设置操作会显示确认内容。已有 Custom.xaml 不会被教学文件覆盖。".into()));
+        }
+    }
+
+    pub(super) fn appearance_music_dialog(&mut self, ctx: &egui::Context) {
+        if !self.appearance.clear_music {
+            return;
+        }
+        let folder = settings_directory(&self.settings_path).join("musics");
+        let caption=format!("停止播放并清空音乐列表。\n原音乐文件夹将移至同目录的 music-removed-* 备份文件夹，保留全部文件，随后创建空音乐文件夹。\n\n{}",folder.display());
+        if let Some(action) = super::modal_ui::account_modal_with_options(
+            ctx,
+            "clear-background-music",
+            "清空背景音乐",
+            &caption,
+            &["清空并保留备份", "取消"],
+            super::modal_ui::ModalOptions::warning(),
+        ) {
+            self.appearance.clear_music = false;
+            if action == 0 {
+                match self.appearance.music.clear_preserving_files(&folder) {
+                    Ok(path) => {
+                        self.status = format!("背景音乐已清空，原文件保留在 {}", path.display())
+                    }
+                    Err(error) => self.error = Some(format!("清空背景音乐失败：{error:#}")),
+                }
             }
         }
     }
@@ -807,8 +1160,14 @@ fn load_background(
     }
     let mut bytes = Vec::new();
     file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes)?;
-    let image =
-        decode_background(&bytes).with_context(|| format!("解码背景图片 {}", path.display()))?;
+    let animation =
+        decode_animation(&bytes).with_context(|| format!("解码背景动画 {}", path.display()))?;
+    let image = match &animation {
+        Some(animation) => (*animation.frames[0]).clone(),
+        None => {
+            decode_background(&bytes).with_context(|| format!("解码背景图片 {}", path.display()))?
+        }
+    };
     let size = image.size;
     Ok(Some(LoadedBackground {
         texture: ctx.load_texture(
@@ -819,6 +1178,57 @@ fn load_background(
         original: Arc::new(image),
         source: path,
         size,
+        animation,
+    }))
+}
+
+fn decode_animation(bytes: &[u8]) -> Result<Option<BackgroundAnimation>> {
+    use image::{AnimationDecoder, ImageDecoder};
+    if !bytes.starts_with(b"GIF87a") && !bytes.starts_with(b"GIF89a") {
+        return Ok(None);
+    }
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        bail!("背景图片超过 32 MiB");
+    }
+    let mut decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))?;
+    let (width, height) = decoder.dimensions();
+    if width == 0 || height == 0 || width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+        bail!("背景动画尺寸必须在 1 至 4096 像素之间");
+    }
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(96 * 1024 * 1024);
+    decoder.set_limits(limits)?;
+    let loops = match decoder.loop_count() {
+        image::metadata::LoopCount::Infinite => None,
+        image::metadata::LoopCount::Finite(count) => Some(count.get()),
+    };
+    let frame_bytes = u64::from(width) * u64::from(height) * 4;
+    let mut frames = Vec::new();
+    let mut ends_ms = Vec::new();
+    let mut elapsed = 0_u64;
+    for frame in decoder.into_frames() {
+        if frames.len() >= 500 || (frames.len() as u64 + 1) * frame_bytes > 96 * 1024 * 1024 {
+            bail!("背景动画超过 500 帧或 96 MiB 解码上限");
+        }
+        let frame = frame.context("GIF 动画帧解码失败")?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        elapsed =
+            elapsed.saturating_add((u64::from(numerator) / u64::from(denominator.max(1))).max(10));
+        ends_ms.push(elapsed);
+        frames.push(Arc::new(egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            frame.buffer().as_raw(),
+        )));
+    }
+    if frames.is_empty() {
+        bail!("GIF 动画没有图片帧");
+    }
+    Ok(Some(BackgroundAnimation {
+        frames,
+        ends_ms,
+        loops,
+        started: std::time::Instant::now(),
+        index: 0,
     }))
 }
 
@@ -933,7 +1343,37 @@ mod tests {
             original: Arc::new(original),
             source: PathBuf::from("synthetic.png"),
             size: [32, 16],
+            animation: None,
         }
+    }
+
+    #[test]
+    fn gif_uses_actual_frames_delays_and_finite_loop_instead_of_first_frame() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Finite(2))
+                .unwrap();
+            for (color, delay) in [([255, 0, 0, 255], 40), ([0, 255, 0, 255], 120)] {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(2, 2, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(delay, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let animation = decode_animation(&bytes).unwrap().unwrap();
+        assert_eq!(animation.frames.len(), 2);
+        assert_eq!(animation.frames[0].pixels[0], Color32::RED);
+        assert_eq!(animation.frames[1].pixels[0], Color32::GREEN);
+        assert_eq!(animation.at(39).0, 0);
+        assert_eq!(animation.at(40).0, 1);
+        assert_eq!(animation.at(160).0, 0);
+        assert_eq!(animation.at(320), (1, None));
     }
 
     #[test]

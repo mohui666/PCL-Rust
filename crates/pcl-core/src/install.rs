@@ -21,12 +21,13 @@ use std::{
 };
 
 pub const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+#[path = "install_repair.rs"]
+mod repair;
+pub use repair::{repair_version, repair_version_with_java};
 const BUFFER_SIZE: usize = 64 * 1024;
 const MAX_METADATA_SIZE: u64 = 32 * 1024 * 1024;
-const MAX_ASSET_DOWNLOADS: usize = 8;
-
 fn asset_worker_count(files: usize) -> usize {
-    files.min(MAX_ASSET_DOWNLOADS)
+    files.min(crate::network::options().threads as usize)
 }
 
 pub(crate) fn cancelled(cancel: &AtomicBool) -> Result<()> {
@@ -126,10 +127,7 @@ fn request_bytes_tracked(
         bail!("元数据大小超过限制");
     }
     let active = tracker.map(TransferTracker::begin_download);
-    let response = client.get(url).send()?.error_for_status()?;
-    if !approved_url(response.url()) {
-        bail!("拒绝非官方下载响应");
-    }
+    let response = crate::network::request(client, url, true, hash.is_some(), cancel)?;
     if response
         .content_length()
         .is_some_and(|size| size > MAX_METADATA_SIZE)
@@ -152,6 +150,7 @@ fn request_bytes_tracked(
         if bytes.len() as u64 + count as u64 > MAX_METADATA_SIZE {
             bail!("元数据大小超过限制");
         }
+        crate::network::throttle(count, cancel)?;
         bytes.extend_from_slice(&buf[..count]);
     }
     cancelled(cancel)?;
@@ -265,10 +264,7 @@ fn download_artifact_tracked(
     }
     cancelled(cancel)?;
     let active = tracker.map(TransferTracker::begin_download);
-    let response = client.get(url).send()?.error_for_status()?;
-    if !approved_url(response.url()) {
-        bail!("拒绝非官方下载响应");
-    }
+    let response = crate::network::request(client, url, false, artifact.sha1.is_some(), cancel)?;
     if let (Some(actual), Some(expected)) = (response.content_length(), artifact.size) {
         if actual != expected {
             bail!("下载大小不匹配（预期 {expected}，响应 {actual}）");
@@ -307,6 +303,7 @@ fn store_verified(
         if artifact.size.is_some_and(|size| written > size) {
             bail!("下载超过预期文件大小");
         }
+        crate::network::throttle(count, cancel)?;
         staged.write_all(&buf[..count])?;
         hasher.update(&buf[..count]);
     }
@@ -1530,7 +1527,10 @@ mod tests {
         assert_eq!(last.completed, 27);
         assert_eq!(last.stage_progress, Some((24, 24)));
         assert_eq!(last.transfer.as_ref().unwrap().remaining_files, Some(0));
-        assert_eq!(last.transfer.as_ref().unwrap().concurrency_limit, Some(8));
+        assert_eq!(
+            last.transfer.as_ref().unwrap().concurrency_limit,
+            Some(asset_worker_count(24) as u32)
+        );
         assert!(events.iter().all(|event| {
             let transfer = event.transfer.as_ref().unwrap();
             transfer.downloaded_bytes == 0 && transfer.active_downloads == Some(0)

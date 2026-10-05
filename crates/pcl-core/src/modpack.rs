@@ -22,15 +22,21 @@ use zip::ZipArchive;
 const MAX_INDEX: u64 = 8 * 1024 * 1024;
 const MAX_FILE: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_TOTAL: u64 = 20 * 1024 * 1024 * 1024;
+#[path = "pack_formats.rs"]
+mod formats;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModpackInfo {
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub name: String,
     pub version_id: String,
     pub summary: Option<String>,
     pub minecraft: String,
     pub dependencies: BTreeMap<String, String>,
-    /// Download entries compatible with a client, including optional entries.
+    /// Planned client files (downloads and embedded overrides), including optional downloads.
     pub files: usize,
     pub optional_files: usize,
 }
@@ -55,6 +61,8 @@ struct PackFile {
     downloads: Vec<String>,
     file_size: u64,
     env: Option<Environment>,
+    #[serde(skip)]
+    curseforge: Option<crate::resources::VersionFile>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -73,13 +81,18 @@ impl PackFile {
 
 #[derive(Clone)]
 enum Payload {
-    Download(PackFile),
-    Override { index: usize, size: u64 },
+    Download(Box<PackFile>),
+    Override {
+        index: usize,
+        size: u64,
+        executable: bool,
+    },
 }
 
 struct Prepared {
     info: ModpackInfo,
     files: BTreeMap<String, (PathBuf, Payload)>,
+    curseforge: Vec<formats::CurseForgeFile>,
 }
 
 fn cancelled(cancel: &AtomicBool) -> Result<()> {
@@ -147,21 +160,8 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
     if archive.len() > 50_000 {
         bail!("整合包 ZIP 条目过多");
     }
-    let index_text = {
-        let mut entry = archive
-            .by_name("modrinth.index.json")
-            .context("缺少 modrinth.index.json")?;
-        if entry.size() > MAX_INDEX {
-            bail!("整合包索引超过 8 MiB");
-        }
-        let mut bytes = Vec::new();
-        entry.by_ref().take(MAX_INDEX + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_INDEX {
-            bail!("整合包索引超过 8 MiB");
-        }
-        String::from_utf8(bytes).context("整合包索引必须是 UTF-8")?
-    };
-    let index: Index = serde_json::from_str(&index_text).context("整合包索引格式无效")?;
+    let manifest = formats::read(archive)?;
+    let index: Index = serde_json::from_value(manifest.index).context("整合包索引格式无效")?;
     if index.format_version != 1 || index.game != "minecraft" {
         bail!("仅支持 formatVersion=1 的 Minecraft mrpack");
     }
@@ -181,7 +181,6 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
     }
     let mut files = BTreeMap::new();
     let mut seen = HashSet::new();
-    let mut compatible = 0;
     let mut optional = 0;
     for file in &index.files {
         let relative = safe_relative(&file.path)?;
@@ -205,7 +204,6 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
         if file.client_side() == "unsupported" {
             continue;
         }
-        compatible += 1;
         if file.client_side() == "optional" {
             optional += 1;
             if !include_optional {
@@ -218,7 +216,7 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
         for url in &file.downloads {
             validate_download_url(url)?;
         }
-        files.insert(key, (relative, Payload::Download(file.clone())));
+        files.insert(key, (relative, Payload::Download(Box::new(file.clone()))));
     }
     let mut layers: [Vec<(String, PathBuf, Payload)>; 2] = [vec![], vec![]];
     let mut layer_seen = [HashSet::new(), HashSet::new()];
@@ -232,17 +230,21 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
         if !matches!(kind, 0 | 0o100000 | 0o040000) {
             bail!("整合包不允许符号链接或特殊文件");
         }
-        if name == "modrinth.index.json" {
+        if name == manifest.index_path {
             index_count += 1;
         }
         if entry.is_dir() {
             continue;
         }
-        let (layer, relative) = if let Some(relative) = name.strip_prefix("overrides/") {
-            (0, relative)
-        } else if let Some(relative) = name.strip_prefix("client-overrides/") {
-            (1, relative)
-        } else {
+        let Some((layer, relative)) =
+            manifest
+                .override_prefixes
+                .iter()
+                .enumerate()
+                .find_map(|(layer, prefix)| {
+                    name.strip_prefix(prefix).map(|relative| (layer, relative))
+                })
+        else {
             continue;
         };
         let path = safe_relative(relative)?;
@@ -259,11 +261,12 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
             Payload::Override {
                 index: position,
                 size: entry.size(),
+                executable: entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0),
             },
         ));
     }
     if index_count != 1 {
-        bail!("整合包必须恰好包含一个 modrinth.index.json");
+        bail!("整合包必须恰好包含一个所选格式清单");
     }
     // Overrides replace only files in our private staging plan. Existing user files
     // are checked separately and are never replaced, including an identical file.
@@ -296,23 +299,231 @@ fn prepare(archive: &mut ZipArchive<File>, include_optional: bool) -> Result<Pre
             ancestor = path.parent();
         }
     }
+    let mut warnings = manifest.warnings;
+    if files.values().any(|(path, _)| {
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .ends_with("/bin/java")
+            || path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with("/bin/java.exe")
+    }) {
+        warnings.push("整合包包含 Java 程序文件；只会复制，不执行，也不会更改当前 Java 选择。导入后请在版本设置中手动选择。".into());
+    }
     Ok(Prepared {
         info: ModpackInfo {
+            format: manifest.format.into(),
+            warnings,
             name: index.name,
             version_id: index.version_id,
             summary: index.summary,
             minecraft,
             dependencies: index.dependencies,
-            files: compatible,
-            optional_files: optional,
+            files: files.len()
+                + if include_optional { 0 } else { optional }
+                + manifest.curseforge.len(),
+            optional_files: optional + manifest.curseforge.iter().filter(|f| !f.required).count(),
         },
         files,
+        curseforge: manifest.curseforge,
     })
 }
 
 pub fn inspect_mrpack(pack: &Path) -> Result<ModpackInfo> {
-    let mut archive = ZipArchive::new(File::open(pack)?).context("文件不是有效的 mrpack ZIP")?;
-    Ok(prepare(&mut archive, true)?.info)
+    let (mut archive, bundled, _temporary) = open_pack(pack, &AtomicBool::new(false))?;
+    let mut info = prepare(&mut archive, true)?.info;
+    if bundled {
+        info.warnings
+            .push("已读取外层 ZIP 中的整合包；附带启动器程序不会提取或执行。".into());
+    }
+    Ok(info)
+}
+
+type OpenPack = (ZipArchive<File>, bool, Option<tempfile::NamedTempFile>);
+fn resolve_curseforge(
+    prepared: &mut Prepared,
+    include_optional: bool,
+    cancel: &AtomicBool,
+    mut lookup: impl FnMut(
+        u64,
+        u64,
+        &AtomicBool,
+    ) -> Result<(
+        crate::resources::ResourceKind,
+        crate::resources::ModrinthVersion,
+    )>,
+) -> Result<()> {
+    use crate::resources::ResourceKind;
+    let mut names = HashSet::new();
+    for reference in &prepared.curseforge {
+        cancelled(cancel)?;
+        if !reference.required && !include_optional {
+            continue;
+        }
+        let (kind, version) =
+            lookup(reference.project, reference.file, cancel).with_context(|| {
+                format!(
+                    "无法解析 CurseForge 项目 {} 文件 {}",
+                    reference.project, reference.file
+                )
+            })?;
+        anyhow::ensure!(
+            version.id == format!("cf:{}:{}", reference.project, reference.file)
+                && version.project_id == format!("cf:{}", reference.project),
+            "CurseForge 返回其他项目或版本"
+        );
+        let folder = match kind {
+            ResourceKind::Mod => "mods",
+            ResourceKind::ResourcePack => "resourcepacks",
+            ResourceKind::Shader => "shaderpacks",
+            _ => bail!("CurseForge 包中的文件不是 Mod、资源包或光影；不能自动选择存档或安装嵌套包"),
+        };
+        anyhow::ensure!(version.files.len() == 1, "CurseForge 文件响应不是唯一文件");
+        let file = version.files[0].clone();
+        validate_id(&file.filename)?;
+        anyhow::ensure!(
+            valid_hash(file.hashes.get("sha1"), 40) && file.size <= MAX_FILE,
+            "CurseForge 文件缺少有效 SHA1 或超过大小限制"
+        );
+        anyhow::ensure!(
+            crate::curseforge::trusted_file(&Url::parse(&file.url)?),
+            "CurseForge 响应不含可信官方 CDN 地址"
+        );
+        let extension = Path::new(&file.filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        anyhow::ensure!(
+            if kind == ResourceKind::Mod {
+                matches!(extension.as_str(), "jar" | "zip")
+            } else {
+                extension == "zip"
+            },
+            "CurseForge 返回不支持的资源文件类型"
+        );
+        let path = format!("{folder}/{}", file.filename);
+        let key = path.to_lowercase();
+        anyhow::ensure!(
+            names.insert(key.clone()),
+            "CurseForge 多个项目返回同名文件：{path}"
+        );
+        if matches!(
+            prepared.files.get(&key),
+            Some((_, Payload::Override { .. }))
+        ) {
+            continue;
+        }
+        anyhow::ensure!(
+            !prepared.files.contains_key(&key),
+            "CurseForge 文件与其他下载条目冲突"
+        );
+        let download = PackFile {
+            path: path.clone(),
+            hashes: file.hashes.clone(),
+            downloads: vec![file.url.clone()],
+            file_size: file.size,
+            env: None,
+            curseforge: Some(file),
+        };
+        prepared.files.insert(
+            key,
+            (safe_relative(&path)?, Payload::Download(Box::new(download))),
+        );
+    }
+    let mut size = 0u64;
+    for (relative, payload) in prepared.files.values() {
+        size = size
+            .checked_add(match payload {
+                Payload::Download(file) => file.file_size,
+                Payload::Override { size, .. } => *size,
+            })
+            .context("整合包大小溢出")?;
+        anyhow::ensure!(size <= MAX_TOTAL, "整合包总文件大小超过 20 GiB");
+        let mut ancestor = relative.parent();
+        while let Some(path) = ancestor {
+            anyhow::ensure!(
+                !prepared
+                    .files
+                    .contains_key(&path.to_string_lossy().replace('\\', "/").to_lowercase()),
+                "整合包文件与目录路径冲突"
+            );
+            ancestor = path.parent();
+        }
+    }
+    Ok(())
+}
+fn open_pack(pack: &Path, cancel: &AtomicBool) -> Result<OpenPack> {
+    cancelled(cancel)?;
+    let mut archive = ZipArchive::new(File::open(pack)?).context("文件不是有效的整合包 ZIP")?;
+    let has_manifest = archive.file_names().any(|name| {
+        name.split('/').count() <= 2
+            && matches!(
+                name.rsplit('/').next(),
+                Some(
+                    "modrinth.index.json"
+                        | "mmc-pack.json"
+                        | "modpack.json"
+                        | "mcbbs.packmeta"
+                        | "manifest.json"
+                )
+            )
+    });
+    if has_manifest {
+        return Ok((archive, false, None));
+    }
+    let mut nested = None;
+    if archive.len() > 50_000 {
+        bail!("外层整合包 ZIP 条目过多");
+    }
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        safe_relative(entry.name().trim_end_matches('/'))?;
+        if !matches!(
+            entry.unix_mode().unwrap_or(0) & 0o170000,
+            0 | 0o100000 | 0o040000
+        ) {
+            bail!("外层整合包含链接或特殊文件");
+        }
+        if !entry.is_dir()
+            && entry.name().split('/').count() == 1
+            && entry.name().ends_with(".mrpack")
+        {
+            if nested.replace(i).is_some() {
+                bail!("外层 ZIP 包含多个 mrpack，请单独选择");
+            }
+            if entry.size() > MAX_TOTAL {
+                bail!("内层整合包超过大小限制");
+            }
+        }
+    }
+    let Some(index) = nested else {
+        return Ok((archive, false, None));
+    };
+    let mut temporary = tempfile::NamedTempFile::new()?;
+    let mut entry = archive.by_index(index)?;
+    let expected = entry.size();
+    let mut total = 0u64;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        cancelled(cancel)?;
+        let n = entry.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > expected || total > MAX_TOTAL {
+            bail!("内层整合包大小超限");
+        }
+        temporary.write_all(&buffer[..n])?;
+    }
+    if total != expected {
+        bail!("内层整合包不完整");
+    }
+    temporary.flush()?;
+    let inner = ZipArchive::new(temporary.reopen()?).context("内层 mrpack ZIP 无效")?;
+    Ok((inner, true, Some(temporary)))
 }
 
 fn checked_target(root: &Path, relative: &Path) -> Result<PathBuf> {
@@ -352,6 +563,7 @@ fn stream_verified(
         if total > file.file_size || total > MAX_FILE {
             bail!("整合包下载文件大于声明大小");
         }
+        crate::network::throttle(count, cancel)?;
         sha1.update(&buffer[..count]);
         sha512.update(&buffer[..count]);
         output.write_all(&buffer[..count])?;
@@ -361,7 +573,9 @@ fn stream_verified(
         bail!("整合包下载文件大小不匹配");
     }
     if format!("{:x}", sha1.finalize()) != file.hashes["sha1"].to_ascii_lowercase()
-        || format!("{:x}", sha512.finalize()) != file.hashes["sha512"].to_ascii_lowercase()
+        || file.hashes.get("sha512").is_some_and(|expected| {
+            format!("{:x}", sha512.finalize()) != expected.to_ascii_lowercase()
+        })
     {
         bail!("整合包下载文件 SHA1/SHA512 校验失败");
     }
@@ -370,6 +584,16 @@ fn stream_verified(
 }
 
 fn download(client: &Client, file: &PackFile, target: &Path, cancel: &AtomicBool) -> Result<()> {
+    if let Some(source) = &file.curseforge {
+        let response = crate::curseforge::download_file(source, cancel)?;
+        if response
+            .content_length()
+            .is_some_and(|size| size != file.file_size)
+        {
+            bail!("CurseForge 文件响应大小与清单不符");
+        }
+        return stream_verified(response, target, file, cancel);
+    }
     let mut last_error = None;
     for value in &file.downloads {
         cancelled(cancel)?;
@@ -449,8 +673,14 @@ fn import_with(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
         Err(error) => return Err(error.into()),
     }
-    let mut archive = ZipArchive::new(File::open(pack)?).context("文件不是有效的 mrpack ZIP")?;
-    let prepared = prepare(&mut archive, include_optional)?;
+    let (mut archive, _bundled, _temporary) = open_pack(pack, cancel)?;
+    let mut prepared = prepare(&mut archive, include_optional)?;
+    resolve_curseforge(
+        &mut prepared,
+        include_optional,
+        cancel,
+        crate::curseforge::get_file_with_kind,
+    )?;
     for (relative, _) in prepared.files.values() {
         let target = checked_target(instance_dir, relative)?;
         if fs::symlink_metadata(target).is_ok() {
@@ -480,7 +710,11 @@ fn import_with(
         }
         match payload {
             Payload::Download(file) => fetch(file, &destination, cancel)?,
-            Payload::Override { index, size } => {
+            Payload::Override {
+                index,
+                size,
+                executable,
+            } => {
                 let mut entry = archive.by_index(*index)?;
                 let mut output = File::create(&destination)?;
                 let mut copied = 0u64;
@@ -501,6 +735,17 @@ fn import_with(
                     bail!("整合包覆盖文件不完整");
                 }
                 output.sync_all()?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    output.set_permissions(fs::Permissions::from_mode(if *executable {
+                        0o755
+                    } else {
+                        0o644
+                    }))?;
+                }
+                #[cfg(not(unix))]
+                let _ = executable;
             }
         }
     }
@@ -855,5 +1100,95 @@ mod tests {
         .unwrap_err();
         assert!(!format!("{error:#}").contains("SECRET_TOKEN"));
         assert!(!format!("{error:#}").contains("https://"));
+    }
+    #[test]
+    fn curseforge_manifest_resolves_exact_ids_optional_and_real_sha1_without_synthetic_sha512() {
+        use crate::resources::{ModrinthVersion, ResourceKind, VersionFile};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("cf.zip");
+        let mut zip = ZipWriter::new(File::create(&source).unwrap());
+        zip.start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"fixture","version":"1","minecraft":{"version":"1.21.1","modLoaders":[{"id":"forge-52.0.16","primary":true}]},"files":[{"projectID":1,"fileID":2,"required":true},{"projectID":3,"fileID":4,"required":false}],"overrides":"overrides"}"#).unwrap();
+        zip.finish().unwrap();
+        let info = inspect_mrpack(&source).unwrap();
+        assert_eq!(info.format, "CurseForge");
+        assert_eq!(info.dependencies["forge"], "52.0.16");
+        assert_eq!(info.files, 2);
+        assert_eq!(info.optional_files, 1);
+        let bytes = b"verified fixture";
+        let hash = format!("{:x}", Sha1::digest(bytes));
+        let version = ModrinthVersion {
+            id: "cf:1:2".into(),
+            project_id: "cf:1".into(),
+            name: "fixture".into(),
+            version_number: "1".into(),
+            version_type: "release".into(),
+            date_published: String::new(),
+            game_versions: vec!["1.21.1".into()],
+            loaders: vec!["forge".into()],
+            files: vec![VersionFile {
+                filename: "file.jar".into(),
+                hashes: BTreeMap::from([("sha1".into(), hash)]),
+                url: "https://edge.forgecdn.net/files/1/2/file.jar".into(),
+                primary: true,
+                size: bytes.len() as u64,
+                file_type: None,
+            }],
+            dependencies: Vec::new(),
+            environment: None,
+        };
+        let prepare_again = || {
+            prepare(
+                &mut ZipArchive::new(File::open(&source).unwrap()).unwrap(),
+                false,
+            )
+            .unwrap()
+        };
+        let mut prepared = prepare_again();
+        resolve_curseforge(&mut prepared, false, &AtomicBool::new(false), |p, f, _| {
+            assert_eq!((p, f), (1, 2));
+            Ok((ResourceKind::Mod, version.clone()))
+        })
+        .unwrap();
+        let (_, Payload::Download(file)) = &prepared.files["mods/file.jar"] else {
+            panic!()
+        };
+        assert!(!file.hashes.contains_key("sha512"));
+        assert!(file.curseforge.is_some());
+        let output = temp.path().join("file.jar");
+        stream_verified(&bytes[..], &output, file, &AtomicBool::new(false)).unwrap();
+        assert!(stream_verified(
+            &b"corrupt fixture!"[..],
+            &temp.path().join("bad.jar"),
+            file,
+            &AtomicBool::new(false)
+        )
+        .is_err());
+        for failure in 0..3 {
+            let mut bad = version.clone();
+            match failure {
+                0 => bad.id = "cf:9:9".into(),
+                1 => {
+                    bad.files[0].hashes.clear();
+                }
+                _ => bad.files[0].filename = "../escape.jar".into(),
+            }
+            assert!(resolve_curseforge(
+                &mut prepare_again(),
+                false,
+                &AtomicBool::new(false),
+                |_, _, _| Ok((ResourceKind::Mod, bad.clone()))
+            )
+            .is_err());
+        }
+        assert!(resolve_curseforge(
+            &mut prepare_again(),
+            false,
+            &AtomicBool::new(true),
+            |_, _, _| panic!("cancel must precede provider lookup")
+        )
+        .unwrap_err()
+        .is::<crate::model::OperationCancelled>());
     }
 }

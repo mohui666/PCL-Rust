@@ -503,7 +503,7 @@ impl Launcher {
                         && info.as_ref().is_some_and(|info| info.repair),
                     false,
                 )
-                .on_hover_text("校验并补全 Mojang 原版文件。自定义继承版本和加载器的补全尚未迁移。")
+                .on_hover_text("按现有继承配置补全支持库、资源和原生库；保留版本配置。已记录的 Forge / NeoForge 生成物会用匹配安装器在临时目录重建，校验一致后恢复；缺少收据或校验值时会明确报告。")
                 .clicked();
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(140.0, 35.0), egui::Sense::hover());
@@ -757,6 +757,7 @@ impl Launcher {
                     .any(|id| id.to_lowercase().contains(&filter))
         };
         let mut choose_files = false;
+        let mut check_updates = false;
         page_frame().inner_margin(15).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
@@ -765,6 +766,7 @@ impl Launcher {
                     self.open_instance_subfolder(id, "mods");
                 }
                 choose_files = button(ui, "从文件安装", 110.0, mutable, false).clicked();
+                check_updates = button(ui, "检查更新", 110.0, mutable, false).clicked();
                 if button(ui, "下载新 Mod", 110.0, mutable, false).clicked() {
                     self.page = Page::Download;
                     self.version_tools = false;
@@ -798,6 +800,9 @@ impl Launcher {
             });
         });
         ui.add_space(15.0);
+        if check_updates {
+            self.open_mod_updates(id, instance);
+        }
         if choose_files {
             if let Some(paths) = rfd::FileDialog::new()
                 .add_filter("Minecraft Mod", &["jar"])
@@ -1172,7 +1177,9 @@ fn infer_version_presentation(root: &Path, version: &InstalledVersion) -> Versio
                     group,
                     icon,
                     description: format!("{kind} {base}, {label} {loader}"),
-                    repair: false,
+                    repair: resolved
+                        .as_ref()
+                        .is_some_and(|value| value.pointer("/downloads/client/url").is_some()),
                     favorite: false,
                     hidden: false,
                     modable: Some(true),
@@ -1191,10 +1198,9 @@ fn infer_version_presentation(root: &Path, version: &InstalledVersion) -> Versio
         },
         icon: "block-grass",
         description: format!("{kind} {base}"),
-        repair: resolved.as_ref().is_some_and(|value| {
-            value["_pcl_jar_id"].as_str() == Some(version.id.as_str())
-                && value.pointer("/downloads/client/url").is_some()
-        }),
+        repair: resolved
+            .as_ref()
+            .is_some_and(|value| value.pointer("/downloads/client/url").is_some()),
     }
 }
 

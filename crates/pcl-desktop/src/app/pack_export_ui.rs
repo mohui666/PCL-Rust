@@ -3,7 +3,7 @@ use super::{version_ui::page_frame, Event, Launcher};
 use crate::theme;
 use crate::ui_style;
 use eframe::egui::{self, Color32, Rect, Vec2};
-use pcl_core::pack_export::{self, ExportSelection, PackExportOptions, ResourceMode};
+use pcl_core::pack_export::{self, ExportSelection, PackExportOptions, PackFormat, ResourceMode};
 use std::{io::Write, path::PathBuf};
 
 pub(super) struct PackExportState {
@@ -13,6 +13,8 @@ pub(super) struct PackExportState {
     available: Option<ExportSelection>,
     error: Option<String>,
     base_description: String,
+    java_available: bool,
+    launcher_error: Option<String>,
 }
 impl Default for PackExportState {
     fn default() -> Self {
@@ -24,11 +26,14 @@ impl Default for PackExportState {
                 summary: String::new(),
                 selection: ExportSelection::default(),
                 resource_mode: ResourceMode::PreferHosted,
+                ..Default::default()
             },
             advanced: false,
             available: None,
             error: None,
             base_description: String::new(),
+            java_available: false,
+            launcher_error: None,
         }
     }
 }
@@ -41,6 +46,12 @@ impl Launcher {
         if self.pack_export.target.as_ref() != Some(&(root.clone(), id.clone())) {
             self.pack_export = PackExportState {
                 target: Some((root.clone(), id.clone())),
+                launcher_error: current_launcher()
+                    .and_then(|path| pack_export::validate_launcher_export(&path))
+                    .err()
+                    .map(|error| format!("{error:#}")),
+                java_available: pack_export::available_java_roots(&root, &id)
+                    .is_ok_and(|paths| !paths.is_empty()),
                 base_description: self
                     .versions
                     .iter()
@@ -300,10 +311,30 @@ impl Launcher {
                     if available.servers {
                         checkbox(ui, &mut selection.servers, "多人游戏服务器列表", "", false);
                     }
-                    for title in ["版本文件夹中的 Java", "PCL 启动器程序"] {
-                        ui.add_enabled_ui(false, |ui| {
-                            checkbox(ui, &mut false, title, "迁移中", false);
-                        });
+                    if state.java_available {
+                        checkbox(
+                            ui,
+                            &mut state.options.include_java,
+                            "版本文件夹中的 Java",
+                            "仅复制此版本的运行时；导入后手动选择 Java，不会执行随包程序",
+                            false,
+                        );
+                    }
+                    if let Some(error) = &state.launcher_error {
+                        ui.add_enabled_ui(false, |ui| {checkbox(ui, &mut false, "PCL-Rust 启动器程序", error, false);});
+                    } else {
+                    if checkbox(
+                        ui,
+                        &mut state.options.include_launcher,
+                        "PCL-Rust 启动器程序",
+                        "当前平台第三方 Rust 版；外层 ZIP 不包含账户/全局设置，公开再分发前请核对程序与字体许可",
+                        false,
+                    )
+                    .changed()
+                        && state.options.include_launcher
+                    {
+                        state.options.format = PackFormat::Mrpack;
+                    }
                     }
                 },
             );
@@ -318,6 +349,31 @@ impl Launcher {
                     bottom: 20,
                 },
                 |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("导出格式");
+                        ui.add_enabled_ui(!state.options.include_launcher, |ui| {
+                            ui_style::PclComboBox::from_id_salt("pack-export-format")
+                                .width(230.0)
+                                .selected_text(state.options.format.label())
+                                .show_ui(ui, |ui| {
+                                    for format in [
+                                        PackFormat::Mrpack,
+                                        PackFormat::MultiMc,
+                                        PackFormat::Hmcl,
+                                        PackFormat::Mcbbs,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut state.options.format,
+                                            format,
+                                            format.label(),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+                    if state.options.format != PackFormat::Mrpack {
+                        ui.label("此 ZIP 格式直接包含所选资源文件；HMCL 格式目前仅导出原版。");
+                    }
                     let mut embed = state.options.resource_mode == ResourceMode::EmbedAll;
                     if embed {
                         ui.add_space(2.0);
@@ -363,6 +419,8 @@ impl Launcher {
                             {
                                 match read_options(&path).and_then(|value| {
                                     validate_available_options(&value.selection, available)?;
+                                    anyhow::ensure!(!value.include_launcher || state.launcher_error.is_none(), "此本机应用不能附带导出，请关闭 include_launcher");
+                                    anyhow::ensure!(!value.include_java || state.java_available, "当前版本没有可导出的版本目录 Java，请关闭配置中的 include_java");
                                     Ok(value)
                                 }) {
                                     Ok(value) => {
@@ -467,7 +525,14 @@ impl Launcher {
         };
         let Some(path) = rfd::FileDialog::new()
             .set_title("导出整合包")
-            .add_filter("Modrinth 整合包", &["mrpack"])
+            .add_filter(
+                "整合包",
+                &[if options.include_launcher {
+                    "zip"
+                } else {
+                    options.format.extension()
+                }],
+            )
             .set_file_name(suggested_pack_filename(&options))
             .save_file()
         else {
@@ -480,12 +545,14 @@ impl Launcher {
         };
         self.pack_export.error = None;
         let root = self.settings.game_root.clone();
+        let launcher = current_launcher().ok();
         std::thread::spawn(move || {
-            let event = pack_export_event(pack_export::export_pack(
+            let event = pack_export_event(pack_export::export_pack_with_launcher(
                 &root,
                 &id,
                 &path,
                 &options,
+                launcher.as_deref(),
                 &cancel,
                 |progress| {
                     let _ = tx.send(Event::Progress(progress));
@@ -511,6 +578,15 @@ pub(super) fn pack_export_event(result: anyhow::Result<pack_export::PackExportRe
     }
 }
 
+fn current_launcher() -> anyhow::Result<PathBuf> {
+    let executable = std::env::current_exe()?;
+    Ok(executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .unwrap_or(&executable)
+        .to_owned())
+}
+
 fn suggested_pack_filename(options: &PackExportOptions) -> String {
     let portable = |value: &str| {
         value
@@ -525,9 +601,14 @@ fn suggested_pack_filename(options: &PackExportOptions) -> String {
             .collect::<String>()
     };
     format!(
-        "{}-{}.mrpack",
+        "{}-{}.{}",
         portable(&options.name),
-        portable(&options.version)
+        portable(&options.version),
+        if options.include_launcher {
+            "zip"
+        } else {
+            options.format.extension()
+        }
     )
 }
 

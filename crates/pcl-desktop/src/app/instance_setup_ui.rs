@@ -181,8 +181,7 @@ impl Launcher {
                 });
                 ui.add_space(9.0);
                 row(ui, "游戏窗口标题", |ui| {
-                    ui.add_enabled_ui(false, |ui| text_edit(ui, &mut String::new(), "跟随全局设置"))
-                        .response.on_hover_text("游戏窗口标题修改仍在迁移中。");
+                    text_edit(ui, &mut state.value.game_window_title, "跟随全局设置").on_hover_text(super::setup_launch_ui::WINDOW_HELP);
                 });
                 ui.add_space(9.0);
                 row(ui, "自定义信息", |ui| {
@@ -291,6 +290,12 @@ impl Launcher {
                     let enabled = !state.value.memory_auto && state.value.memory_mb.is_some();
                     if memory_slider(ui, &mut value, maximum, enabled).changed() { state.value.memory_mb = Some(slider_memory(value)); }
                 });
+                ui.add_space(9.0);
+                row(ui,"启动器内存回收",|ui| {
+                    let options=[(None,"跟随全局设置"),(Some(true),"启动前回收启动器自身内存"),(Some(false),"关闭")];
+                    let label=options.iter().find(|(v,_)|*v==state.value.memory_optimize).unwrap().1;
+                    ui_style::PclComboBox::from_id_salt("instance-memory-reclaim").width(ui.available_width()).selected_text(label).show_ui(ui,|ui|{for (value,label) in options {ui.selectable_value(&mut state.value.memory_optimize,value,label);}}).response.on_hover_text(super::setup_launch_ui::MEMORY_HELP);
+                });
                 ui.add_space(11.0);
                 let allocated = if state.value.memory_auto || (state.value.memory_mb.is_none() && self.settings.memory_auto) { state.automatic_mb } else { Some(state.value.memory_mb.unwrap_or(self.settings.memory_mb)) };
                 if let (Some(memory), Some(allocated)) = (state.memory, allocated) { memory_bar(ui, memory, allocated); }
@@ -328,6 +333,9 @@ impl Launcher {
                         ui.add_space(5.0);
                         row(ui, "", |ui| { ui.checkbox(&mut state.value.pre_launch_wait, "等待命令执行完成后再继续启动"); });
                     }
+                    ui.add_space(9.0);
+                    ui.checkbox(&mut state.value.disable_java_wrapper,"禁用 Java Launch Wrapper").on_hover_text(super::setup_launch_ui::JLW_HELP);
+                    ui.checkbox(&mut state.value.disable_lwjgl_unsafe_agent,"禁用 LWJGL Unsafe Agent").on_hover_text(super::setup_launch_ui::LUA_HELP);
                     ui.add_space(9.0);
                     row(ui, "垃圾回收器", |ui| {
                         let choices = [

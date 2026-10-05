@@ -11,6 +11,8 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+reqwest.workspace = true
+roxmltree = "0.20.0"
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland", "accesskit"] }
 rfd = "0.15.4"
 webbrowser = "1.2"
@@ -25,4 +27,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSString", "NSURL", "NSData"] }
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "AVAudioPlayer"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSView", "NSWindow", "NSResponder", "objc2-core-foundation"] }

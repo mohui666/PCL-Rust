@@ -8,6 +8,8 @@ impl Launcher {
     pub(super) fn settings_page(&mut self, ui: &mut egui::Ui) {
         if self.settings_tab == 1 {
             self.appearance_page(ui);
+        } else if self.settings_tab == 2 {
+            self.system_settings_page(ui);
         } else {
             self.launch_settings_page(ui);
         }
@@ -16,7 +18,8 @@ impl Launcher {
         let task_visible =
             !self.task_view && self.task.as_ref().is_some_and(|task| !task.is_finished());
         let game_visible = self.game_pid.is_some();
-        if !task_visible && !game_visible {
+        let music = self.appearance.music_info();
+        if !task_visible && !game_visible && music.is_none() {
             return;
         }
         // FormMain.PanExtra: right/bottom margin 15; MyExtraButton is a
@@ -32,6 +35,38 @@ impl Launcher {
                     if extra_button(ui, &self.assets, "tasks", "任务管理", 1.1, progress).clicked()
                     {
                         self.task_view = true;
+                    }
+                }
+                if let Some((title, playing, progress)) = &music {
+                    let label = format!(
+                        "背景音乐：{title}\n左键{}，右键下一首",
+                        if *playing { "暂停" } else { "播放" }
+                    );
+                    let response = extra_button(
+                        ui,
+                        &self.assets,
+                        "music",
+                        &label,
+                        1.0,
+                        Some(f64::from(*progress)),
+                    );
+                    super::appearance_ui::AppearanceState::paint_music_icon(
+                        ui,
+                        egui::Rect::from_center_size(
+                            response.rect.center(),
+                            Vec2::splat(if *playing { 16.0 } else { 12.8 }),
+                        ),
+                        *playing,
+                    );
+                    let result = if response.clicked() {
+                        self.appearance.toggle_music()
+                    } else if response.secondary_clicked() {
+                        self.appearance.next_music(&self.settings)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(error) = result {
+                        self.error = Some(format!("背景音乐操作失败：{error:#}"));
                     }
                 }
                 if game_visible
@@ -304,7 +339,7 @@ impl Launcher {
                     if self.microsoft {
                         self.account_sidebar(ui, rect, login_center);
                     } else {
-                        self.assets.head(ui, head_rect);
+                        self.offline_head(ui, head_rect);
                         let r = egui::Rect::from_min_size(
                             egui::pos2(rect.left() + 20.0, login_center + 23.0),
                             Vec2::new(260.0, 28.0),
@@ -396,7 +431,7 @@ impl Launcher {
             Page::Settings => &[
                 ("启动", "launch", 0, true),
                 ("个性化", "appearance", 1, true),
-                ("其他", "more", 2, false),
+                ("其他", "more", 2, true),
             ],
             Page::More => &[("帮助", "help", 0, true), ("关于与鸣谢", "about", 1, true)],
         };

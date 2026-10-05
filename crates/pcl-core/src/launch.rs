@@ -26,9 +26,22 @@ pub struct PreLaunchCommand {
     pub wait: bool,
 }
 
+#[derive(Clone, Default)]
+pub struct GameWindowOptions {
+    pub title: String,
+    pub maximize: bool,
+}
+
 pub struct LaunchBehavior {
     pub visibility: crate::config::LauncherVisibility,
     pub priority: crate::config::ProcessPriority,
+    pub window: GameWindowOptions,
+    pub memory_optimize: bool,
+    pub auto_chinese: bool,
+    pub language_code: String,
+    pub high_performance_gpu: bool,
+    pub offline_skin: Option<crate::offline_skin::SkinUpdate>,
+    pub warnings: Vec<String>,
     pub commands: Vec<PreLaunchCommand>,
     pub command_cwd: PathBuf,
     /// User path values are environment data, never injected as shell syntax.
@@ -274,6 +287,14 @@ pub fn build_plan_with_settings_and_viewport(
     // Selection already resolved the instance's Java mode. Do not replace the
     // inspected executable if the saved path changed while selection was running.
     instance.java_path = None;
+    if instance.game_window_title.is_empty() {
+        instance
+            .game_window_title
+            .clone_from(&settings.game_window_title);
+    }
+    instance.memory_optimize = Some(instance.memory_optimize.unwrap_or(settings.memory_optimize));
+    instance.disable_java_wrapper |= settings.disable_java_wrapper;
+    instance.disable_lwjgl_unsafe_agent |= settings.disable_lwjgl_unsafe_agent;
     let mut options = options.clone();
     options.memory_mb = settings.memory_mb;
     options.width = 854;
@@ -321,7 +342,7 @@ pub fn build_plan_with_settings_and_viewport(
             instance.window_mode = Some(crate::config::WindowMode::Custom);
         }
         crate::config::WindowMode::Maximized => {
-            bail!("游戏窗口最大化尚未支持，请选择默认、全屏、跟随窗口或自定义尺寸")
+            instance.window_mode = Some(crate::config::WindowMode::Maximized);
         }
     }
     let gc = instance.gc_mode.unwrap_or(settings.gc_mode);
@@ -334,6 +355,8 @@ pub fn build_plan_with_settings_and_viewport(
     )?;
     plan.behavior.visibility = settings.launcher_visibility;
     plan.behavior.priority = settings.process_priority;
+    plan.behavior.high_performance_gpu = settings.prefer_high_performance_gpu;
+    plan.behavior.auto_chinese = settings.system.auto_chinese;
     if !settings.pre_launch_command.trim().is_empty() {
         plan.behavior.commands.insert(
             0,
@@ -362,9 +385,10 @@ fn build_plan_with_instance(
                 instance.fullscreen = false
             }
             crate::config::WindowMode::Fullscreen => instance.fullscreen = true,
-            crate::config::WindowMode::LauncherSize | crate::config::WindowMode::Maximized => {
-                bail!("此版本的游戏窗口模式尚未支持")
+            crate::config::WindowMode::LauncherSize => {
+                bail!("跟随窗口尺寸需要当前启动器窗口");
             }
+            crate::config::WindowMode::Maximized => {}
         }
     }
     if crate::java_selection::effective_mode(instance.java_mode, instance.java_path.as_deref())
@@ -643,6 +667,31 @@ fn build_plan_with_instance(
         // This is one JVM argument, kept outside the general/game placeholder scope.
         args.push(logging);
     }
+    let patch_libraries = version["libraries"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v["name"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let warnings = crate::launch_patches::apply(
+        &root,
+        &mut args,
+        &patch_libraries,
+        gc.map(|(_, major)| major).unwrap_or_else(|| {
+            version
+                .pointer("/javaVersion/majorVersion")
+                .and_then(Value::as_u64)
+                .unwrap_or(8) as u32
+        }),
+        platform,
+        crate::launch_patches::PatchOptions {
+            disable_java_wrapper: instance.disable_java_wrapper,
+            disable_lwjgl_unsafe_agent: instance.disable_lwjgl_unsafe_agent,
+        },
+    )?;
     args.push(main_class.to_owned());
     args.extend(game.into_iter().map(replace).collect::<Result<Vec<_>>>()?);
     if session.user_type == "demo" && !args.iter().any(|arg| arg == "--demo") {
@@ -693,6 +742,14 @@ fn build_plan_with_instance(
         ),
         ("{pcl_version}".into(), env!("CARGO_PKG_VERSION").into()),
     ];
+    let mut window_title = instance.game_window_title.clone();
+    for (key, value) in &variables {
+        window_title = window_title.replace(key, value);
+    }
+    let window = GameWindowOptions {
+        title: window_title,
+        maximize: instance.window_mode == Some(crate::config::WindowMode::Maximized),
+    };
     let commands = if instance.pre_launch_command.trim().is_empty() {
         Vec::new()
     } else {
@@ -710,6 +767,24 @@ fn build_plan_with_instance(
         behavior: LaunchBehavior {
             visibility: crate::config::LauncherVisibility::Keep,
             priority: crate::config::ProcessPriority::Normal,
+            window,
+            memory_optimize: instance.memory_optimize.unwrap_or(false),
+            auto_chinese: false,
+            language_code: if version["_pcl_jar_id"]
+                .as_str()
+                .unwrap_or(&options.version_id)
+                .strip_prefix("1.")
+                .and_then(|v| v.split('.').next())
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|v| v < 11)
+            {
+                "zh_CN".into()
+            } else {
+                "zh_cn".into()
+            },
+            high_performance_gpu: false,
+            offline_skin: None,
+            warnings,
             commands,
             command_cwd: root,
             variables,
@@ -1021,7 +1096,13 @@ mod tests {
             &crate::config::InstanceSettings::default(),
         )
         .unwrap();
-        assert!(build_plan_with_settings(&options, &session, &platform, &global, 21).is_err());
+        assert!(
+            build_plan_with_settings(&options, &session, &platform, &global, 21)
+                .unwrap()
+                .behavior
+                .window
+                .maximize
+        );
         global.window_mode = crate::config::WindowMode::Fullscreen;
         assert!(
             build_plan_with_settings(&options, &session, &platform, &global, 21)
@@ -1394,8 +1475,27 @@ mod tests {
             .iter()
             .position(|argument| argument == "-cp")
             .unwrap();
-        assert!(plan.args[position + 1].contains(';'));
-        assert!(plan.args[position + 1].ends_with("versions/test/test.jar"));
+        // The target OS chooses the classpath delimiter; each path keeps the
+        // host's native separators (including Windows canonical path prefixes).
+        let entries = plan.args[position + 1]
+            .split(';')
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [
+                options
+                    .root
+                    .join("libraries/example/lib/1/lib-1.jar")
+                    .canonicalize()
+                    .unwrap(),
+                options
+                    .root
+                    .join("versions/test/test.jar")
+                    .canonicalize()
+                    .unwrap(),
+            ]
+        );
         assert!(!plan.args.contains(&"-XstartOnFirstThread".into()));
     }
     #[test]
@@ -1439,6 +1539,34 @@ mod tests {
             options.root.canonicalize().unwrap()
         );
         assert!(!plan.redacted_command().contains("printf"));
+    }
+
+    #[test]
+    fn native_launch_settings_are_effective_without_running_helpers_during_plan() {
+        let (_dir, options, session, platform) =
+            fixture(json!({"mainClass":"Main","minecraftArguments":""}));
+        let instance = crate::config::InstanceSettings {
+            game_window_title: "{user} · {date}".into(),
+            memory_optimize: Some(false),
+            window_mode: Some(crate::config::WindowMode::Maximized),
+            ..Default::default()
+        };
+        crate::config::save_instance_settings(&options.root, "test", &instance).unwrap();
+        let settings = crate::config::Settings {
+            memory_optimize: true,
+            game_window_title: "global".into(),
+            prefer_high_performance_gpu: true,
+            ..Default::default()
+        };
+        let plan = build_plan_with_settings(&options, &session, &platform, &settings, 21).unwrap();
+        assert!(plan.behavior.window.maximize);
+        assert!(!plan.behavior.memory_optimize);
+        assert!(plan.behavior.window.title.contains("{date}"));
+        assert!(!plan.behavior.window.title.contains("global"));
+        assert!(plan.behavior.high_performance_gpu);
+        assert!(plan.behavior.auto_chinese);
+        assert!(plan.behavior.offline_skin.is_none());
+        assert!(!plan.cwd.join("options.txt").exists());
     }
 
     #[test]
