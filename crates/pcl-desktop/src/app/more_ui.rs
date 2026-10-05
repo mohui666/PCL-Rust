@@ -309,7 +309,13 @@ impl MoreState {
             "Hao_Tian.jpg",
             "MCBBS.png",
             "PCL2.png"
-        ] {
+        ]
+        .into_iter()
+        .chain([(
+            "mohui666-avatar.jpg",
+            // GitHub avatar source: https://avatars.githubusercontent.com/u/68949739?v=4
+            include_bytes!("../../assets/mohui666-avatar.jpg").as_slice(),
+        )]) {
             if let Ok(image) = image::load_from_memory(bytes) {
                 let rgba = image.to_rgba8();
                 self.textures.insert(
@@ -642,7 +648,7 @@ impl Launcher {
                 credit_row(
                     ui,
                     textures,
-                    "",
+                    "mohui666-avatar.jpg",
                     "mohui666",
                     "Rust 跨平台版作者",
                     "",
@@ -1219,6 +1225,32 @@ mod tests {
             .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
         ctx.set_fonts(fonts);
         ctx
+    }
+    #[test]
+    fn personalization_author_avatar_loads_and_renders_in_existing_credit_row() {
+        let ctx = context();
+        let mut state = MoreState::default();
+        state.load_textures(&ctx);
+        let texture = &state.textures["mohui666-avatar.jpg"];
+        assert_eq!(texture.size(), [460, 460]);
+        let mut clicked = None;
+        let output = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                credit_row(
+                    ui,
+                    &state.textures,
+                    "mohui666-avatar.jpg",
+                    "mohui666",
+                    "Rust 跨平台版作者",
+                    "",
+                    None,
+                    &mut clicked,
+                );
+            });
+        });
+        let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+        assert!(primitives.iter().any(|primitive| matches!(&primitive.primitive, egui::epaint::Primitive::Mesh(mesh) if mesh.texture_id == texture.id())));
+        assert!(clicked.is_none());
     }
     #[test]
     fn local_event_help_needs_no_xaml_and_local_document_stays_confined() {

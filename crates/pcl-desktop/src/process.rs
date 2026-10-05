@@ -32,7 +32,36 @@ pub fn run_game_with_cancel(
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    run_game_inner(plan, token, tx, stop, cancel, None)
+}
+
+pub fn run_game_with_launch_progress(
+    plan: LaunchPlan,
+    token: String,
+    tx: Sender<Event>,
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    request: u64,
+) -> anyhow::Result<()> {
+    run_game_inner(plan, token, tx, stop, cancel, Some(request))
+}
+
+fn run_game_inner(
+    plan: LaunchPlan,
+    token: String,
+    tx: Sender<Event>,
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    request: Option<u64>,
+) -> anyhow::Result<()> {
+    use crate::app::launch_ui::{LaunchEvent, Stage};
+    let stage = |stage| {
+        if let Some(request) = request {
+            let _ = tx.send(Event::Launch(LaunchEvent::Stage { request, stage }));
+        }
+    };
     check_cancel(&cancel)?;
+    stage(Stage::PreRun);
     std::fs::create_dir_all(&plan.cwd)?;
     for warning in &plan.behavior.warnings {
         let _ = tx.send(Event::LaunchWarning(warning.clone()));
@@ -77,6 +106,7 @@ pub fn run_game_with_cancel(
             )));
         }
     }
+    stage(Stage::Commands);
     let mut preceding = run_pre_launch(&plan.behavior, &tx, &cancel)?;
     if cancel.load(Ordering::Relaxed) {
         stop_commands(&mut preceding, &tx);
@@ -108,6 +138,7 @@ pub fn run_game_with_cancel(
         None
     };
     let launch_started = std::time::SystemTime::now();
+    stage(Stage::Spawn);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -408,9 +439,10 @@ fn run_child_with_visibility(
                     // Keep monitoring a child that is still alive. Returning here
                     // would strand game_pid and prevent the user from trying again.
                     stop.store(false, Ordering::Relaxed);
-                    let _ = tx.send(Event::Error(format!(
-                        "关闭 Minecraft 失败：{error}。进程仍在运行，可以重试。"
-                    )));
+                    let _ = tx.send(Event::GameStopFailed {
+                        pid,
+                        message: format!("关闭 Minecraft 失败：{error}。进程仍在运行，可以重试。"),
+                    });
                 }
             }
         }
@@ -652,6 +684,93 @@ impl GameWindowControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_launch_stages_precede_the_real_child_and_ready_lifecycle() {
+        use crate::app::launch_ui::{LaunchEvent, Stage};
+        use pcl_core::{
+            config::Settings,
+            launch::{build_plan_with_settings, LaunchOptions},
+            model::Platform,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let version = root.path().join("versions/fixture");
+        std::fs::create_dir_all(&version).unwrap();
+        std::fs::write(
+            version.join("fixture.json"),
+            r#"{"mainClass":"Fixture","minecraftArguments":""}"#,
+        )
+        .unwrap();
+        std::fs::write(version.join("fixture.jar"), "fixture").unwrap();
+        let session = pcl_core::auth::offline_session("Player").unwrap();
+        let mut plan = build_plan_with_settings(
+            &LaunchOptions {
+                root: root.path().into(),
+                version_id: "fixture".into(),
+                java: "/bin/sh".into(),
+                memory_mb: 512,
+                width: 854,
+                height: 480,
+            },
+            &session,
+            &Platform::current(),
+            &Settings::default(),
+            21,
+        )
+        .unwrap();
+        // Only this fixture's harmless child runs; no Minecraft, account, or
+        // user launch command is accessed. A real output marker signals ready.
+        plan.args = vec![
+            "-c".into(),
+            "printf 'Created: textures fixture-atlas\\n'; sleep 0.3".into(),
+        ];
+        plan.behavior = behavior(root.path(), vec![]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_game_with_launch_progress(
+            plan,
+            String::new(),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            991,
+        )
+        .unwrap();
+        let mut stages = Vec::new();
+        let mut pid = None;
+        let mut ready = false;
+        let mut finished = false;
+        for event in rx.try_iter() {
+            match event {
+                Event::Launch(LaunchEvent::Stage { request, stage }) => {
+                    assert_eq!(request, 991);
+                    assert!(pid.is_none());
+                    stages.push(stage);
+                }
+                Event::GameStarted(value) => {
+                    assert!(pid.replace(value).is_none());
+                }
+                Event::GameReady { pid: value, .. } => {
+                    assert_eq!(pid, Some(value));
+                    assert!(!ready);
+                    ready = true;
+                }
+                Event::GameFinished {
+                    pid: value,
+                    success,
+                    stopped,
+                    ..
+                } => {
+                    assert_eq!(pid, Some(value));
+                    assert!(ready && success && !stopped);
+                    finished = true;
+                }
+                _ => (),
+            }
+        }
+        assert_eq!(stages, [Stage::PreRun, Stage::Commands, Stage::Spawn]);
+        assert!(finished);
+    }
 
     #[cfg(unix)]
     #[test]

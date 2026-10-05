@@ -871,25 +871,16 @@ impl Launcher {
                 InstallKind::Forge,
                 InstallKind::NeoForge,
                 InstallKind::Fabric,
+                InstallKind::Quilt,
             ] {
                 self.install_component_card(ui, kind, &minecraft, &mut open);
                 ui.add_space(12.0);
             }
+            self.companion_card(ui, &minecraft, false);
             self.optifine_card(ui, &minecraft);
             ui.add_space(12.0);
-            self.companion_card(ui, &minecraft, false);
             self.companion_card(ui, &minecraft, true);
-            egui::CollapsingHeader::new(
-                RichText::new("更多组件（Quilt、LiteLoader）")
-                    .size(12.0)
-                    .color(MUTED),
-            )
-            .id_salt("additional-install-components")
-            .show(ui, |ui| {
-                self.install_component_card(ui, InstallKind::Quilt, &minecraft, &mut open);
-                ui.add_space(12.0);
-                self.install_component_card(ui, InstallKind::LiteLoader, &minecraft, &mut open);
-            });
+            self.install_component_card(ui, InstallKind::LiteLoader, &minecraft, &mut open);
             let validation = self.install_selection_validation(&minecraft);
             if let Err(error) = &validation {
                 ui.add_space(8.0);

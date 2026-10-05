@@ -745,27 +745,27 @@ impl Launcher {
             ui,
             "标题栏",
             if title_mode == 0 {
-                111.0
-            } else if title_mode >= 2 {
-                140.0
+                110.0
+            } else if title_mode == 2 {
+                124.0
+            } else if title_mode == 3 {
+                131.0
             } else {
-                89.0
+                77.0
             },
             |ui, rect| {
-                let column = (rect.width() - 50.0) / 4.0;
                 for (index, (id, title)) in [(0, "无"), (1, "默认"), (2, "文本"), (3, "图片")]
                     .into_iter()
                     .enumerate()
                 {
-                    if ui
-                        .place(
-                            Rect::from_min_size(
-                                rect.min + Vec2::new(25.0 + index as f32 * column, 40.0),
-                                Vec2::new(column, 22.0),
-                            ),
-                            egui::RadioButton::new(title_mode == id, title),
-                        )
-                        .clicked()
+                    if appearance_radio(
+                        ui,
+                        source_radio_rect(rect, index),
+                        ui.id().with(("title-mode", id)),
+                        title_mode == id,
+                        title,
+                    )
+                    .clicked()
                     {
                         theme_settings.ui_title_mode = id;
                         theme_changed = true;
@@ -787,7 +787,7 @@ impl Launcher {
                     if title_mode == 2 {
                         label(
                             ui,
-                            rect.min + Vec2::new(25.0, 87.0),
+                            rect.min + Vec2::new(25.0, 79.0),
                             90.0,
                             "标题栏文本",
                             13.0,
@@ -795,7 +795,7 @@ impl Launcher {
                         theme_changed |= ui
                             .place(
                                 Rect::from_min_size(
-                                    rect.min + Vec2::new(115.0, 78.0),
+                                    rect.min + Vec2::new(115.0, 76.0),
                                     Vec2::new(rect.width() - 140.0, 28.0),
                                 ),
                                 egui::TextEdit::singleline(&mut theme_settings.ui_title_text)
@@ -804,11 +804,11 @@ impl Launcher {
                             .changed();
                     } else {
                         choose_title_logo =
-                            action_button(ui, rect.min + Vec2::new(25.0, 78.0), "更改图片", true)
+                            action_button(ui, rect.min + Vec2::new(25.0, 76.0), "更改图片", true)
                                 .clicked();
                         if action_button(
                             ui,
-                            rect.min + Vec2::new(185.0, 78.0),
+                            rect.min + Vec2::new(185.0, 76.0),
                             "清空图片",
                             theme_settings.ui_title_logo.is_some(),
                         )
@@ -827,13 +827,12 @@ impl Launcher {
             ui,
             "主页",
             match home_mode {
-                0 => 89.0,
-                3 => 135.0,
-                1 => 220.0,
-                _ => 195.0,
+                0 => 77.0,
+                3 => 122.0,
+                1 => 193.0,
+                _ => 189.0,
             },
             |ui, rect| {
-                let column = (rect.width() - 50.0) / 4.0;
                 for (index, (id, title)) in [
                     (0, "空白"),
                     (3, "预设"),
@@ -843,13 +842,12 @@ impl Launcher {
                 .into_iter()
                 .enumerate()
                 {
-                    let target = Rect::from_min_size(
-                        rect.min + Vec2::new(25.0 + index as f32 * column, 40.0),
-                        Vec2::new(column, 22.0),
-                    );
-                    let response = ui.place(
-                        target,
-                        egui::RadioButton::new(theme_settings.ui_custom_type == id, title),
+                    let response = appearance_radio(
+                        ui,
+                        source_radio_rect(rect, index),
+                        ui.id().with(("home-mode", id)),
+                        theme_settings.ui_custom_type == id,
+                        title,
                     );
                     if response.clicked() {
                         theme_settings.ui_custom_type = id;
@@ -857,10 +855,10 @@ impl Launcher {
                     }
                 }
                 if home_mode == 3 {
-                    label(ui, rect.min + Vec2::new(25.0, 78.0), 90.0, "主页预设", 13.0);
+                    label(ui, rect.min + Vec2::new(25.0, 77.0), 90.0, "主页预设", 13.0);
                     let mut child =
                         ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
-                            rect.min + Vec2::new(115.0, 73.0),
+                            rect.min + Vec2::new(115.0, 74.0),
                             Vec2::new(rect.width() - 150.0, 28.0),
                         )));
                     let before = theme_settings.ui_custom_preset;
@@ -884,9 +882,9 @@ impl Launcher {
                     theme_changed |= before != theme_settings.ui_custom_preset;
                 } else if home_mode == 1 || home_mode == 2 {
                     let message = if home_mode == 1 {
-                        "从主页文件夹的 Custom.xaml 读取内容。可添加文本、图片、网站及需要点击确认的程序操作。"
+                        "从主页文件夹下的 Custom.xaml 读取主页内容。\n你可以手动编辑该文件，向主页添加文本、图片、常用网站、快捷启动等功能。"
                     } else {
-                        "从指定网址获取主页内容。主页只作为布局读取；文件、命令与设置操作需要点击并确认。"
+                        "从指定网址联网获取主页内容。\n服主也可以用于动态更新服务器公告。"
                     };
                     let hint = Rect::from_min_size(
                         rect.min + Vec2::new(25.0, 77.0),
@@ -894,7 +892,8 @@ impl Launcher {
                     );
                     ui.painter()
                         .rect_filled(hint, 3, crate::theme::palette(ui.ctx()).light);
-                    ui.place(
+                    ui_style::place_left(
+                        ui,
                         hint.shrink(10.0),
                         egui::Label::new(RichText::new(message).size(13.0)).wrap(),
                     );
@@ -904,14 +903,18 @@ impl Launcher {
                                 .into_iter()
                                 .enumerate()
                         {
-                            let width = ((rect.width() - 50.0 - 30.0) / 4.0).min(140.0);
-                            let response = ui.place(
+                            let width = ((rect.width() - 50.0 - 60.0) / 4.0).min(140.0);
+                            let response = ui_style::outline_button(
+                                ui,
                                 Rect::from_min_size(
                                     rect.min
-                                        + Vec2::new(25.0 + index as f32 * (width + 10.0), 157.0),
+                                        + Vec2::new(25.0 + index as f32 * (width + 20.0), 141.0),
                                     Vec2::new(width, 32.0),
                                 ),
-                                egui::Button::new(title),
+                                title,
+                                None,
+                                index == 0,
+                                true,
                             );
                             if response.clicked() {
                                 match index {
@@ -925,7 +928,7 @@ impl Launcher {
                     } else {
                         label(
                             ui,
-                            rect.min + Vec2::new(25.0, 155.0),
+                            rect.min + Vec2::new(25.0, 144.0),
                             90.0,
                             "下载地址",
                             13.0,
@@ -933,7 +936,7 @@ impl Launcher {
                         theme_changed |= ui
                             .place(
                                 Rect::from_min_size(
-                                    rect.min + Vec2::new(115.0, 150.0),
+                                    rect.min + Vec2::new(115.0, 141.0),
                                     Vec2::new(rect.width() - 140.0, 28.0),
                                 ),
                                 egui::TextEdit::singleline(&mut theme_settings.ui_custom_net)
@@ -947,62 +950,7 @@ impl Launcher {
         );
 
         if feature_visible(ui.ctx(), &self.settings, "hidden") {
-            section(ui, "功能隐藏", 235.0, |ui, rect| {
-                let mut body = ui
-                    .new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(25.0, 0.0))));
-                body.add_space(40.0);
-                body.label("你可以隐藏不需要的页面或关闭特定功能。在任意界面按 F12 可以暂时显示被隐藏的功能。");
-                body.add_space(8.0);
-                for (group, choices) in [
-                    (
-                        "主页面",
-                        vec![("download", "下载"), ("setup", "设置"), ("more", "更多")],
-                    ),
-                    (
-                        "设置 子页面",
-                        vec![
-                            ("setup_launch", "启动"),
-                            ("setup_ui", "个性化"),
-                            ("setup_system", "其他"),
-                        ],
-                    ),
-                    (
-                        "更多 子页面",
-                        vec![("help", "帮助"), ("about", "关于与鸣谢")],
-                    ),
-                    (
-                        "特定功能",
-                        vec![
-                            ("version", "版本管理"),
-                            ("mod_update", "Mod 更新"),
-                            ("hidden", "功能隐藏"),
-                        ],
-                    ),
-                ] {
-                    body.horizontal(|ui| {
-                        ui.add_sized([100.0, 28.0], egui::Label::new(group));
-                        let width = ((ui.available_width() - 24.0) / 4.0).max(82.0);
-                        for (key, title) in choices {
-                            let mut hidden = theme_settings
-                                .ui_hidden_pages
-                                .iter()
-                                .any(|saved| saved == key);
-                            let changed = ui
-                                .allocate_ui(Vec2::new(width, 28.0), |ui| {
-                                    ui_style::checkbox(ui, &mut hidden, title, "").changed()
-                                })
-                                .inner;
-                            if changed {
-                                theme_settings.ui_hidden_pages.retain(|saved| saved != key);
-                                if hidden {
-                                    theme_settings.ui_hidden_pages.push(key.into());
-                                }
-                                theme_changed = true;
-                            }
-                        }
-                    });
-                }
-            });
+            theme_changed |= hidden_section(ui, &mut theme_settings.ui_hidden_pages);
         }
         if choose_title_logo {
             if let Some(path) = rfd::FileDialog::new()
@@ -1187,9 +1135,33 @@ fn appearance_checkbox(
     ui_style::checkbox(&mut child, checked, title, "")
 }
 
+fn source_radio_rect(card: Rect, index: usize) -> Rect {
+    // PageSetupUI: left margin 25 minus Grid margin 1; four 1* columns and a 0.2* tail.
+    let column = (card.width() - 49.0) / 4.2;
+    Rect::from_min_size(
+        card.min + Vec2::new(24.0 + index as f32 * column, 40.0),
+        Vec2::new(column, 22.0),
+    )
+}
+
 fn theme_radio(ui: &mut egui::Ui, rect: Rect, id: u8, selected: bool) -> egui::Response {
-    let response = ui.interact(rect, ui.id().with(("theme", id)), egui::Sense::click());
-    let name = crate::theme::theme_name(id);
+    appearance_radio(
+        ui,
+        rect,
+        ui.id().with(("theme", id)),
+        selected,
+        crate::theme::theme_name(id),
+    )
+}
+
+fn appearance_radio(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: egui::Id,
+    selected: bool,
+    name: &str,
+) -> egui::Response {
+    let response = ui.interact(rect, id, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::RadioButton,
@@ -1225,6 +1197,96 @@ fn theme_radio(ui: &mut egui::Ui, rect: Rect, id: u8, selected: bool) -> egui::R
         color,
     );
     response
+}
+
+fn hidden_section(ui: &mut egui::Ui, hidden_pages: &mut Vec<String>) -> bool {
+    const NOTE: &str =
+        "你可以隐藏不需要的页面或关闭特定功能。在任意界面按 F12 可以暂时显示被隐藏的功能。";
+    type HiddenChoice = (&'static str, &'static str, usize);
+    const GROUPS: [(&str, &[HiddenChoice]); 4] = [
+        (
+            "主页面",
+            &[
+                ("download", "下载", 0),
+                ("setup", "设置", 2),
+                ("more", "更多", 3),
+            ],
+        ),
+        (
+            "设置 子页面",
+            &[
+                ("setup_launch", "启动", 0),
+                ("setup_ui", "个性化", 2),
+                ("setup_system", "其他", 3),
+            ],
+        ),
+        (
+            "更多 子页面",
+            &[("help", "帮助", 0), ("about", "关于与鸣谢", 1)],
+        ),
+        (
+            "特定功能",
+            &[
+                ("version", "版本管理", 1),
+                ("mod_update", "Mod 更新", 2),
+                ("hidden", "功能隐藏", 3),
+            ],
+        ),
+    ];
+    let font = egui::FontId::proportional(13.0);
+    let text_color = crate::theme::palette(ui.ctx()).text;
+    let note = ui.painter().layout(
+        NOTE.into(),
+        font.clone(),
+        text_color,
+        (ui.available_width() - 40.0).max(1.0),
+    );
+    let label_width = GROUPS
+        .iter()
+        .map(|(name, _)| {
+            ui.painter()
+                .layout_no_wrap((*name).into(), font.clone(), text_color)
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    let grid_top = 39.0 + note.size().y + 1.0 + 4.0;
+    let mut changed = false;
+    section(ui, "功能隐藏", grid_top + 120.0 + 15.0, |ui, card| {
+        ui.painter()
+            .galley(card.min + Vec2::new(25.0, 39.0), note, text_color);
+        // Preserve the upstream 0.8*,0.9*,0.8*,0.8*,1.0* grid. Removed features
+        // leave their original cells empty, rather than stretching the remaining controls.
+        let grid_left = 25.0 + label_width + 18.0;
+        let unit = (card.width() - grid_left - 15.0) / 4.3;
+        let column_starts = [0.0, 0.8, 1.7, 2.5, 3.3];
+        let column_widths = [0.8, 0.9, 0.8, 0.8, 1.0];
+        for (row, (group, choices)) in GROUPS.into_iter().enumerate() {
+            let y = grid_top + row as f32 * 30.0 + 4.0;
+            label(ui, card.min + Vec2::new(25.0, y), label_width, group, 13.0);
+            for &(key, title, column) in choices {
+                let mut hidden = hidden_pages.iter().any(|saved| saved == key);
+                if appearance_checkbox(
+                    ui,
+                    Rect::from_min_size(
+                        card.min + Vec2::new(grid_left + column_starts[column] * unit, y),
+                        Vec2::new(column_widths[column] * unit, 22.0),
+                    ),
+                    &mut hidden,
+                    title,
+                )
+                .changed()
+                {
+                    hidden_pages.retain(|saved| saved != key);
+                    if hidden {
+                        hidden_pages.push(key.into());
+                    }
+                    changed = true;
+                }
+            }
+        }
+    });
+    changed
 }
 
 fn theme_slider(
@@ -1590,6 +1652,124 @@ fn action_button(ui: &mut egui::Ui, position: Pos2, text: &str, enabled: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personalization_radios_stay_left_aligned_and_respond_at_the_visible_control() {
+        let ctx = egui::Context::default();
+        let card = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(818.0, 77.0));
+        let mut selected = 0;
+        let mut draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        for (index, name) in
+                            ["None", "Default", "Text", "Image"].into_iter().enumerate()
+                        {
+                            if appearance_radio(
+                                ui,
+                                source_radio_rect(card, index),
+                                ui.id().with(index),
+                                selected == index,
+                                name,
+                            )
+                            .clicked()
+                            {
+                                selected = index;
+                            }
+                        }
+                    });
+                },
+            )
+        };
+        let output = draw(vec![]);
+        let centers: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Circle(circle) if (circle.radius - 8.45).abs() < 0.01 => {
+                    Some(circle.center)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(centers.len(), 4);
+        assert_eq!(centers[0], Pos2::new(54.0, 71.0));
+        assert!((centers[1].x - centers[0].x - 769.0 / 4.2).abs() < 0.01);
+        let point = centers[2];
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = draw(vec![egui::Event::PointerMoved(point), pointer(true)]);
+        let _ = draw(vec![pointer(false)]);
+        assert_eq!(selected, 2);
+    }
+
+    #[test]
+    fn personalization_hidden_rows_share_left_edge_and_toggle_without_reordering_settings() {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
+        ctx.set_fonts(fonts);
+        let mut hidden = vec!["help".to_owned()];
+        let mut draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(818.0, 400.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            hidden_section(ui, &mut hidden);
+                        });
+                },
+            )
+        };
+        let output = draw(vec![]);
+        let text_position = |text: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(shape) if shape.galley.text() == text => Some(shape.pos),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let group = text_position("主页面");
+        for (index, title) in ["设置 子页面", "更多 子页面", "特定功能"]
+            .into_iter()
+            .enumerate()
+        {
+            let position = text_position(title);
+            assert_eq!(position.x, group.x);
+            assert!((position.y - group.y - (index + 1) as f32 * 30.0).abs() < 0.01);
+        }
+        assert_eq!(group.x, 25.0);
+        let download = text_position("下载");
+        let point = download + Vec2::new(5.0, 7.0);
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = draw(vec![egui::Event::PointerMoved(point), pointer(true)]);
+        let _ = draw(vec![pointer(false)]);
+        assert_eq!(hidden, ["help", "download"]);
+    }
 
     fn synthetic_background(ctx: &egui::Context) -> LoadedBackground {
         let original = egui::ColorImage::filled([32, 16], Color32::RED);

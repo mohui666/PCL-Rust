@@ -19,6 +19,8 @@ use std::{
 #[derive(Default)]
 pub(super) struct SetupSystemState {
     reset_open: bool,
+    debug_open: bool,
+    show_update_result: bool,
     receiver: Option<Receiver<SystemMessage>>,
     cancel: Arc<AtomicBool>,
     loading: bool,
@@ -81,6 +83,7 @@ impl Launcher {
         self.setup_system.cancel = cancel.clone();
         self.setup_system.loading = true;
         self.setup_system.downloading = false;
+        self.setup_system.show_update_result = manual;
         self.setup_system.message = None;
         self.setup_system.release = None;
         self.setup_system.progress = None;
@@ -117,6 +120,7 @@ impl Launcher {
         self.setup_system.receiver = Some(rx);
         self.setup_system.cancel = cancel.clone();
         self.setup_system.loading = true;
+        self.setup_system.show_update_result = true;
         self.setup_system.downloading = true;
         self.setup_system.progress = Some((0, asset.size));
         self.setup_system.message = None;
@@ -204,7 +208,7 @@ impl Launcher {
                     match result {
                         Ok(path) => {
                             self.setup_system.message =
-                                Some("更新包已通过 SHA-256 与长度验证，尚未安装。".into());
+                                Some("更新包已下载并验证，请手动安装。".into());
                             self.setup_system.saved = Some(path);
                             self.push_hint(
                                 HintKind::Success,
@@ -268,17 +272,10 @@ impl Launcher {
                             notes.push(if release.newer {
                                 format!("本项目已发布 {}。", release.tag)
                             } else {
-                                format!(
-                                    "当前 {}；公开稳定版 {}，没有更高版本。",
-                                    env!("CARGO_PKG_VERSION"),
-                                    release.tag
-                                )
+                                format!("暂无更新（当前 {}）。", env!("CARGO_PKG_VERSION"))
                             });
                             if release.assets.is_empty() {
-                                notes.push(
-                                    "当前发布没有适合本平台且带可验证 SHA-256 摘要的安装包。"
-                                        .into(),
-                                );
+                                notes.push("暂无适合当前系统的更新包。".into());
                             }
                             if release.newer
                                 && next.system.last_launcher_tag.as_deref()
@@ -299,9 +296,7 @@ impl Launcher {
                             next.system.last_launcher_tag = Some(release.tag.clone());
                             self.setup_system.release = Some(release);
                         }
-                        Ok(None) => notes.push(
-                            "本项目当前没有公开稳定版更新包；不会下载原版 PCL 启动器。".into(),
-                        ),
+                        Ok(None) => notes.push("暂无可用更新包。".into()),
                         Err(error) => notes.push(format!("启动器更新检查失败：{error}")),
                     }
                     if next != self.settings {
@@ -370,23 +365,33 @@ impl Launcher {
                 );
             });
             ui.add_space(5.0);
-            ui.label(
-                RichText::new("镜像服务由 BMCLAPI 提供")
-                    .size(12.0)
-                    .color(super::MUTED),
-            )
-            .on_hover_text(
-                "仅支持的下载地址参与镜像切换。下载目标请在启动 → 版本选择的文件夹列表中更改。",
-            );
+            download_row(ui, "目标文件夹", 28.0, |ui| {
+                ui.add(
+                    egui::Label::new(settings.game_root.display().to_string())
+                        .truncate()
+                        .show_tooltip_when_elided(false),
+                )
+                .on_hover_text("在启动 → 版本选择的文件夹列表中更改。");
+            });
         });
         setup_card(ui, "辅助功能", 17, None, |ui| {
-            system_row(ui, "游戏更新提示", |ui| {
-                ui.checkbox(&mut settings.system.notify_release, "正式版更新提示");
-                ui.checkbox(&mut settings.system.notify_snapshot, "测试版更新提示");
+            source_row(ui, "游戏更新提示", "游戏更新提示", 22.0, |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.allocate_ui_with_layout(
+                    Vec2::new(160.0, 22.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        source_checkbox(ui, &mut settings.system.notify_release, "正式版更新提示")
+                            .on_hover_text("Minecraft 正式版更新时提示。");
+                    },
+                );
+                source_checkbox(ui, &mut settings.system.notify_snapshot, "测试版更新提示")
+                    .on_hover_text("Minecraft 快照、预发布版更新时提示。");
             });
             ui.add_space(8.0);
-            system_row(ui, "游戏语言", |ui| {
-                ui.checkbox(&mut settings.system.auto_chinese,"自动设置为中文").on_hover_text("仅在本次游戏 options.txt 尚未设置语言时写入中文；保留已有语言选择。不会翻译启动器界面。");
+            source_row(ui, "游戏语言", "游戏更新提示", 22.0, |ui| {
+                source_checkbox(ui, &mut settings.system.auto_chinese, "自动设置为中文")
+                    .on_hover_text("仅在游戏尚未设置语言时使用中文，保留已有选择。");
             });
         });
         setup_card(ui, "启动器", 20, None, |ui| {
@@ -406,27 +411,43 @@ impl Launcher {
                                 update_label(mode),
                             );
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("检查 PCL Rust 的公开更新。下载完成后需手动安装。");
             });
             ui.add_space(9.0);
             system_row(ui, "缓存文件夹", |ui| {
-                let text = settings
+                let mut text = settings
                     .system
                     .cache_dir
                     .as_ref()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "默认".into());
-                ui.add(egui::Label::new(text).truncate());
-                if ui.button("选择").clicked() {
+                    .unwrap_or_default();
+                let field_width = (ui.available_width() - 60.0 - 82.0 - 12.0).max(60.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.add_sized(
+                    [field_width, 28.0],
+                    egui::TextEdit::singleline(&mut text)
+                        .hint_text("默认")
+                        .interactive(false),
+                )
+                .on_hover_text("更新包的缓存位置；不会移动游戏和 Java。");
+                if ui
+                    .add_sized([60.0, 28.0], egui::Button::new("选择"))
+                    .clicked()
+                {
                     pick_cache = true;
                 }
-                if ui.button("恢复默认").clicked() {
+                if ui
+                    .add_sized([82.0, 28.0], egui::Button::new("恢复默认"))
+                    .clicked()
+                {
                     clear_cache = true;
                 }
             });
-            ui.label(RichText::new("该位置用于本项目更新包缓存；游戏资源、已安装 Java 和原有用户文件不会移动。更新下载后需手动安装。启动器不发送匿名统计或上游公告请求。").size(12.0).color(super::MUTED));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 20.0;
                 check = ui
                     .add_enabled(
                         !self.setup_system.loading,
@@ -436,6 +457,15 @@ impl Launcher {
                 open_cache = ui
                     .add_sized([140.0, 35.0], egui::Button::new("打开缓存文件夹"))
                     .clicked();
+                if ui
+                    .add_enabled(
+                        !self.jobs.is_active() && self.game_pid.is_none(),
+                        egui::Button::new("初始化设置…").min_size(Vec2::new(140.0, 35.0)),
+                    )
+                    .clicked()
+                {
+                    self.setup_system.reset_open = true;
+                }
                 if self.setup_system.loading && ui.button("取消").clicked() {
                     self.setup_system.cancel.store(true, Ordering::Relaxed);
                 }
@@ -464,11 +494,21 @@ impl Launcher {
                     &format!("{done} / {total} 字节"),
                 );
             }
-            if let Some(message) = &self.setup_system.message {
+            if let Some(message) = self
+                .setup_system
+                .message
+                .as_ref()
+                .filter(|_| self.setup_system.show_update_result)
+            {
                 ui.add_space(10.0);
                 ui.label(message);
             }
-            if let Some(release) = &self.setup_system.release {
+            if let Some(release) = self
+                .setup_system
+                .release
+                .as_ref()
+                .filter(|_| self.setup_system.show_update_result)
+            {
                 ui.add_space(10.0);
                 ui.hyperlink_to(format!("{} · 查看发布说明", release.name), &release.url);
                 if !release.published_at.is_empty() {
@@ -493,10 +533,108 @@ impl Launcher {
                         download = Some(asset.clone());
                     }
                 }
-            } else {
-                ui.hyperlink_to("本项目发布页面", system::RELEASES_PAGE);
+            } else if self.setup_system.show_update_result && self.setup_system.message.is_some() {
+                ui.hyperlink_to("查看发布页面", system::RELEASES_PAGE);
             }
         });
+        if clear_cache {
+            self.settings.system.cache_dir = None;
+        }
+        if pick_cache {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("选择更新包缓存文件夹")
+                .pick_folder()
+            {
+                self.settings.system.cache_dir = Some(path);
+            }
+        }
+        if self.settings != previous {
+            match config::save_settings(&self.settings_path, &self.settings) {
+                Ok(()) => {
+                    if let Err(error) = pcl_core::network::configure(&self.settings.downloads) {
+                        self.error = Some(format!("应用下载设置失败：{error:#}"));
+                    }
+                }
+                Err(error) => {
+                    self.settings = previous;
+                    self.error = Some(format!("保存设置失败：{error:#}"));
+                }
+            }
+        }
+        let previous_debug = self.settings.system.clone();
+        let mut debug_open = self.setup_system.debug_open;
+        setup_card(ui, "调试选项", 15, Some(&mut debug_open), |ui| {
+            download_row(ui, "动画速度", 22.0, |ui| {
+                let mut value = f32::from(self.settings.system.debug_animation);
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new((ui.available_width() - 62.0).max(40.0), 22.0),
+                    egui::Sense::hover(),
+                );
+                let response = super::appearance_ui::slider_control(
+                    ui,
+                    rect,
+                    "动画速度",
+                    &mut value,
+                    0.0,
+                    30.0,
+                    1.0,
+                );
+                if response.changed() || response.clicked() || response.dragged() {
+                    self.settings.system.debug_animation = value.round() as u8;
+                }
+                ui.label(if self.settings.system.debug_animation >= 30 {
+                    "关闭".to_owned()
+                } else {
+                    format!(
+                        "{:.1}x",
+                        system::animation_speed(self.settings.system.debug_animation)
+                    )
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let column = ui.available_width() / 3.5;
+                for (weight, value, title, hint) in [
+                    (1.5, &mut self.settings.system.debug_skip_copy, "禁止在下载时从其他文件夹复制文件", "关闭共享下载缓存的跨目录复用；已校验的目标文件仍保留。只建议测试下载速度时开启。"),
+                    (1.0, &mut self.settings.system.debug_mode, "调试模式", "显示更多诊断信息并保留更多脱敏日志"),
+                    (1.0, &mut self.settings.system.debug_delay, "添加延迟", "在网络请求及任务开始、结束环节添加可取消的随机延迟，仅用于测试。"),
+                ] {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(column * weight, 22.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| { source_checkbox(ui, value, title).on_hover_text(hint); },
+                    );
+                }
+            });
+            if self.settings.system.debug_mode {
+                let platform = pcl_core::model::Platform::current();
+                ui.add_space(12.0);
+                if ui
+                    .add_sized([140.0, 35.0], egui::Button::new("查看运行日志"))
+                    .on_hover_text(format!(
+                        "{} {} / {}\n{} 线程；保留 2000 条脱敏日志",
+                        platform.os,
+                        platform.version,
+                        platform.arch,
+                        self.settings.downloads.threads
+                    ))
+                    .clicked()
+                {
+                    self.show_logs = true;
+                }
+            }
+        });
+        self.setup_system.debug_open = debug_open;
+        if self.settings.system != previous_debug {
+            match config::save_settings(&self.settings_path, &self.settings) {
+                Ok(()) => system::configure_debug(&self.settings.system),
+                Err(error) => {
+                    self.settings.system = previous_debug;
+                    self.error = Some(format!("保存调试设置失败：{error:#}"));
+                }
+            }
+        }
         let key_header = egui::Rect::from_min_size(
             ui.next_widget_position(),
             Vec2::new(ui.available_width(), 40.0),
@@ -565,108 +703,6 @@ impl Launcher {
         if let Some(action) = key_action {
             self.start_key_action(action);
         }
-        if clear_cache {
-            self.settings.system.cache_dir = None;
-        }
-        if pick_cache {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("选择更新包缓存文件夹")
-                .pick_folder()
-            {
-                self.settings.system.cache_dir = Some(path);
-            }
-        }
-        if self.settings != previous {
-            match config::save_settings(&self.settings_path, &self.settings) {
-                Ok(()) => {
-                    if let Err(error) = pcl_core::network::configure(&self.settings.downloads) {
-                        self.error = Some(format!("应用下载设置失败：{error:#}"));
-                    }
-                }
-                Err(error) => {
-                    self.settings = previous;
-                    self.error = Some(format!("保存设置失败：{error:#}"));
-                }
-            }
-        }
-        let previous_debug = self.settings.system.clone();
-        setup_card(ui, "调试选项", 15, None, |ui| {
-            system_row(ui, "动画速度", |ui| {
-                let mut value = f32::from(self.settings.system.debug_animation);
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new((ui.available_width() - 62.0).max(40.0), 22.0),
-                    egui::Sense::hover(),
-                );
-                let response = super::appearance_ui::slider_control(
-                    ui,
-                    rect,
-                    "动画速度",
-                    &mut value,
-                    0.0,
-                    30.0,
-                    1.0,
-                );
-                if response.changed() || response.clicked() || response.dragged() {
-                    self.settings.system.debug_animation = value.round() as u8;
-                }
-                ui.label(if self.settings.system.debug_animation >= 30 {
-                    "关闭".to_owned()
-                } else {
-                    format!(
-                        "{:.1}x",
-                        system::animation_speed(self.settings.system.debug_animation)
-                    )
-                });
-            });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let column = ui.available_width() / 3.5;
-                for (weight, value, title, hint) in [
-                    (1.5, &mut self.settings.system.debug_skip_copy, "禁止在下载时从其他文件夹复制文件", "关闭共享下载缓存的跨目录复用；已校验的目标文件仍保留。只建议测试下载速度时开启。"),
-                    (1.0, &mut self.settings.system.debug_mode, "调试模式", "显示更多诊断信息并保留更多脱敏日志"),
-                    (1.0, &mut self.settings.system.debug_delay, "添加延迟", "在网络请求及任务开始、结束环节添加可取消的随机延迟，仅用于测试。"),
-                ] {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(column * weight, 26.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| { ui_style::checkbox(ui, value, title, "").on_hover_text(hint); },
-                    );
-                }
-            });
-            if self.settings.system.debug_mode {
-                let platform = pcl_core::model::Platform::current();
-                ui.label(format!(
-                    "系统：{} {} / {}",
-                    platform.os, platform.version, platform.arch
-                ));
-                ui.label(format!(
-                    "文件并发：{}；脱敏日志保留上限：2000 条",
-                    self.settings.downloads.threads
-                ));
-                if ui.button("查看运行日志").clicked() {
-                    self.show_logs = true;
-                }
-            }
-            if ui
-                .add_enabled(
-                    !self.jobs.is_active() && self.game_pid.is_none(),
-                    egui::Button::new("初始化设置…"),
-                )
-                .clicked()
-            {
-                self.setup_system.reset_open = true;
-            }
-        });
-        if self.settings.system != previous_debug {
-            match config::save_settings(&self.settings_path, &self.settings) {
-                Ok(()) => system::configure_debug(&self.settings.system),
-                Err(error) => {
-                    self.settings.system = previous_debug;
-                    self.error = Some(format!("保存调试设置失败：{error:#}"));
-                }
-            }
-        }
         if self.setup_system.reset_open {
             if let Some(action)=super::modal_ui::account_modal_with_options(ui.ctx(),"reset-launcher-preferences","初始化设置","恢复默认设置前会保留原 JSON 备份。不会删除游戏目录或系统安全存储中的账号；已登记目录、当前版本及账号相关输入保留。",&["仅此页","全部偏好","取消"],super::modal_ui::ModalOptions::warning()) {
                 self.setup_system.reset_open=false;
@@ -691,7 +727,7 @@ impl Launcher {
 }
 const KEY_HELP: &str = "环境变量 PCL_CURSEFORGE_API_KEY 优先；清除只删除系统安全存储的条目。API Key 不写入设置 JSON 或日志。是否可访问由 CurseForge 服务端授权决定。";
 // PageSetupSystem download body: margins 25,37,25,15; source row heights
-// 28 + 7 + 28 + 7 + 27 + 27. Other cards keep their own existing contents.
+// 28 + 7 + 28 + 7 + 27 + 27; the final row shows the actual target directory.
 fn download_card(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let rect = egui::Frame::new()
         .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 245))
@@ -730,10 +766,20 @@ fn download_row(
     height: f32,
     body: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
+    source_row(ui, label, "最大线程数", height, body)
+}
+
+fn source_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    column_label: &str,
+    height: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) -> egui::Rect {
     let name_width = ui
         .painter()
         .layout_no_wrap(
-            "最大线程数".into(),
+            column_label.into(),
             egui::FontId::proportional(13.0),
             crate::theme::palette(ui.ctx()).text,
         )
@@ -760,15 +806,19 @@ fn download_row(
 }
 
 fn system_row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.add_sized([110.0, 28.0], egui::Label::new(label));
-        ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), 28.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            body,
-        );
-    });
+    download_row(ui, label, 28.0, body);
+}
+
+fn source_checkbox(ui: &mut egui::Ui, checked: &mut bool, title: &str) -> egui::Response {
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), egui::Sense::hover());
+    // The shared painter has a 26-DIP hit region; center it on the source's 22-DIP row.
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.expand2(Vec2::new(0.0, 2.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    ui_style::checkbox(&mut child, checked, title, "")
 }
 fn source_combo(ui: &mut egui::Ui, id: &str, source: &mut SourcePreference) {
     ui_style::PclComboBox::from_id_salt(id)
@@ -854,11 +904,7 @@ fn download_slider(
     };
     let gap = ui.spacing().item_spacing.x;
     let number_width = 68.0;
-    let unit_width = if matches!(kind, DownloadControl::Speed) {
-        45.0
-    } else {
-        15.0
-    };
+    let unit_width = 45.0;
     let rail_width = (ui.available_width() - number_width - unit_width - gap * 2.0).max(40.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(rail_width, 16.0), egui::Sense::hover());
     let slider =
@@ -944,6 +990,114 @@ fn check_was_cancelled<A, B>(first: &anyhow::Result<A>, second: &anyhow::Result<
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_assistance_rows_align_left_and_keep_160_dip_columns() {
+        let ctx = egui::Context::default();
+        let mut rows = Vec::new();
+        let mut boxes = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(650.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                rows.push(source_row(
+                    ui,
+                    "游戏更新提示",
+                    "游戏更新提示",
+                    22.0,
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(160.0, 22.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                boxes.push(source_checkbox(ui, &mut false, "正式版更新提示").rect);
+                            },
+                        );
+                        boxes.push(source_checkbox(ui, &mut false, "测试版更新提示").rect);
+                    },
+                ));
+                ui.add_space(8.0);
+                rows.push(source_row(
+                    ui,
+                    "游戏语言",
+                    "游戏更新提示",
+                    22.0,
+                    |ui| {
+                        boxes.push(source_checkbox(ui, &mut true, "自动设置为中文").rect);
+                    },
+                ));
+            });
+        });
+        assert_eq!(rows[0].height(), 22.0);
+        assert_eq!(rows[1].top() - rows[0].top(), 30.0);
+        assert_eq!(boxes[1].left() - boxes[0].left(), 160.0);
+        assert_eq!(boxes[0].left(), boxes[2].left());
+        assert_eq!(boxes[0].center().y, boxes[1].center().y);
+        assert_eq!(boxes[0].center().y, rows[0].center().y);
+        assert_eq!(boxes[2].center().y, rows[1].center().y);
+    }
+
+    #[test]
+    fn background_check_details_do_not_expand_default_page_but_manual_results_are_visible() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(temporary.path());
+        app.setup_system.key_checked = true;
+        app.setup_system.message = Some("fixture check details".into());
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
+        ctx.set_fonts(fonts);
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        texts(s, out)
+                    }
+                }
+                _ => (),
+            }
+        }
+        let mut draw = |manual| {
+            app.setup_system.show_update_result = manual;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1000.0, 1400.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.system_settings_page(ui));
+                },
+            );
+            let mut labels = Vec::new();
+            for shape in output.shapes {
+                texts(&shape.shape, &mut labels);
+            }
+            labels.join("\n")
+        };
+        let automatic = draw(false);
+        assert!(!automatic.contains("fixture check details"));
+        assert!(
+            !automatic.contains("动画速度"),
+            "debug card starts collapsed like the source"
+        );
+        assert!(
+            !automatic.contains("API Key"),
+            "CurseForge expansion remains opt-in"
+        );
+        assert!(draw(true).contains("fixture check details"));
+        assert!(
+            app.setup_system.receiver.is_none(),
+            "rendering must not start update requests"
+        );
+    }
+
     #[test]
     fn source_download_speed_positions_preserve_custom_backend_limits() {
         assert_eq!(

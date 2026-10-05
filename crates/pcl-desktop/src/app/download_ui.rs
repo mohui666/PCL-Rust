@@ -247,6 +247,14 @@ impl Launcher {
         }
     }
     pub(super) fn downloads(&mut self, ui: &mut egui::Ui) {
+        // Resource version filters share the official manifest, including when
+        // a resource tab is opened before the vanilla download page.
+        if self.manifest.is_empty()
+            && matches!(self.version_lists.manifest.phase, Phase::Idle)
+            && self.busy.is_none()
+        {
+            self.load_manifest();
+        }
         if (1..=5).contains(&self.download_tab) {
             self.resource_page(ui);
             return;
@@ -254,12 +262,6 @@ impl Launcher {
         if let Some(minecraft) = self.download_selection.clone() {
             self.install_selection_page(ui, minecraft);
             return;
-        }
-        if self.manifest.is_empty()
-            && matches!(self.version_lists.manifest.phase, Phase::Idle)
-            && self.busy.is_none()
-        {
-            self.load_manifest();
         }
         if let Some(action) = self.version_lists.manifest.show(
             ui,

@@ -127,6 +127,9 @@ impl Launcher {
         if self.task_view {
             return 200.0;
         }
+        if self.page == Page::Launch && self.launch_ui.visible() {
+            return 300.0;
+        }
         match self.page {
             Page::Launch if !self.version_tools => 300.0,
             Page::Launch => 138.0,
@@ -373,6 +376,8 @@ impl Launcher {
                 );
                 if self.task_view {
                     self.task_sidebar(ui);
+                } else if self.page == Page::Launch && self.launch_ui.visible() {
+                    self.launch_progress_sidebar(ui, rect);
                 } else if self.page == Page::Launch && self.version_view && !self.version_tools {
                     self.folder_sidebar(ui, rect);
                 } else if self.page == Page::Launch && !self.version_tools {
@@ -435,9 +440,7 @@ impl Launcher {
                         .selected_version
                         .as_deref()
                         .unwrap_or("未找到可用的游戏版本");
-                    let text = if self.game_pid.is_some() {
-                        "游戏运行中"
-                    } else if self.settings.selected_version.is_some() {
+                    let text = if self.settings.selected_version.is_some() {
                         "启动游戏"
                     } else {
                         "下载游戏"
@@ -452,7 +455,7 @@ impl Launcher {
                         text,
                         Some(version),
                         true,
-                        self.busy.is_none() && self.game_pid.is_none(),
+                        self.busy.is_none(),
                     )
                     .clicked()
                     {

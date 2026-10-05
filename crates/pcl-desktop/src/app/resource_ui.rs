@@ -688,6 +688,9 @@ impl Launcher {
         }
         let mut search = false;
         let mut reset = false;
+        let mut refresh_versions = false;
+        let minecraft_versions = resource_minecraft_versions(&self.manifest);
+        let version_choices: Vec<_> = minecraft_versions.iter().map(String::as_str).collect();
         source_card(ui, &format!("搜索{}", kind.label()), |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let width = ui.available_width();
@@ -750,8 +753,26 @@ impl Launcher {
                 Pos2::new(left_x, start.y + 37.0),
                 Vec2::new(if show_loader { star * 1.3 } else { field_width }, 28.0),
             );
-            let version_response =
-                editable_version(ui, version_rect, &mut self.resource_browser.minecraft);
+            let version_response = editable_version(
+                ui,
+                version_rect,
+                &mut self.resource_browser.minecraft,
+                &version_choices,
+            );
+            if let super::download_ui::Phase::Failed(message) = &self.version_lists.manifest.phase {
+                version_response
+                    .clone()
+                    .on_hover_text(format!("{message}\n右键可重新获取版本列表。"));
+            }
+            version_response.context_menu(|ui| {
+                if ui
+                    .add_enabled(self.busy.is_none(), egui::Button::new("刷新版本列表"))
+                    .clicked()
+                {
+                    refresh_versions = true;
+                    ui.close();
+                }
+            });
             if show_loader {
                 let combo_rect = Rect::from_min_size(
                     Pos2::new(left_x + star * 1.3 + 10.0, start.y + 37.0),
@@ -876,15 +897,10 @@ impl Launcher {
                     self.resource_browser.local_pack = !self.resource_browser.local_pack;
                 }
             });
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(
-                    "公开列表缓存保留 5 分钟；过期后重新获取，获取失败不会显示为最新结果。",
-                )
-                .size(11.0)
-                .color(MUTED),
-            );
         });
+        if refresh_versions {
+            self.load_manifest();
+        }
         if kind == ResourceKind::Modpack && self.resource_browser.local_pack {
             self.modpack_page(ui);
         }
@@ -1534,16 +1550,44 @@ impl Launcher {
 fn concrete_minecraft(value: &str) -> bool {
     value.contains('.') || value.contains('w')
 }
-fn editable_version(ui: &mut egui::Ui, rect: Rect, value: &mut String) -> egui::Response {
+fn resource_minecraft_versions(manifest: &[serde_json::Value]) -> Vec<String> {
+    let latest_release = manifest
+        .iter()
+        .filter(|entry| entry["type"] == "release")
+        .filter_map(|entry| entry["releaseTime"].as_str())
+        .max();
+    let mut versions: Vec<_> = manifest
+        .iter()
+        .filter(|entry| {
+            entry["type"] == "release"
+                || (entry["type"] == "snapshot" && entry["releaseTime"].as_str() > latest_release)
+        })
+        .collect();
+    versions.sort_by(|a, b| b["releaseTime"].as_str().cmp(&a["releaseTime"].as_str()));
+    let mut seen = HashSet::new();
+    let mut options = vec![String::new()];
+    for entry in versions {
+        if let Some(id) = entry["id"].as_str().filter(|id| !id.is_empty()) {
+            if seen.insert(id) {
+                options.push(id.to_owned());
+            }
+        }
+    }
+    options
+}
+
+fn editable_version(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    value: &mut String,
+    versions: &[&str],
+) -> egui::Response {
     crate::ui_style::editable_combo(
         ui,
         rect,
         "resource-minecraft-version",
         value,
-        &[
-            "", "26.2", "26.1", "1.21.11", "1.21.8", "1.21.4", "1.21.1", "1.20.1", "1.19.2",
-            "1.18.2", "1.16.5", "1.12.2", "1.7.10",
-        ],
+        versions,
         "全部 (也可自行输入)",
     )
 }
@@ -2456,6 +2500,30 @@ fn display_title(hit: &resources::ProjectHit) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resource_versions_follow_official_dates_without_a_fixed_ceiling() {
+        let manifest = serde_json::json!([
+            {"id":"26.2", "type":"release", "releaseTime":"2026-06-16T00:00:00Z"},
+            {"id":"26.3", "type":"release", "releaseTime":"2026-09-15T00:00:00Z"},
+            {"id":"26.3-rc-1", "type":"snapshot", "releaseTime":"2026-09-10T00:00:00Z"},
+            {"id":"26.4-snapshot-2", "type":"snapshot", "releaseTime":"2026-09-29T00:00:00Z"},
+            {"id":"26.3", "type":"release", "releaseTime":"2026-09-15T00:00:00Z"},
+            {"id":"c0.30", "type":"old_alpha", "releaseTime":"2009-11-10T00:00:00Z"}
+        ]);
+        assert_eq!(
+            resource_minecraft_versions(manifest.as_array().unwrap()),
+            ["", "26.4-snapshot-2", "26.3", "26.2"]
+        );
+        let later = serde_json::json!([
+            {"id":"27.10", "type":"release", "releaseTime":"2027-10-01T00:00:00Z"},
+            {"id":"27.9", "type":"release", "releaseTime":"2027-09-01T00:00:00Z"}
+        ]);
+        assert_eq!(
+            resource_minecraft_versions(later.as_array().unwrap()),
+            ["", "27.10", "27.9"]
+        );
+        assert_eq!(resource_minecraft_versions(&[]), [""]);
+    }
     #[test]
     fn local_pack_entry_survives_resource_kind_reset() {
         let root = tempfile::tempdir().unwrap();

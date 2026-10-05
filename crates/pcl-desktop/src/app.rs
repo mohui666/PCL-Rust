@@ -12,6 +12,7 @@ mod install_ui;
 mod instance_setup_ui;
 mod java_ui;
 mod job;
+pub(crate) mod launch_ui;
 mod loading_ui;
 mod mod_update_ui;
 mod modal_ui;
@@ -79,6 +80,7 @@ pub(crate) enum Event {
     Account(account_ui::AccountEvent),
     Runtime(java_ui::RuntimeEvent),
     ScriptExported(ScriptExport),
+    Launch(launch_ui::LaunchEvent),
     DeletePreview(Result<pcl_core::deletion::VersionDeletePreview, String>),
     VersionDeleted {
         root: PathBuf,
@@ -128,12 +130,19 @@ pub(crate) enum Event {
         stopped: bool,
         message: String,
     },
+    GameStopFailed {
+        pid: u32,
+        message: String,
+    },
     LaunchWarning(String),
     Done(String),
     DownloadFailed {
         message: String,
         cancelled: bool,
     },
+    // Retain legacy unscoped error routing/rejection; current launch and
+    // process workers send request- or PID-scoped failures instead.
+    #[allow(dead_code)]
     Error(String),
 }
 
@@ -160,15 +169,24 @@ impl Event {
             cancelled,
         }
     }
-    fn launch_failed(prefix: &str, cancelled_message: &str, error: anyhow::Error) -> Self {
-        if error
+    fn launch_failed(
+        request: u64,
+        prefix: &str,
+        cancelled_message: &str,
+        error: anyhow::Error,
+    ) -> Self {
+        let cancelled = error
             .chain()
-            .any(|cause| cause.is::<pcl_core::model::OperationCancelled>())
-        {
-            Self::Done(cancelled_message.into())
-        } else {
-            Self::Error(format!("{prefix}：{error:#}"))
-        }
+            .any(|cause| cause.is::<pcl_core::model::OperationCancelled>());
+        Self::Launch(launch_ui::LaunchEvent::Failed {
+            request,
+            cancelled,
+            message: if cancelled {
+                cancelled_message.into()
+            } else {
+                format!("{prefix}：{error:#}")
+            },
+        })
     }
 }
 
@@ -219,6 +237,7 @@ pub struct Launcher {
     cancel: Arc<AtomicBool>,
     game_stop: Arc<AtomicBool>,
     game_pid: Option<u32>,
+    launch_ui: launch_ui::LaunchState,
     game_window: game_window_ui::GameWindowState,
     window_opacity: crate::native_window::WindowOpacity,
     last_viewport_size: Option<(u32, u32)>,
@@ -444,6 +463,7 @@ impl Launcher {
             cancel: Arc::new(AtomicBool::new(false)),
             game_stop: Arc::new(AtomicBool::new(false)),
             game_pid: None,
+            launch_ui: Default::default(),
             game_window: Default::default(),
             window_opacity: Default::default(),
             last_viewport_size: None,
@@ -709,6 +729,10 @@ impl Launcher {
         });
     }
     fn launch(&mut self, preview: bool) {
+        if !preview && self.game_pid.is_some() {
+            self.launch_ui.manage = true;
+            return;
+        }
         if !self.account_store_ready() {
             return;
         }
@@ -732,7 +756,21 @@ impl Launcher {
             }
         }
         if self.microsoft {
+            let was_idle = self.busy.is_none();
             self.account_launch(preview);
+            if was_idle && self.busy.is_some() {
+                let action = if preview {
+                    LaunchAction::Preview
+                } else {
+                    LaunchAction::Run
+                };
+                self.begin_launch_panel(
+                    &action,
+                    self.settings.selected_version.clone().unwrap_or_default(),
+                    self.cancel.clone(),
+                    true,
+                );
+            }
         } else {
             self.launch_with_current_session(preview);
         }
@@ -760,7 +798,7 @@ impl Launcher {
             return;
         }
         if self.game_pid.is_some() && matches!(action, LaunchAction::Run) {
-            self.error = Some("当前游戏仍在运行。".into());
+            self.launch_ui.manage = true;
             return;
         }
         let Some(version) = self.settings.selected_version.clone() else {
@@ -809,6 +847,7 @@ impl Launcher {
         let Some((tx, cancel)) = self.start_job("正在检查启动环境") else {
             return;
         };
+        let launch_request = self.begin_launch_panel(&action, version, cancel.clone(), false);
         if matches!(action, LaunchAction::Run) {
             self.game_stop = Arc::new(AtomicBool::new(false));
         }
@@ -826,11 +865,19 @@ impl Launcher {
             "启动已取消"
         };
         std::thread::spawn(move || {
+            use launch_ui::{LaunchEvent, Stage};
+            let stage = |stage| {
+                let _ = tx.send(Event::Launch(LaunchEvent::Stage {
+                    request: launch_request,
+                    stage,
+                }));
+            };
             let result = (|| -> anyhow::Result<()> {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(pcl_core::model::OperationCancelled.into());
                 }
                 let current = Platform::current();
+                stage(Stage::Java);
                 let runtime = match java_selection::select_java(
                     &request,
                     &candidates,
@@ -866,6 +913,9 @@ impl Launcher {
                             let _ = tx.send(Event::Log(message.clone()));
                         }
                         let message = format!("未找到满足此版本要求的 Java。\n版本范围：{}\n{}\n\n可以下载当前平台的官方 Java，或在设置中导入、调整优先级及排除名单。具体候选诊断已写入日志。", requirement.range, requirement.reasons.join("\n"));
+                        let _ = tx.send(Event::Launch(LaunchEvent::Unavailable {
+                            request: launch_request,
+                        }));
                         let _ = tx.send(Event::Runtime(
                             java_ui::RuntimeEvent::SelectionUnavailable(message, requirement),
                         ));
@@ -884,6 +934,7 @@ impl Launcher {
                     height: 700,
                 };
                 let prepared_skin = if matches!(action, LaunchAction::Run) {
+                    stage(Stage::Skin);
                     let prepared = pcl_core::offline_skin::prepare(
                         &options.root,
                         &options.version_id,
@@ -898,6 +949,7 @@ impl Launcher {
                 } else {
                     None
                 };
+                stage(Stage::Arguments);
                 let mut plan = launch::build_plan_with_overrides(
                     &options,
                     prepared_skin
@@ -918,26 +970,40 @@ impl Launcher {
                 let _ = tx.send(Event::Log(plan.redacted_command()));
                 match action {
                     LaunchAction::Preview => {
-                        let _ = tx.send(Event::Done("启动检查通过，脱敏命令已写入日志".into()));
+                        let _ = tx.send(Event::Launch(LaunchEvent::Finished {
+                            request: launch_request,
+                            message: "启动检查通过，脱敏命令已写入日志".into(),
+                        }));
                     }
-                    LaunchAction::Run => crate::process::run_game_with_cancel(
+                    LaunchAction::Run => crate::process::run_game_with_launch_progress(
                         plan,
                         session.access_token,
                         tx.clone(),
                         stop,
                         cancel.clone(),
+                        launch_request,
                     )?,
                     LaunchAction::Export { path, format } => {
+                        stage(Stage::Export);
                         let exported = launch_script::export_launch_script_with_cancel(
                             &path, &plan, format, &cancel,
                         )?;
+                        let _ = tx.send(Event::Launch(LaunchEvent::Finished {
+                            request: launch_request,
+                            message: "启动脚本已导出".into(),
+                        }));
                         let _ = tx.send(Event::ScriptExported(exported));
                     }
                 }
                 Ok(())
             })();
             if let Err(e) = result {
-                let _ = tx.send(Event::launch_failed(failure_prefix, cancelled_message, e));
+                let _ = tx.send(Event::launch_failed(
+                    launch_request,
+                    failure_prefix,
+                    cancelled_message,
+                    e,
+                ));
             }
         });
     }
@@ -1254,7 +1320,15 @@ impl Launcher {
             Event::VersionList(event) => self.handle_version_list_event(event),
             Event::OptiFineList(event) => self.handle_optifine_list(event),
             Event::Resource(event) => self.handle_resource_event(event),
-            Event::Account(event) => self.handle_account_event(event),
+            Event::Account(event) => {
+                self.handle_account_event(event);
+                if self.busy.is_none() {
+                    self.launch_ui.authentication_ended();
+                } else {
+                    self.launch_ui.authentication_token(self.cancel.clone());
+                }
+            }
+            Event::Launch(event) => self.handle_launch_event(event),
             Event::Runtime(event) => self.handle_runtime_event(event),
             Event::ScriptExported(result) => {
                 self.busy = None;
@@ -1414,12 +1488,29 @@ impl Launcher {
             }
             Event::GameStarted(pid) => {
                 self.game_pid = Some(pid);
+                self.launch_ui.started(
+                    pid,
+                    self.settings
+                        .selected_version
+                        .as_deref()
+                        .unwrap_or("Minecraft"),
+                    self.microsoft,
+                );
+                if self.launch_ui.cancellation_requested(pid) {
+                    // Covers a cancel arriving after spawn's last check but
+                    // before the UI receives GameStarted.
+                    self.game_stop.store(true, Ordering::Relaxed);
+                }
                 self.game_window.started();
                 self.busy = None;
                 self.status = format!("游戏进程已启动 · PID {pid}");
             }
             Event::GameReady { pid, visibility } => {
-                if self.game_pid == Some(pid) {
+                if self.game_pid == Some(pid)
+                    && !self.launch_ui.cancellation_requested(pid)
+                    && !self.game_stop.load(Ordering::Relaxed)
+                {
+                    self.launch_ui.ready(pid);
                     self.game_window.ready(pid, visibility);
                     if let Err(error) = self.appearance.music_game_changed(true, &self.settings) {
                         self.error = Some(format!("背景音乐联动失败：{error:#}"));
@@ -1441,12 +1532,20 @@ impl Launcher {
                     self.error = Some(format!("背景音乐联动失败：{error:#}"));
                 }
                 self.game_pid = None;
+                self.launch_ui.exited(pid);
                 self.status = message.clone();
                 self.record(message);
             }
             Event::LaunchWarning(message) => {
                 self.record(message.clone());
                 self.push_hint(hint_ui::HintKind::Error, message);
+            }
+            Event::GameStopFailed { pid, message } => {
+                if self.game_pid == Some(pid) {
+                    self.launch_ui.stop_failed(pid);
+                    self.record(message.clone());
+                    self.error = Some(message);
+                }
             }
             Event::ModsUpdated { .. } | Event::ModsChanged { .. } => (),
             Event::Done(message) => {
@@ -1700,6 +1799,7 @@ impl eframe::App for Launcher {
             && !self.resource_request_active()
             && !self.version_list_request_active()
             && !self.optifine_request_active()
+            && !(self.page == Page::Launch && self.launch_ui.preparing())
         {
             egui::TopBottomPanel::bottom("status")
                 .exact_height(if self.progress.is_some() { 57.0 } else { 31.0 })
@@ -1834,6 +1934,7 @@ impl eframe::App for Launcher {
         self.script_export_dialog(ctx);
         self.more_dialogs(ctx);
         self.crash_dialogs(ctx);
+        self.launch_running_dialog(ctx);
         modal_ui::finish_frame(ctx);
     }
 }
@@ -1873,11 +1974,11 @@ mod event_tests {
         let cancelled =
             anyhow::Error::new(pcl_core::model::OperationCancelled).context("等待启动前命令");
         assert!(
-            matches!(Event::launch_failed("启动失败", "启动已取消", cancelled), Event::Done(message) if message == "启动已取消")
+            matches!(Event::launch_failed(1, "启动失败", "启动已取消", cancelled), Event::Launch(launch_ui::LaunchEvent::Failed { request: 1, cancelled: true, message }) if message == "启动已取消")
         );
         let failure = anyhow::anyhow!("取消请求后无法读取游戏文件");
         assert!(
-            matches!(Event::launch_failed("启动失败", "启动已取消", failure), Event::Error(message) if message.contains("无法读取游戏文件"))
+            matches!(Event::launch_failed(1, "启动失败", "启动已取消", failure), Event::Launch(launch_ui::LaunchEvent::Failed { request: 1, cancelled: false, message }) if message.contains("无法读取游戏文件"))
         );
     }
 
@@ -2051,6 +2152,7 @@ mod event_tests {
             cancel: Arc::new(AtomicBool::new(false)),
             game_stop: Arc::new(AtomicBool::new(false)),
             game_pid: None,
+            launch_ui: Default::default(),
             game_window: Default::default(),
             window_opacity: Default::default(),
             last_viewport_size: None,
