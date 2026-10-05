@@ -28,7 +28,7 @@ jobs:
           fi
       - run: cargo clippy -p pcl-cli --all-targets --locked -- -D warnings
       - name: Test without a display
-        run: cargo test -p pcl-cli --locked
+        run: cargo test -p pcl-core -p pcl-cli --locked
         env:
           DISPLAY: ''
           WAYLAND_DISPLAY: ''
@@ -39,6 +39,9 @@ jobs:
           path: |
             target/release/pcl-cli
             target/release/pcl-cli.exe
+            UPSTREAM-LICENCE
+            docs/headless.md
+            crates/pcl-core/assets/launch/*
           if-no-files-found: error
   test:
     strategy:

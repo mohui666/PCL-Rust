@@ -461,7 +461,30 @@ pub(crate) fn rename_directory_no_replace(source: &Path, target: &Path) -> Resul
         }
         Ok(())
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        unsafe extern "C" {
+            fn renameat2(
+                olddirfd: i32,
+                oldpath: *const std::ffi::c_char,
+                newdirfd: i32,
+                newpath: *const std::ffi::c_char,
+                flags: u32,
+            ) -> i32;
+        }
+        let from = CString::new(source.as_os_str().as_bytes())?;
+        let to = CString::new(target.as_os_str().as_bytes())?;
+        // Linux rename(2): AT_FDCWD = -100, RENAME_NOREPLACE = 1.
+        // A missing syscall/filesystem feature must fail, never fall back to
+        // rename() (which could replace a destination created concurrently).
+        if unsafe { renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("目标已存在或无法原子提交，未覆盖");
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (source, target);
         bail!("此平台尚未实现 目录的原子安全提交");
@@ -472,6 +495,53 @@ pub(crate) fn rename_directory_no_replace(source: &Path, target: &Path) -> Resul
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn exclusive_rename_handles_files_and_directories_without_clobbering() {
+        let directory = tempfile::tempdir().unwrap();
+        for is_directory in [false, true] {
+            let source = directory.path().join(if is_directory {
+                "directory-source"
+            } else {
+                "file-source"
+            });
+            let target = directory.path().join(if is_directory {
+                "directory-target"
+            } else {
+                "file-target"
+            });
+            if is_directory {
+                fs::create_dir(&source).unwrap();
+                fs::create_dir(&target).unwrap();
+                fs::write(source.join("original"), b"source").unwrap();
+            } else {
+                fs::write(&source, b"source").unwrap();
+                fs::write(&target, b"target").unwrap();
+            }
+            assert!(rename_directory_no_replace(&source, &target).is_err());
+            assert!(source.exists() && target.exists());
+            if is_directory {
+                assert!(!target.join("original").exists());
+                fs::remove_dir(&target).unwrap();
+            } else {
+                assert_eq!(fs::read(&source).unwrap(), b"source");
+                assert_eq!(fs::read(&target).unwrap(), b"target");
+                fs::remove_file(&target).unwrap();
+            }
+            rename_directory_no_replace(&source, &target).unwrap();
+            assert!(!source.exists());
+            assert_eq!(
+                fs::read(if is_directory {
+                    target.join("original")
+                } else {
+                    target
+                })
+                .unwrap(),
+                b"source"
+            );
+        }
+    }
 
     fn write_version(root: &Path, id: &str, json: Value) {
         let directory = root.join("versions").join(id);
