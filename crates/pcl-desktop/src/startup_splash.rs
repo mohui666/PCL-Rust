@@ -260,7 +260,12 @@ mod native {
                     return Err(std::io::Error::last_os_error()).context("无法创建启动图标位图");
                 }
                 let out = std::slice::from_raw_parts_mut(bits.cast::<u8>(), 220 * 220 * 4);
-                for (to, from) in out.chunks_exact_mut(4).zip(image.as_raw().chunks_exact(4)) {
+                for (to, from) in out
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(image.as_raw().as_chunks::<4>().0)
+                {
                     let a = u16::from(from[3]);
                     to[0] = (u16::from(from[2]) * a / 255) as u8;
                     to[1] = (u16::from(from[1]) * a / 255) as u8;
