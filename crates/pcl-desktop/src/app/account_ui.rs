@@ -281,7 +281,7 @@ impl Launcher {
                 self.init_accounts();
             }
         } else {
-            self.clear_account_selection(false);
+            self.error = Some("离线登录已禁用，请使用正版账号。".into());
         }
     }
     fn clear_account_selection(&mut self, microsoft: bool) {
@@ -1752,6 +1752,35 @@ mod tests {
                 user_type: "msa".into(),
             },
             expires_at: u64::MAX / 2,
+        }
+    }
+    #[test]
+    fn desktop_cannot_switch_to_or_launch_with_an_offline_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        assert!(app.microsoft);
+        app.accounts.selected = Some("existing-selection".into());
+        app.select_account_mode(false);
+        assert!(app.microsoft);
+        assert_eq!(app.accounts.selected.as_deref(), Some("existing-selection"));
+        assert!(app.error.as_deref().unwrap().contains("离线登录已禁用"));
+        app.settings.selected_version = Some("fixture".into());
+        app.session = Some(auth::offline_session("Fixture").unwrap());
+        let path = dir.path().join("launch.command");
+        for action in [
+            super::super::LaunchAction::Run,
+            super::super::LaunchAction::Preview,
+            super::super::LaunchAction::Export {
+                path: path.clone(),
+                format: pcl_core::launch_script::ScriptFormat::MacCommand,
+            },
+        ] {
+            app.error = None;
+            app.start_launch(action);
+            assert!(app.error.as_deref().unwrap().contains("离线登录已禁用"));
+            assert!(app.busy.is_none());
+            assert!(app.game_pid.is_none());
+            assert!(!path.exists());
         }
     }
     #[test]

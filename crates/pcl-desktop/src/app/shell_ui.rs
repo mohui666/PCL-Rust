@@ -446,16 +446,23 @@ impl Launcher {
                             rect.min + Vec2::new(72.0 + i as f32 * 82.0, 22.0),
                             Vec2::new(74.0, 27.0),
                         );
-                        if ui_style::pill(
-                            ui,
-                            &self.assets,
-                            r,
-                            name,
-                            icon,
-                            self.microsoft == ms,
-                            false,
-                        )
-                        .clicked()
+                        if ui
+                            .add_enabled_ui(ms, |ui| {
+                                ui_style::pill(
+                                    ui,
+                                    &self.assets,
+                                    r,
+                                    name,
+                                    icon,
+                                    self.microsoft == ms,
+                                    false,
+                                )
+                            })
+                            .inner
+                            .on_disabled_hover_text(
+                                "离线登录已禁用，请使用拥有 Minecraft Java 版的微软账号。",
+                            )
+                            .clicked()
                         {
                             self.select_account_mode(ms);
                         }

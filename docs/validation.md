@@ -2,7 +2,23 @@
 
 [项目首页](../README.md) / [文档索引](README.md)
 
-更新日期：2026-10-05。[v0.1.0 开发预览版下载](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)。以下按提交分别记录检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+更新日期：2026-10-08。以下按提交分别记录检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+
+## 正版登录限制与 CurseForge 接入
+
+macOS arm64 本地 `cargo test --workspace --locked`：**636 项通过，4 项忽略**；`cargo clippy --workspace --all-targets --locked -- -D warnings` 通过。没有把历史 Windows/Linux 运行记录当作本次实机验证。
+
+- 共享核心拒绝离线身份、空令牌与 `0` 令牌；`any` / `microsoft` / `offline` 实例配置均不能放行未验证身份。
+- CLI 无账号或使用旧 `--name` 时，启动、预览和脚本导出均失败，测试确认未启动 Java、未创建脚本、未更改设置。合成正版会话仅在单元测试中用于检查参数、子进程退出和取消，不代表真实 Microsoft 登录成功。
+- 桌面状态测试确认不能切换离线模式，离线身份不能用于启动、预览或导出，已有账号选择不被清除。
+- CurseForge Key 已通过现有系统安全存储写入，并由独立 CLI 进程完成真实搜索与版本列表读取。Key 没有加入源码或安装包。
+- 真实请求发现同一 CDN 文件的完整 GET 返回 200，但 Range 请求返回 404。现在遇到该情况只对原发布地址尝试一次带 Key 的完整 GET；401/403 不重试、不改换来源，继续使用原有长度及哈希校验。局部 HTTP 夹具覆盖成功、仍然 404 和拒绝访问。
+- 修复后 CLI 实际下载 `cf:306612:8786256`（Fabric API 0.116.17+1.21.1），文件为 2,452,735 字节，SHA-1 `810b2b0195371a012906241d8b85a32a1d6de53c` 与 CurseForge 发布数据一致。
+- macOS release 包构建和严格签名校验通过。实际打开新包，确认默认正版、离线按钮禁用且点击不切换；点击启动显示“请先选择或添加一个正版账号”。正式 CLI 对无账号启动、旧 `--name` 预览和无账号脚本导出均返回失败，未创建设置文件或导出脚本。
+
+本地验证代码对应 [d3c9ebf](https://github.com/mohui666/PCL-Rust/commit/d3c9ebfd3c3bcc313b9b1ee23a876a14d465d02a)。本地 Mac 包主程序 SHA256：`6c4750cfc7b820f1ebcc3bdaf3b22c819bc81ecab27fd3781a35bf72fde393c3`；本机生成的苹方字库仅用于本地验证，未发布。此处不以 CI 代替 Windows/Linux 原生界面或游戏验证。
+
+Minecraft 完整正版登录仍受未获批 AppID 限制。此前实测到 Minecraft 会话阶段返回 403，没有验证真实权益、账号重启恢复或正版游戏启动。
 
 ## v0.1.0 公开预览包
 

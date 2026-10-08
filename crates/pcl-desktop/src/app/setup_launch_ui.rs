@@ -174,6 +174,8 @@ impl Launcher {
                     else{ui.label(RichText::new("暂时无法读取内存分配信息").color(MUTED));}
                 });
                 setup_card(ui,"离线皮肤",15,Some(&mut state.skin_open),|ui| {
+                    hint(ui,"离线登录已禁用，以下旧设置不再用于启动游戏。",false);
+                    ui.add_enabled_ui(false, |ui| {
                     ui.columns(5,|columns| {
                         for (column,(value,label)) in columns.iter_mut().zip([(OfflineSkinMode::Default,"随机"),(OfflineSkinMode::Steve,"Steve"),(OfflineSkinMode::Alex,"Alex"),(OfflineSkinMode::OfficialName,"正版皮肤"),(OfflineSkinMode::Custom,"自定义")]) {
                             column.radio_value(&mut settings.offline_skin_mode,value,label);
@@ -196,6 +198,7 @@ impl Launcher {
                     if settings.offline_skin_mode!=OfflineSkinMode::Default {
                         ui.label(RichText::new("皮肤模型按原版方式选择离线 UUID，切换后服务器内的离线玩家资料可能不同。").size(12.0).color(MUTED));
                     }
+                    });
                 });
                 setup_card(ui,"高级选项",15,Some(&mut state.advanced_open),|ui| {
                     ui.horizontal_top(|ui| {

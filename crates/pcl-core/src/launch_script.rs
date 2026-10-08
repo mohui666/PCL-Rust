@@ -424,7 +424,7 @@ mod tests {
             username: "Player".into(),
             uuid: "0123456789abcdef0123456789abcdef".into(),
             access_token: token.into(),
-            user_type: if token == "0" { "legacy" } else { "msa" }.into(),
+            user_type: "msa".into(),
         };
         let platform = Platform {
             os: "osx".into(),
@@ -502,26 +502,24 @@ mod tests {
         );
     }
     #[test]
-    fn offline_modern_and_legacy_session_values_remain_runnable() {
+    fn authenticated_modern_and_legacy_scripts_require_credentials() {
         for legacy in [false, true] {
-            let (root, plan) = fixture("0", legacy);
+            let (root, plan) = fixture("FIXTURE_TOKEN", legacy);
             let result = export_launch_script(
-                &root.path().join("offline.command"),
+                &root.path().join("authenticated.command"),
                 &plan,
                 ScriptFormat::MacCommand,
             )
             .unwrap();
-            assert!(result.runnable_without_credentials);
+            assert!(!result.runnable_without_credentials);
             let script = fs::read_to_string(result.path).unwrap();
-            assert!(!script.contains("DIAGNOSTIC"));
-            if legacy {
-                assert!(script.contains("token:0:0123456789abcdef0123456789abcdef"));
-            }
+            assert!(script.contains("DIAGNOSTIC"));
+            assert!(!script.contains("FIXTURE_TOKEN"));
         }
     }
     #[test]
     fn quotes_special_characters_as_data_and_keeps_windows_bootstrap_constant() {
-        let (_root, mut plan) = fixture("0", false);
+        let (_root, mut plan) = fixture("FIXTURE_TOKEN", false);
         let special = [
             "",
             "with spaces",
@@ -571,7 +569,7 @@ mod tests {
     }
     #[test]
     fn existing_target_cancelled_export_and_invalid_arguments_leave_no_partial_file() {
-        let (root, mut plan) = fixture("0", false);
+        let (root, mut plan) = fixture("FIXTURE_TOKEN", false);
         let path = root.path().join("existing.command");
         fs::write(&path, b"user original").unwrap();
         assert!(export_launch_script(&path, &plan, ScriptFormat::MacCommand).is_err());
@@ -602,7 +600,7 @@ mod tests {
     }
     #[test]
     fn oversized_windows_command_fails_before_writing() {
-        let (root, mut plan) = fixture("0", false);
+        let (root, mut plan) = fixture("FIXTURE_TOKEN", false);
         plan.args = vec!["x".repeat(32699)];
         let path = root.path().join("too-long.bat");
         assert!(export_launch_script(&path, &plan, ScriptFormat::WindowsBatch).is_err());
@@ -618,7 +616,7 @@ mod tests {
     #[test]
     fn unix_export_is_private_executable_rejects_symlink_and_only_parses_shell_syntax() {
         use std::os::unix::fs::{symlink, PermissionsExt};
-        let (root, mut plan) = fixture("0", false);
+        let (root, mut plan) = fixture("FIXTURE_TOKEN", false);
         let untouched = root.path().join("notes");
         fs::write(&untouched, b"keep").unwrap();
         let link = root.path().join("linked.command");

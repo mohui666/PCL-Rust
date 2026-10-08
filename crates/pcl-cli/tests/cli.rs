@@ -252,144 +252,54 @@ fn instance_settings_are_validated_and_rename_preserves_user_data() {
 
 #[cfg(unix)]
 #[test]
-fn plan_honors_explicit_memory_without_changing_saved_instance_preferences() {
+fn unauthenticated_launch_plan_and_script_never_execute_java_or_change_settings() {
     let f = Fixture::new();
+    let marker = f.root.join("versions/fixture/SHOULD-NOT-RUN");
     let java = f.java("touch SHOULD-NOT-RUN");
-    pcl_core::config::save_instance_settings(
-        &f.root,
-        "fixture",
-        &pcl_core::config::InstanceSettings {
-            memory_auto: true,
-            memory_mb: Some(2048),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let path = pcl_core::config::instance_settings_path(&f.root, "fixture").unwrap();
-    let before = fs::read(&path).unwrap();
-    let plan = f.ok(&[
-        "plan",
-        "fixture",
-        "--java",
-        text(&java),
-        "--memory",
-        "768",
-        "--name",
-        "Tester",
-    ]);
-    assert!(plan["command"].as_str().unwrap().contains("-Xmx768M"));
-    assert_eq!(fs::read(path).unwrap(), before);
-    assert!(!f.root.join("versions/fixture/SHOULD-NOT-RUN").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn launch_reports_real_child_exit_and_redacts_streamed_logs() {
-    let f = Fixture::new();
-    let java = f.java("printf 'accessToken=PRIVATE-TOKEN-123\\n'; printf '\\n' >&2; exit 23");
-    let out = f.run(&[
-        "launch",
-        "fixture",
-        "--java",
-        text(&java),
-        "--memory",
-        "512",
-    ]);
-    assert_eq!(
-        out.status.code(),
-        Some(23),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.stdout.is_empty());
-    let log = String::from_utf8(out.stderr).unwrap();
-    assert!(!log.contains("PRIVATE-TOKEN"));
-    assert!(log.contains("game_started") && log.contains("game_log"));
-    for line in log.lines() {
-        let _: Value = serde_json::from_str(line).unwrap();
+    let script = f.directory.path().join("launch.command");
+    let before = fs::read(&f.config).unwrap();
+    for command in ["launch", "plan", "export-script"] {
+        for offline_name in [false, true] {
+            let mut args = vec![command, "fixture", "--java", text(&java)];
+            if command == "export-script" {
+                args.push(text(&script));
+            }
+            if offline_name {
+                args.extend(["--name", "Tester"]);
+            }
+            let out = f.run(&args);
+            assert_eq!(out.status.code(), Some(1));
+            assert!(out.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&out.stderr).contains("离线登录已禁用"));
+            assert!(!marker.exists());
+            assert!(!script.exists());
+            assert_eq!(fs::read(&f.config).unwrap(), before);
+        }
     }
 }
 
 #[cfg(unix)]
 #[test]
-fn microsoft_only_instance_still_rejects_offline_launch() {
+fn instance_preferences_cannot_enable_offline_launch() {
     let f = Fixture::new();
     let java = f.java("touch SHOULD-NOT-RUN");
-    pcl_core::config::save_instance_settings(
-        &f.root,
-        "fixture",
-        &pcl_core::config::InstanceSettings {
-            login_requirement: pcl_core::config::LoginRequirement::Microsoft,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let out = f.run(&["launch", "fixture", "--java", text(&java)]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("仅允许正版"));
-    assert!(!f.root.join("versions/fixture/SHOULD-NOT-RUN").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn interrupt_returns_130_and_stops_only_the_owned_game() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::Stdio,
-        time::{Duration, Instant},
-    };
-    let f = Fixture::new();
-    let java = f.java("exec sleep 30");
-    let mut sentinel = Command::new("sleep").arg("30").spawn().unwrap();
-    let mut child = f
-        .command()
-        .args([
-            "launch",
+    for mode in [
+        pcl_core::config::LoginRequirement::Any,
+        pcl_core::config::LoginRequirement::Microsoft,
+        pcl_core::config::LoginRequirement::Offline,
+    ] {
+        pcl_core::config::save_instance_settings(
+            &f.root,
             "fixture",
-            "--java",
-            text(&java),
-            "--memory",
-            "512",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+            &pcl_core::config::InstanceSettings {
+                login_requirement: mode,
+                ..Default::default()
+            },
+        )
         .unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let pipe = child.stderr.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        for line in BufReader::new(pipe).lines() {
-            let line = line.unwrap();
-            if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                if event["type"] == "game_started" {
-                    tx.send(event["pid"].as_u64().unwrap()).unwrap();
-                }
-            }
-        }
-    });
-    let game = rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert!(Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(25));
-    };
-    reader.join().unwrap();
-    assert_eq!(status.code(), Some(130));
-    assert!(sentinel.try_wait().unwrap().is_none());
-    sentinel.kill().unwrap();
-    sentinel.wait().unwrap();
-    assert!(!Command::new("kill")
-        .args(["-0", &game.to_string()])
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success());
+        let out = f.run(&["launch", "fixture", "--java", text(&java)]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("离线登录已禁用"));
+        assert!(!f.root.join("versions/fixture/SHOULD-NOT-RUN").exists());
+    }
 }

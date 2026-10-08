@@ -136,7 +136,24 @@ fn valid_player_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+/// Launch eligibility is shared by desktop and CLI. Callers obtain Microsoft
+/// sessions only after the official login, entitlement and profile checks.
+/// Legacy identities are retained for reading old skin/settings data, never play.
+pub fn require_microsoft_session(session: &Session) -> Result<()> {
+    if session.user_type != "msa"
+        || session.access_token.trim().is_empty()
+        || session.access_token == "0"
+    {
+        bail!("离线登录已禁用；请使用拥有 Minecraft Java 版的微软账号完成正版登录");
+    }
+    if session.username.is_empty() || session.uuid.is_empty() {
+        bail!("请先完成正版登录并获取 Minecraft 玩家资料");
+    }
+    Ok(())
+}
+
 /// Java's UUID.nameUUIDFromBytes("OfflinePlayer:" + name), without a namespace.
+/// This legacy identity helper does not produce an eligible launch session.
 pub fn offline_session(name: &str) -> Result<Session> {
     if !valid_player_name(name) {
         bail!("离线用户名须为 1–16 个 ASCII 字母、数字或下划线");

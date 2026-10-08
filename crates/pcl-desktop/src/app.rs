@@ -476,7 +476,7 @@ impl Launcher {
             settings_path: path,
             page: Page::Launch,
             version_view: false,
-            microsoft: false,
+            microsoft: true,
             session: None,
             versions: vec![],
             versions_request: 0,
@@ -773,6 +773,10 @@ impl Launcher {
         if !self.account_store_ready() {
             return;
         }
+        if !self.microsoft {
+            self.error = Some("离线登录已禁用，请完成正版登录后启动。".into());
+            return;
+        }
         if let Some(id) = &self.settings.selected_version {
             match config::load_instance_settings(&self.settings.game_root, id) {
                 Ok(settings) => match settings.login_requirement {
@@ -780,8 +784,9 @@ impl Launcher {
                         self.error = Some("此实例要求正版登录，请选择正版账号后启动。".into());
                         return;
                     }
-                    config::LoginRequirement::Offline if self.microsoft => {
-                        self.error = Some("此实例要求离线身份，请先手动切换登录方式。".into());
+                    config::LoginRequirement::Offline => {
+                        self.error =
+                            Some("离线登录已禁用；请将此实例的登录方式改为正版登录。".into());
                         return;
                     }
                     _ => (),
@@ -830,6 +835,10 @@ impl Launcher {
         self.start_launch_with_server(action, None);
     }
     fn start_launch_with_server(&mut self, action: LaunchAction, home_server: Option<String>) {
+        if !self.microsoft {
+            self.error = Some("离线登录已禁用，请完成正版登录后启动。".into());
+            return;
+        }
         if self.jobs.conflicts_with(&self.settings.game_root) {
             self.error = Some("游戏目录仍有写入任务，请等待完成后启动".into());
             return;
@@ -842,27 +851,21 @@ impl Launcher {
             self.version_view = true;
             return;
         };
-        let session = if self.microsoft {
-            match &self.session {
-                Some(s) => s.clone(),
-                None => {
-                    self.error = Some(if matches!(action, LaunchAction::Export { .. }) {
-                        "请先登录正版账号，再导出启动参数。".into()
-                    } else {
-                        "请先完成微软登录。".into()
-                    });
-                    return;
-                }
-            }
-        } else {
-            match auth::offline_session(&self.settings.offline_name) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.error = Some(e.to_string());
-                    return;
-                }
+        let session = match &self.session {
+            Some(s) => s.clone(),
+            None => {
+                self.error = Some(if matches!(action, LaunchAction::Export { .. }) {
+                    "请先登录正版账号，再导出启动参数。".into()
+                } else {
+                    "请先完成微软登录。".into()
+                });
+                return;
             }
         };
+        if let Err(error) = auth::require_microsoft_session(&session) {
+            self.error = Some(error.to_string());
+            return;
+        }
         let instance = match config::load_instance_settings(&self.settings.game_root, &version) {
             Ok(value) => value,
             Err(error) => {
@@ -872,15 +875,6 @@ impl Launcher {
         };
         let request = java_ui::selection_request(&self.settings, &instance, &version);
         let candidates = self.java.clone();
-        if !self.microsoft && matches!(action, LaunchAction::Run) {
-            let name = self.settings.offline_name.trim().to_owned();
-            self.settings
-                .offline_history
-                .retain(|previous| previous != &name);
-            self.settings.offline_history.insert(0, name);
-            self.settings.offline_history.truncate(20);
-            self.persist();
-        }
         let Some((tx, cancel)) = self.start_job("正在检查启动环境") else {
             return;
         };
@@ -2337,7 +2331,7 @@ mod event_tests {
             settings_path: path,
             page: Page::Launch,
             version_view: false,
-            microsoft: false,
+            microsoft: true,
             session: None,
             versions: vec![],
             versions_request: 0,

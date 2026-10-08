@@ -703,7 +703,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(version.join("fixture.jar"), "fixture").unwrap();
-        let session = pcl_core::auth::offline_session("Player").unwrap();
+        let session = pcl_core::model::Session {
+            user_type: "msa".into(),
+            access_token: "FIXTURE_TOKEN".into(),
+            ..pcl_core::auth::offline_session("Player").unwrap()
+        };
         let mut plan = build_plan_with_settings(
             &LaunchOptions {
                 root: root.path().into(),
