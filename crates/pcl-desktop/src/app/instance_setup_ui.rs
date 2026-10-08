@@ -328,7 +328,7 @@ impl Launcher {
                 row(ui, "登录方式", |ui| {
                     let label = login_label(state.value.login_requirement);
                     ui_style::PclComboBox::from_id_salt("instance-login-mode").width(ui.available_width()).selected_text(label).show_ui(ui, |ui| {
-                        for value in [LoginRequirement::Any, LoginRequirement::Microsoft, LoginRequirement::Offline] {
+                        for value in [LoginRequirement::Any, LoginRequirement::Microsoft] {
                             ui.selectable_value(&mut state.value.login_requirement, value, login_label(value));
                         }
                     });
@@ -482,9 +482,9 @@ fn java_mode_label(mode: JavaSelectionMode) -> &'static str {
 
 fn login_label(requirement: LoginRequirement) -> &'static str {
     match requirement {
-        LoginRequirement::Any => "正版登录或离线登录",
+        LoginRequirement::Any => "默认（正版登录）",
         LoginRequirement::Microsoft => "仅正版登录",
-        LoginRequirement::Offline => "仅离线登录",
+        LoginRequirement::Offline => "离线登录（已禁用，请更改）",
     }
 }
 

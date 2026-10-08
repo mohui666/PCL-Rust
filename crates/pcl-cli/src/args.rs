@@ -155,10 +155,10 @@ pub(crate) struct LaunchArgs {
     pub version: String,
     #[arg(long)]
     pub java: Option<PathBuf>,
-    /// 离线名称；与 --account 互斥
-    #[arg(long, conflicts_with = "account")]
+    /// 已停用；离线名称不能用于登录或启动
+    #[arg(long, conflicts_with = "account", hide = true)]
     pub name: Option<String>,
-    /// 已保存的微软账户 ID；不传时使用离线名称
+    /// 已保存的微软账户 ID；启动、预览和导出必须指定
     #[arg(long)]
     pub account: Option<String>,
     #[arg(long, value_parser = clap::value_parser!(u32).range(256..=262144))]

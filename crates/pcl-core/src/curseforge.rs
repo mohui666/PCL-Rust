@@ -18,6 +18,15 @@ use std::{collections::BTreeMap, io::Read, sync::atomic::AtomicBool, time::Durat
 const API: &str = "https://api.curseforge.com/v1/";
 const JSON_LIMIT: u64 = 16 * 1024 * 1024;
 
+#[derive(Debug)]
+struct HttpStatus(u16);
+impl std::fmt::Display for HttpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CurseForge 返回 HTTP {}", self.0)
+    }
+}
+impl std::error::Error for HttpStatus {}
+
 fn checked_key(value: String) -> Result<String> {
     ensure!(
         !value.trim().is_empty()
@@ -139,7 +148,7 @@ fn send(request: RequestBuilder, cancel: &AtomicBool) -> Result<Response> {
     match response.status().as_u16() {
         401 | 403 => bail!("CurseForge 拒绝请求，请检查 API Key 的有效性和访问权限"),
         429 => bail!("CurseForge 请求频率受限，请稍后重试"),
-        code if !(200..300).contains(&code) => bail!("CurseForge 返回 HTTP {code}"),
+        code if !(200..300).contains(&code) => Err(HttpStatus(code).into()),
         _ => Ok(response),
     }
 }
@@ -647,14 +656,37 @@ pub fn download_file_range(
 ) -> Result<Response> {
     let url = Url::parse(&file.url).context("CurseForge 文件地址无效")?;
     ensure!(trusted_file(&url), "CurseForge 文件仅允许官方 HTTPS CDN");
-    let mut request = client(true, false)?
-        .get(url)
-        .header("x-api-key", key_header()?)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    download_request(&client(true, false)?, &url, key_header()?, cancel, range)
+}
+fn download_request(
+    client: &Client,
+    url: &Url,
+    key: HeaderValue,
+    cancel: &AtomicBool,
+    range: Option<(u64, u64)>,
+) -> Result<Response> {
+    let request = || {
+        client
+            .get(url.clone())
+            .header("x-api-key", key.clone())
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+    };
     if let Some((first, last)) = range {
-        request = request.header(reqwest::header::RANGE, format!("bytes={first}-{last}"));
+        match send(
+            request().header(reqwest::header::RANGE, format!("bytes={first}-{last}")),
+            cancel,
+        ) {
+            // The official CDN can return 404 only for Range while an authenticated
+            // full GET of the same published URL succeeds. Try that GET once;
+            // resumable::download handles its 200 by restarting and verifying hashes.
+            Err(error)
+                if error
+                    .downcast_ref::<HttpStatus>()
+                    .is_some_and(|status| status.0 == 404) => {}
+            result => return result,
+        }
     }
-    send(request, cancel)
+    send(request(), cancel)
 }
 pub(crate) fn fetch_icon(url: &str, cancel: &AtomicBool) -> Result<Vec<u8>> {
     let url = Url::parse(url)?;
@@ -791,6 +823,73 @@ pub(crate) fn identify_files_with_disabled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_404_uses_one_authenticated_full_get_but_denied_requests_never_retry() {
+        use std::{io::Write, net::TcpListener, thread, time::Instant};
+        for (range, statuses) in [
+            (Some((0, 0)), vec![404, 200]),
+            (Some((0, 0)), vec![404, 404]),
+            (Some((0, 0)), vec![401]),
+            (Some((0, 0)), vec![403]),
+            (None, vec![404]),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let expected = statuses.clone();
+            let server = thread::spawn(move || {
+                let mut requests = Vec::new();
+                for status in statuses {
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    let mut stream = loop {
+                        if let Ok((stream, _)) = listener.accept() {
+                            break stream;
+                        }
+                        assert!(Instant::now() < deadline, "missing expected request");
+                        thread::sleep(Duration::from_millis(5));
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).unwrap();
+                        request.push(byte[0]);
+                    }
+                    requests.push(String::from_utf8(request).unwrap().to_ascii_lowercase());
+                    write!(stream,"HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK").unwrap();
+                }
+                requests
+            });
+            let result = download_request(
+                &Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap(),
+                &Url::parse(&format!("http://{address}/published.jar")).unwrap(),
+                HeaderValue::from_static("fixture-key"),
+                &AtomicBool::new(false),
+                range,
+            );
+            assert_eq!(result.is_ok(), expected.last() == Some(&200));
+            if let Err(error) = result {
+                assert!(!error.to_string().contains("fixture-key"));
+            }
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), expected.len());
+            for (index, request) in requests.iter().enumerate() {
+                assert!(request.starts_with("get /published.jar http/1.1\r\n"));
+                assert!(request.contains("x-api-key: fixture-key\r\n"));
+                assert_eq!(
+                    request.contains("range: bytes=0-0\r\n"),
+                    index == 0 && range.is_some()
+                );
+            }
+        }
+    }
     fn file() -> CfFile {
         serde_json::from_value(serde_json::json!({"id":20,"modId":10,"gameId":432,"isAvailable":true,"displayName":"Fixture","fileName":"fixture.jar","releaseType":1,"hashes":[{"algo":1,"value":"0123456789012345678901234567890123456789"}],"fileDate":"2026-01-01","fileLength":100,"downloadUrl":"https://edge.forgecdn.net/files/1/2/fixture.jar","gameVersions":["1.21.1","Fabric"],"dependencies":[{"modId":11,"relationType":3},{"modId":12,"relationType":5}]})).unwrap()
     }

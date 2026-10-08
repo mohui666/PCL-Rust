@@ -94,10 +94,10 @@ pcl-cli --root "$ROOT" export-pack MyPack /absolute/path/export.mrpack --options
 ```sh
 pcl-cli accounts
 pcl-cli login --client-id YOUR_APPROVED_CLIENT_ID
-pcl-cli --root "$ROOT" plan INSTANCE --java /absolute/path/to/java --name Player
-pcl-cli --root "$ROOT" launch INSTANCE --name Player --memory 4096
+pcl-cli --root "$ROOT" plan INSTANCE --java /absolute/path/to/java --account ACCOUNT_ID
+pcl-cli --root "$ROOT" launch INSTANCE --account ACCOUNT_ID --memory 4096
 pcl-cli --root "$ROOT" launch INSTANCE --account ACCOUNT_ID
-pcl-cli --root "$ROOT" export-script INSTANCE /absolute/path/launch.command --java /absolute/path/to/java
+pcl-cli --root "$ROOT" export-script INSTANCE /absolute/path/launch.command --java /absolute/path/to/java --account ACCOUNT_ID
 pcl-cli --root "$ROOT" instance show INSTANCE
 pcl-cli --root "$ROOT" instance rename INSTANCE NewName
 pcl-cli --root "$ROOT" instance trash INSTANCE
@@ -107,8 +107,10 @@ pcl-cli logs --file /absolute/path/latest.log --export /absolute/path/report.zip
 
 设备码及验证地址写入 stderr；可以在另一台机器的浏览器完成授权，CLI 不自动打开浏览器。账户仍须通过微软、Xbox 和 Minecraft 的授权／所有权检查；刷新凭据只存系统安全存储。Linux 安全凭据库仍沿用核心的现有限制，未新增明文保存回退；真实微软服务访问受 AppID 审批状态影响。
 
-`--name` 选择离线身份，`--account` 选择已保存微软账户，两者互斥；省略时使用配置中的离线名称。实例要求微软身份时离线启动仍被拒绝。`--java` 是明确选择；省略时沿用实例 Java 策略并自动选择已安装的兼容运行时，缺失时提示 `java install`，不会暗中下载。`--memory` 仅覆盖本次启动，不改写实例设置；`--server` 同样仅对本次生效。
+离线登录已禁用。`launch`、`plan` 和 `export-script` 必须传入 `--account ACCOUNT_ID`，账号由 `login` 完成正版验证后保存；失败不会退回离线身份。旧 `--name` 参数或仅有本地玩家名称会明确报错。旧实例若设为 `offline`，须将其登录方式改为正版登录；修改实例 JSON 不能放开共享核心的账号校验。下载、Java、加载器、Mod 和整合包管理仍可在未登录时执行。
 
-`plan` 只生成脱敏命令，不启动游戏；`export-script` 写入脱敏的 `.command` 或 `.bat`，已有文件不会覆盖。`launch` 启动 Java、转发脱敏日志并等待退出；取消只终止本次管理的进程。它保留 JVM／游戏参数、隔离目录、登录限制、启动前命令、首次语言与离线皮肤设置。命令行使用保存的启动器尺寸解释“跟随窗口”设置；游戏窗口标题、最大化、系统 GPU 偏好和进程优先级由桌面／系统管理，有相关设置时输出提示。
+`--java` 是明确选择；省略时沿用实例 Java 策略并自动选择已安装的兼容运行时，缺失时提示 `java install`，不会暗中下载。`--memory` 仅覆盖本次启动，不改写实例设置；`--server` 同样仅对本次生效。
+
+`plan` 只生成脱敏命令，不启动游戏；`export-script` 写入脱敏的 `.command` 或 `.bat`，已有文件不会覆盖，导出的诊断脚本不含正版凭据。`launch` 启动 Java、转发脱敏日志并等待退出；取消只终止本次管理的进程。它保留 JVM／游戏参数、隔离目录、登录限制、启动前命令与首次语言设置。命令行使用保存的启动器尺寸解释“跟随窗口”设置；游戏窗口标题、最大化、系统 GPU 偏好和进程优先级由桌面／系统管理，有相关设置时输出提示。
 
 **无头指启动器无窗口。Minecraft 客户端自身仍需要可用的图形环境；此功能不是 Minecraft 服务端模式。** `instance trash --apply` 使用系统废纸篓／回收站；系统不支持时明确失败，不改为永久删除。

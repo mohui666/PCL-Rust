@@ -2,7 +2,19 @@
 
 [项目首页](../README.md) / [文档索引](README.md)
 
-更新日期：2026-10-05。[v0.1.0 开发预览版下载](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)。以下按提交分别记录检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+更新日期：2026-10-08。以下按提交分别记录检查结果，历史批次折叠保留。完整功能范围见 [迁移矩阵](migration-matrix.md)。
+
+## 正版登录限制与 CurseForge 接入
+
+macOS arm64 本地 `cargo test --workspace --locked`：**636 项通过，4 项忽略**；`cargo clippy --workspace --all-targets --locked -- -D warnings` 通过。没有把历史 Windows/Linux 运行记录当作本次实机验证。
+
+- 共享核心拒绝离线身份、空令牌与 `0` 令牌；`any` / `microsoft` / `offline` 实例配置均不能放行未验证身份。
+- CLI 无账号或使用旧 `--name` 时，启动、预览和脚本导出均失败，测试确认未启动 Java、未创建脚本、未更改设置。合成正版会话仅在单元测试中用于检查参数、子进程退出和取消，不代表真实 Microsoft 登录成功。
+- 桌面状态测试确认不能切换离线模式，离线身份不能用于启动、预览或导出，已有账号选择不被清除。
+- CurseForge Key 已通过现有系统安全存储写入，并由独立 CLI 进程完成真实搜索与版本列表读取。Key 没有加入源码或安装包。
+- 真实请求发现同一 CDN 文件的完整 GET 返回 200，但 Range 请求返回 404。现在遇到该情况只对原发布地址尝试一次带 Key 的完整 GET；401/403 不重试、不改换来源，继续使用原有长度及哈希校验。局部 HTTP 夹具覆盖成功、仍然 404 和拒绝访问。
+
+Minecraft 完整正版登录仍受未获批 AppID 限制。此前实测到 Minecraft 会话阶段返回 403，没有验证真实权益、账号重启恢复或正版游戏启动。
 
 ## v0.1.0 公开预览包
 

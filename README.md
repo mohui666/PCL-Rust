@@ -11,19 +11,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0">下载预览版</a> · <a href="#快速运行">源码运行</a> · <a href="docs/README.md">文档</a> · <a href="docs/migration-matrix.md">迁移进度</a> · <a href="docs/validation.md">验证记录</a>
+  <a href="#快速运行">运行当前版本</a> · <a href="docs/README.md">文档</a> · <a href="docs/migration-matrix.md">迁移进度</a> · <a href="docs/validation.md">验证记录</a>
 </p>
 
 由 **[mohui666](https://github.com/mohui666)** 开发的第三方 Minecraft 启动器，以 Rust 重构 PCL，提供 **macOS、Windows 与 Linux x86_64** 构建。界面以 Windows 官方 **PCL 2.13.1.1** 为基准，macOS 本地构建使用苹方。
 
-**[下载 v0.1.0 开发预览版](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)**：Windows x86_64、macOS arm64、Linux x86_64（glibc 2.35+）。
+当前源码已禁用离线登录，运行方式见下文。历史 [v0.1.0 开发预览版](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)早于此次登录整改，不能用于验证当前行为。
 
 ## 功能
 
 | 模块 | 支持内容 |
 | --- | --- |
 | 安装与资源 | Minecraft、加载器、Java 管理，Modrinth / CurseForge，整合包导入导出（可附三端启动器），Mod 更新 |
-| 启动与维护 | 全局与版本独立设置，离线账号、皮肤，游戏进程、日志与崩溃分析 |
+| 启动与维护 | 全局与版本独立设置，微软正版账号与皮肤，游戏进程、日志与崩溃分析；离线登录已禁用 |
 | 下载与任务 | 下载源、限速、哈希校验，冲突排队，最多 4 路独立任务，取消、重试与加权进度 |
 | 个性化 | 主题、背景 / GIF、音乐，自定义 XAML 主页、帮助文档与页面动画 |
 
@@ -72,8 +72,8 @@ cargo run --locked -p pcl-desktop
 
 - **构建与检查**：Mac CI 619 项、Windows CI 591 项测试通过，严格 Clippy 通过；Linux 构建完成。三端真实程序的导出与回导已验证，见[验证记录](docs/validation.md)。
 - **界面验证**：已检查部分 Mac 页面；Windows、Linux 实机和全页面像素对照尚未完成。
-- **微软登录**：Minecraft AppID 审核已提交，未确认获批；本次按用户选择跳过登录复测。
-- **CurseForge**：申请已提交、待审核，尚未取得 API Key，真实 API 流程未验证。
+- **微软登录**：此前申请被拒，尚未获批。2026-10-06 实测通过 Microsoft / Xbox / XSTS，Minecraft 会话交换返回 HTTP 403；完整正版登录仍未验收。当前代码已禁用 GUI / CLI 离线启动，历史 v0.1.0 预览版不包含此调整，见[登录说明](docs/login.md)。
+- **CurseForge**：已取得 API Key，使用系统安全存储；真实搜索、下载验证状态见[验证记录](docs/validation.md)。Key 不随源码或安装包分发。
 - **内置联机**：尚未实现。
 
 ## 署名与许可

@@ -13,6 +13,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(all(test, unix))]
+#[path = "game_tests.rs"]
+mod tests;
+
 #[derive(Debug)]
 pub(super) struct GameExit(pub i32);
 impl std::fmt::Display for GameExit {
@@ -27,12 +31,27 @@ pub(super) fn plan(
     args: LaunchArgs,
     launching: bool,
 ) -> Result<(LaunchPlan, Session)> {
+    ensure!(
+        args.name.is_none(),
+        "离线登录已禁用；请先 login，再用 --account 选择正版账号"
+    );
+    let id = args
+        .account
+        .as_deref()
+        .context("离线登录已禁用；请先 login，再用 --account 选择正版账号")?;
+    let session =
+        accounts::restore_account(id, &cx.cancel, |s| cx.output.event("login", &s))?.session;
+    plan_with_session(cx, args, launching, session)
+}
+
+fn plan_with_session(
+    cx: &RuntimeContext,
+    args: LaunchArgs,
+    launching: bool,
+    session: Session,
+) -> Result<(LaunchPlan, Session)> {
+    auth::require_microsoft_session(&session)?;
     let instance = config::load_instance_settings(&cx.root, &args.version)?;
-    let session = if let Some(id) = args.account {
-        accounts::restore_account(&id, &cx.cancel, |s| cx.output.event("login", &s))?.session
-    } else {
-        auth::offline_session(args.name.as_deref().unwrap_or(&cx.settings.offline_name))?
-    };
     let mut priority = cx.settings.java_priority.clone();
     if let Some(path) = &cx.settings.java_path {
         if !priority.contains(path) {
@@ -113,6 +132,7 @@ pub(super) fn plan(
 }
 
 pub(super) fn run(cx: &RuntimeContext, plan: LaunchPlan, session: Session) -> Result<Value> {
+    auth::require_microsoft_session(&session)?;
     cx.check_cancel()?;
     std::fs::create_dir_all(&plan.cwd)?;
     for warning in &plan.behavior.warnings {

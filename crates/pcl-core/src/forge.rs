@@ -2010,7 +2010,11 @@ mod tests {
             };
             let plan = crate::launch::build_plan(
                 &options,
-                &crate::auth::offline_session("LegacyFixture").unwrap(),
+                &crate::model::Session {
+                    access_token: "FIXTURE_TOKEN".into(),
+                    user_type: "msa".into(),
+                    ..crate::auth::offline_session("LegacyFixture").unwrap()
+                },
                 &platform,
             )
             .unwrap();
@@ -2026,7 +2030,10 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|v| v == ["--username", "LegacyFixture"]));
-            assert!(plan.args.windows(2).any(|v| v == ["--accessToken", "0"]));
+            assert!(plan
+                .args
+                .windows(2)
+                .any(|v| v == ["--accessToken", "FIXTURE_TOKEN"]));
             let classpath = plan.args.windows(2).find(|v| v[0] == "-cp").unwrap()[1].clone();
             assert!(
                 classpath.contains("1.7.10.jar")
@@ -2664,7 +2671,11 @@ mod tests {
                     width: 854,
                     height: 480,
                 },
-                &crate::auth::offline_session("MiddleFixture").unwrap(),
+                &crate::model::Session {
+                    access_token: "FIXTURE_TOKEN".into(),
+                    user_type: "msa".into(),
+                    ..crate::auth::offline_session("MiddleFixture").unwrap()
+                },
                 &platform,
             )
             .unwrap();

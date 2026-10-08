@@ -1263,7 +1263,11 @@ mod tests {
                 width: 854,
                 height: 480,
             },
-            &auth::offline_session("Player").unwrap(),
+            &crate::model::Session {
+                access_token: "FIXTURE_TOKEN".into(),
+                user_type: "msa".into(),
+                ..auth::offline_session("Player").unwrap()
+            },
             &Platform::current(),
         )
         .unwrap();
