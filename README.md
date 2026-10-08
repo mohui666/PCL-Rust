@@ -70,7 +70,7 @@ cargo run --locked -p pcl-desktop
 
 ## 当前状态
 
-- **构建与检查**：Mac CI 619 项、Windows CI 591 项测试通过，严格 Clippy 通过；Linux 构建完成。三端真实程序的导出与回导已验证，见[验证记录](docs/validation.md)。
+- **构建与检查**：此次 macOS 本地 636 项测试及严格 Clippy 通过，release 构建与原生登录拦截检查通过。远端 CI 和历史三端导出结果分别记录，见[验证记录](docs/validation.md)。
 - **界面验证**：已检查部分 Mac 页面；Windows、Linux 实机和全页面像素对照尚未完成。
 - **微软登录**：此前申请被拒，尚未获批。2026-10-06 实测通过 Microsoft / Xbox / XSTS，Minecraft 会话交换返回 HTTP 403；完整正版登录仍未验收。当前代码已禁用 GUI / CLI 离线启动，历史 v0.1.0 预览版不包含此调整，见[登录说明](docs/login.md)。
 - **CurseForge**：已取得 API Key，使用系统安全存储；真实搜索、下载验证状态见[验证记录](docs/validation.md)。Key 不随源码或安装包分发。
@@ -94,10 +94,10 @@ Rust 跨平台版作者 **[mohui666](https://github.com/mohui666)**。图标基�
 | Application (Client) ID | `2c86a114-ddd8-468b-82ca-441923527e09` |
 | Website and source | [github.com/mohui666/PCL-Rust](https://github.com/mohui666/PCL-Rust) |
 
-Personal Microsoft accounts sign in through device authorization, followed by Xbox Live, XSTS and Minecraft Services authentication, entitlement and profile checks. The launcher does not collect Microsoft passwords. Refresh credentials use the operating system credential store; Minecraft access sessions remain in memory. Offline profiles do not obtain service tokens.
+Personal Microsoft accounts sign in through device authorization, followed by Xbox Live, XSTS and Minecraft Services authentication, entitlement and profile checks. The launcher does not collect Microsoft passwords. Refresh credentials use the operating system credential store on supported platforms; Minecraft access sessions remain in memory. Linux credential persistence is not implemented yet.
 
-The AppID review was submitted and a receipt received. Approval is unconfirmed. Sign-in was not retested in this update. See [login status](docs/login.md).
+Earlier AppID applications were rejected. On 2026-10-06, Microsoft, Xbox and XSTS authentication succeeded, but the Minecraft session exchange returned HTTP 403. End-to-end Minecraft login has not been verified. The current source disables offline launch in both the GUI and CLI and enforces the restriction in the shared launch core. Command-line launch, plan and script export require a saved account restored through the authentication and ownership checks; old offline instance settings cannot bypass this restriction. See [login status](docs/login.md) and [validation](docs/validation.md).
 
-Source, build scripts and required assets are public. [v0.1.0 development preview downloads](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0) target Windows x86_64, macOS arm64 and Linux x86_64 (glibc 2.35+). Generated fonts are not committed to the source repository.
+Source, build scripts and required assets are public. The historical v0.1.0 preview predates these authentication restrictions; build the current source to review the updated behavior. Generated fonts are not committed to the source repository.
 
 </details>
