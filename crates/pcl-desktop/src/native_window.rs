@@ -1,6 +1,8 @@
 //! Opacity of this launcher's own window, using its lifetime-bound native handle.
 use anyhow::{bail, Context, Result};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use raw_window_handle::HasWindowHandle;
+#[cfg(any(target_os = "macos", windows))]
+use raw_window_handle::RawWindowHandle;
 
 #[derive(Default)]
 pub(crate) struct WindowOpacity {

@@ -34,11 +34,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The local font exporter verifies fallback glyphs from cached egui crates.
       - name: Prepare macOS test fonts
         if: runner.os == 'macOS'
         run: python3 scripts/build-local-pingfang-sfnt.py --style all
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test Windows and macOS
         if: runner.os != 'Linux'
         run: cargo test --workspace --locked

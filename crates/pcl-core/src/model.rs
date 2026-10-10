@@ -187,7 +187,7 @@ pub struct Progress {
     pub transfer: Option<TransferProgress>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 mod tests {
     use super::*;
 
