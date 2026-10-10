@@ -710,7 +710,7 @@ impl Launcher {
     }
 }
 const KEY_HELP: &str =
-    "Key 保存在系统凭据库。环境变量 PCL_CURSEFORGE_API_KEY 优先，清除按钮不影响环境变量。";
+    "发行包自带应用 Key。可保存自己的 Key 覆盖默认值；环境变量 PCL_CURSEFORGE_API_KEY 优先。清除按钮只移除自己保存的 Key。";
 // PageSetupSystem download body: margins 25,37,25,15; source row heights
 // 28 + 7 + 28 + 7 + 27 + 27; the final row shows the actual target directory.
 fn download_card(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {

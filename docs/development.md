@@ -101,7 +101,7 @@ PYTHON_BIN="$PWD/test-output/linux-fonts-venv/bin/python" bash scripts/package-l
 
 导出页默认勾选“PCL Rust 启动器（Windows、macOS、Linux）”。取消勾选后按所选格式导出普通整合包；勾选时导出外层 ZIP，内含 `modpack.mrpack` 和三端程序。
 
-可以从 [v0.1.0 下载页](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0) 获取 `launcher-bundle.zip` 三端目录包。启动器会寻找应用旁的 `launcher-bundle`，也可点击“选择启动器目录”。目录结构：
+可以从 [v0.1.1 下载页](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.1) 获取 `PCL-Rust-v0.1.1-launcher-bundle.zip` 三端目录包。启动器会寻找应用旁的 `launcher-bundle`，也可点击“选择启动器目录”。目录结构：
 
 ```text
 launcher-bundle/
@@ -140,3 +140,14 @@ Windows 与 Linux 的运行依赖、资源和许可文件放在各自目录内�
 ## 发布与验证
 
 [v0.1.0 开发预览版下载](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)：Windows x86_64、macOS arm64、Linux x86_64（glibc 2.35+）。构建、签名、CI 与实机结果见 [验证记录](validation.md)，许可和资产来源见 [来源说明](upstream.md)。
+
+
+## 发行构建的应用配置
+
+Microsoft Client ID 是公开应用标识，默认值在 `pcl-core::auth`。CurseForge 应用 Key 不提交到源码；维护者将其设置为 GitHub Actions Secret `PCL_RELEASE_CURSEFORGE_API_KEY`，再手动运行 `Release packages` 工作流。该工作流仅在构建步骤通过 `PCL_BUNDLED_CURSEFORGE_API_KEY` 注入，之后清除环境变量，用全新 CI 运行器上的成品 CLI 查询配置、搜索资源并下载校验文件。
+
+运行时优先级为 `PCL_CURSEFORGE_API_KEY` 环境变量 > 用户保存在系统凭据库的 Key > 构建时注入的应用 Key。清除用户保存的 Key 后恢复发行包默认值。自编译时未注入 Key 仍可使用 Modrinth，CurseForge 需自行配置。无效的用户覆盖值会明确报错，不静默切换到另一 Key。
+
+注入编译产物不等于加密或防提取。不要使用该机制存放微软刷新令牌、密码或其他玩家私有凭据。工作流只上传发行包与不含 Key 的冒烟结果，不上传源码构建缓存、账号、用户设置或本机日志；公开 macOS / Linux 包仅携带可再分发字体和许可。
+
+下载三个平台工作流产物并核对后，建立与该工作流 commit 一致的版本 tag，发布三个平台包、三端导出目录包、SHA-256 清单及验证 manifest。工作流不会自动创建公开 Release。

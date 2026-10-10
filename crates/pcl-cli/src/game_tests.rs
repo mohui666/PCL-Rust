@@ -114,11 +114,12 @@ fn cancellation_stops_only_the_owned_game() {
 }
 
 #[test]
-fn runner_cannot_use_a_legacy_session_with_a_prebuilt_plan() {
+fn runner_rejects_an_invalid_microsoft_session_without_falling_back_to_offline() {
     let (_directory, cx, args, session) = fixture("touch SHOULD-NOT-RUN");
-    let (plan, _) = plan_with_session(&cx, args, false, session).unwrap();
+    let (plan, mut session) = plan_with_session(&cx, args, false, session).unwrap();
     let marker = plan.cwd.join("SHOULD-NOT-RUN");
-    let error = run(&cx, plan, auth::offline_session("Fixture").unwrap()).unwrap_err();
-    assert!(error.to_string().contains("离线登录已禁用"));
+    session.access_token = "0".into();
+    let error = run(&cx, plan, session).unwrap_err();
+    assert!(error.to_string().contains("登录身份无效"));
     assert!(!marker.exists());
 }

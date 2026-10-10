@@ -31,16 +31,11 @@ pub(super) fn plan(
     args: LaunchArgs,
     launching: bool,
 ) -> Result<(LaunchPlan, Session)> {
-    ensure!(
-        args.name.is_none(),
-        "离线登录已禁用；请先 login，再用 --account 选择正版账号"
-    );
-    let id = args
-        .account
-        .as_deref()
-        .context("离线登录已禁用；请先 login，再用 --account 选择正版账号")?;
-    let session =
-        accounts::restore_account(id, &cx.cancel, |s| cx.output.event("login", &s))?.session;
+    let session = if let Some(id) = &args.account {
+        accounts::restore_account(id, &cx.cancel, |s| cx.output.event("login", &s))?.session
+    } else {
+        auth::offline_session(args.name.as_deref().unwrap_or(&cx.settings.offline_name))?
+    };
     plan_with_session(cx, args, launching, session)
 }
 
@@ -50,7 +45,7 @@ fn plan_with_session(
     launching: bool,
     session: Session,
 ) -> Result<(LaunchPlan, Session)> {
-    auth::require_microsoft_session(&session)?;
+    auth::require_launch_session(&session)?;
     let instance = config::load_instance_settings(&cx.root, &args.version)?;
     let mut priority = cx.settings.java_priority.clone();
     if let Some(path) = &cx.settings.java_path {
@@ -132,7 +127,7 @@ fn plan_with_session(
 }
 
 pub(super) fn run(cx: &RuntimeContext, plan: LaunchPlan, session: Session) -> Result<Value> {
-    auth::require_microsoft_session(&session)?;
+    auth::require_launch_session(&session)?;
     cx.check_cancel()?;
     std::fs::create_dir_all(&plan.cwd)?;
     for warning in &plan.behavior.warnings {

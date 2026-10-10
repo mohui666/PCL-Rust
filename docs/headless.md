@@ -68,7 +68,7 @@ pcl-cli --root "$ROOT" mod restore INSTANCE /absolute/path/from/removal-result
 
 `search`、`resource versions/download/install` 的 `--kind` 支持 `mod`、`modpack`、`resourcepack`、`shader`、`datapack`。安装 Mod 会从实例元数据推导游戏和加载器，再解析必需依赖；不能用参数伪装兼容性。资源包与光影包进入其对应目录，数据包必须指定 `--world 世界目录名`，不能越过实例的 `saves`。
 
-CurseForge 搜索使用 `--provider curseforge`，项目写作 `cf:项目ID`，文件写作 `cf:项目ID:文件ID`。API Key 沿用系统安全存储或 `PCL_CURSEFORGE_API_KEY` 环境变量；没有 Key 或作者禁止 API 下载时明确报错，不绕过限制。
+CurseForge 搜索使用 `--provider curseforge`，项目写作 `cf:项目ID`，文件写作 `cf:项目ID:文件ID`。发行包已带应用 Key；自定义 Key 按 `PCL_CURSEFORGE_API_KEY` 环境变量、系统安全存储、发行包默认值的顺序选用；没有 Key 或作者禁止 API 下载时明确报错，不绕过限制。
 
 ## 整合包
 
@@ -93,10 +93,13 @@ pcl-cli --root "$ROOT" export-pack MyPack /absolute/path/export.mrpack --options
 
 ```sh
 pcl-cli accounts
-pcl-cli login --client-id YOUR_APPROVED_CLIENT_ID
+pcl-cli login
+# 自有注册需要覆盖默认 ID 时可传 --client-id YOUR_CLIENT_ID
 pcl-cli --root "$ROOT" plan INSTANCE --java /absolute/path/to/java --account ACCOUNT_ID
 pcl-cli --root "$ROOT" launch INSTANCE --account ACCOUNT_ID --memory 4096
-pcl-cli --root "$ROOT" launch INSTANCE --account ACCOUNT_ID
+pcl-cli --root "$ROOT" launch INSTANCE --name Player
+pcl-cli --root "$ROOT" plan INSTANCE --name Player
+pcl-cli --root "$ROOT" export-script INSTANCE /absolute/path/offline.command --name Player
 pcl-cli --root "$ROOT" export-script INSTANCE /absolute/path/launch.command --java /absolute/path/to/java --account ACCOUNT_ID
 pcl-cli --root "$ROOT" instance show INSTANCE
 pcl-cli --root "$ROOT" instance rename INSTANCE NewName
@@ -105,9 +108,9 @@ pcl-cli --root "$ROOT" logs --instance INSTANCE
 pcl-cli logs --file /absolute/path/latest.log --export /absolute/path/report.zip
 ```
 
-设备码及验证地址写入 stderr；可以在另一台机器的浏览器完成授权，CLI 不自动打开浏览器。账户仍须通过微软、Xbox 和 Minecraft 的授权／所有权检查；刷新凭据只存系统安全存储。Linux 安全凭据库仍沿用核心的现有限制，未新增明文保存回退；真实微软服务访问受 AppID 审批状态影响。
+设备码及验证地址写入 stderr；可以在另一台机器的浏览器完成授权，CLI 不自动打开浏览器。账户仍须通过微软、Xbox 和 Minecraft 的授权／所有权检查；刷新凭据只存系统安全存储。Linux 安全凭据库仍沿用核心的现有限制，未新增明文保存回退；默认使用 PCL Rust 的公共客户端 ID `2c86a114-ddd8-468b-82ca-441923527e09`；2026-10-10 用户确认已获批，完整正版登录尚未重新实测。
 
-离线登录已禁用。`launch`、`plan` 和 `export-script` 必须传入 `--account ACCOUNT_ID`，账号由 `login` 完成正版验证后保存；失败不会退回离线身份。旧 `--name` 参数或仅有本地玩家名称会明确报错。旧实例若设为 `offline`，须将其登录方式改为正版登录；修改实例 JSON 不能放开共享核心的账号校验。下载、Java、加载器、Mod 和整合包管理仍可在未登录时执行。
+`launch`、`plan` 和 `export-script` 支持 `--name 玩家名` 离线身份；不传 `--account` 时使用离线名称，省略 `--name` 则使用配置中的名称。`--name` 与 `--account` 互斥；指定 `--account ACCOUNT_ID` 时，账号须由 `login` 完成正版验证后保存，恢复失败不会退回离线身份。实例的 `any` / `microsoft` / `offline` 登录限制保持有效。下载、Java、加载器、Mod 和整合包管理仍可在未登录时执行。
 
 `--java` 是明确选择；省略时沿用实例 Java 策略并自动选择已安装的兼容运行时，缺失时提示 `java install`，不会暗中下载。`--memory` 仅覆盖本次启动，不改写实例设置；`--server` 同样仅对本次生效。
 

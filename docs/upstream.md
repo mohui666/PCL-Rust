@@ -2,7 +2,7 @@
 
 [项目首页](../README.md) / [文档索引](README.md)
 
-更新日期：2026-10-08。
+更新日期：2026-10-10。
 
 ## 外观与源码基准
 
@@ -30,12 +30,12 @@ Rust 跨平台版作者：**mohui666**。本项目为第三方重构。
 
 ## 外部服务状态
 
-2026-10-08 更新。提交、审批、凭据发放和真实调用分别记录：
+2026-10-10 更新。提交、审批、凭据发放和真实调用分别记录：
 
 | 服务 | 已确认 | 尚未确认 |
 | --- | --- | --- |
-| CurseForge | 已取得 API Key 并使用系统安全存储；独立 CLI 真实搜索、版本查询及 Fabric API 文件下载成功，发布方 SHA-1 一致，见[验证记录](validation.md)。 | 本次未验证全部资源类型或带依赖安装后的游戏运行。 |
-| Minecraft | 此前申请被拒；2026-10-06 Microsoft / Xbox / XSTS 通过，Minecraft 会话交换返回 403。当前 GUI / CLI 与共享启动核心已禁用离线启动。 | AppID 尚未获批；完整正版登录、账号恢复与游戏启动尚未验证，见[登录说明](login.md)。 |
+| CurseForge | 发行包构建时注入应用 Key，用户可用系统凭据或环境变量覆盖；独立 CLI 真实搜索、版本查询及 Fabric API 文件下载成功，发布方 SHA-1 一致，见[验证记录](validation.md)。 | 本次未验证全部资源类型或带依赖安装后的游戏运行。 |
+| Minecraft | 2026-10-10 用户确认 AppID 已获批；已内置自有 Client ID，恢复 GUI / CLI 离线登录。 | 已实测 macOS 恢复已保存账号与真实皮肤；新的完整正版登录与正版游戏启动尚未重新实测，见[登录说明](login.md)。 |
 
 申请资料与私有截图不公开。
 
@@ -47,7 +47,7 @@ Rust 跨平台版作者：**mohui666**。本项目为第三方重构。
 
 源码、二进制与第三方材料按各自条款使用；源码公开不构成对所有材料的无限制再分发授权。完整二进制分发条件仍需逐项核验。
 
-开发预览版下载入口：[v0.1.0](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)，面向 Windows x86_64、macOS arm64 和 Linux x86_64（glibc 2.35+）。发行文件通过 GitHub Releases 提供，不提交到源码目录。
+下载入口：[v0.1.1](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.1)，面向 Windows x86_64、macOS arm64 和 Linux x86_64（glibc 2.35+）。发行文件通过 GitHub Releases 提供，不提交到源码目录。
 
 源码仓库不包含生成字体、原始日志、游戏文件或账号资料。本地 macOS 源码构建默认从系统苹方生成字库；公开 macOS 与 Linux 包使用 Noto Sans SC，附带 SIL OFL 1.1 与来源记录。整合包导出会保留使用者所选 `.app` 的资源。
 

@@ -1,4 +1,5 @@
-//! CurseForge official API adapter. API keys stay in the OS vault/request headers.
+//! CurseForge official API adapter. Release builds may include an application key;
+//! user overrides stay in the OS vault/environment and keys only travel in headers.
 //! Contract: https://docs.curseforge.com/rest-api/ . Never synthesize a denied URL.
 //! CDN header authentication is required from 2026-07-16:
 //! https://blog.curseforge.com/introducing-api-key-authentication-for-curseforge-file-downloads/
@@ -36,6 +37,15 @@ fn checked_key(value: String) -> Result<String> {
     );
     Ok(value)
 }
+fn key_with_release_default(
+    value: Option<String>,
+    bundled: Option<&str>,
+) -> Result<Option<String>> {
+    value
+        .or_else(|| bundled.map(str::to_owned))
+        .map(checked_key)
+        .transpose()
+}
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn entry() -> Result<keyring::Entry> {
     keyring::Entry::new("org.pcl-rust.curseforge", "api-key")
@@ -48,14 +58,16 @@ fn api_key() -> Result<Option<String>> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         match entry()?.get_password() {
-            Ok(value) => checked_key(value).map(Some),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Ok(value) => key_with_release_default(Some(value), None),
+            Err(keyring::Error::NoEntry) => {
+                key_with_release_default(None, option_env!("PCL_BUNDLED_CURSEFORGE_API_KEY"))
+            }
             Err(_) => bail!("读取 CurseForge 系统凭据失败"),
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        Ok(None)
+        key_with_release_default(None, option_env!("PCL_BUNDLED_CURSEFORGE_API_KEY"))
     }
 }
 pub fn has_api_key() -> Result<bool> {
@@ -823,6 +835,33 @@ pub(crate) fn identify_files_with_disabled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_key_works_without_user_configuration() {
+        assert_eq!(
+            key_with_release_default(None, Some("release-fixture")).unwrap(),
+            Some("release-fixture".into())
+        );
+        assert!(key_with_release_default(None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn user_key_overrides_the_release_key() {
+        assert_eq!(
+            key_with_release_default(Some("user-fixture".into()), Some("release-fixture")).unwrap(),
+            Some("user-fixture".into())
+        );
+    }
+
+    #[test]
+    fn invalid_keys_fail_without_silently_switching_identity() {
+        for invalid in ["", " ", "bad\r\nheader", "中文"] {
+            assert!(key_with_release_default(None, Some(invalid)).is_err());
+            assert!(
+                key_with_release_default(Some(invalid.into()), Some("release-fixture")).is_err()
+            );
+        }
+    }
 
     #[test]
     fn range_404_uses_one_authenticated_full_get_but_denied_requests_never_retry() {

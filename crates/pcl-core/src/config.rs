@@ -685,7 +685,7 @@ impl Default for Settings {
             offline_name: "Player".into(),
             offline_history: vec!["Player".into()],
             selected_version: None,
-            microsoft_client_id: String::new(),
+            microsoft_client_id: crate::auth::DEFAULT_MICROSOFT_CLIENT_ID.into(),
             show_snapshots: false,
         }
     }
@@ -837,7 +837,11 @@ pub fn load_settings(path: &Path) -> Result<Settings> {
         }
         Err(error) => return Err(error).context("读取设置失败"),
     };
-    let settings: Settings = serde_json::from_slice(&bytes).context("设置不是有效的 UTF-8 JSON")?;
+    let mut settings: Settings =
+        serde_json::from_slice(&bytes).context("设置不是有效的 UTF-8 JSON")?;
+    if settings.microsoft_client_id.trim().is_empty() {
+        settings.microsoft_client_id = crate::auth::DEFAULT_MICROSOFT_CLIENT_ID.into();
+    }
     validate_settings(&settings)?;
     Ok(settings)
 }
@@ -1100,6 +1104,39 @@ mod tests {
         let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(value["future_option"]["enabled"], true);
         assert!(value.get("access_token").is_none());
+    }
+
+    #[test]
+    fn client_id_defaults_fill_old_empty_settings_without_replacing_custom_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        assert_eq!(
+            load_settings(&path).unwrap().microsoft_client_id,
+            crate::auth::DEFAULT_MICROSOFT_CLIENT_ID
+        );
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"microsoft_client_id":""}),
+            serde_json::json!({"microsoft_client_id":"  "}),
+        ] {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let settings = load_settings(&path).unwrap();
+            assert_eq!(
+                settings.microsoft_client_id,
+                crate::auth::DEFAULT_MICROSOFT_CLIENT_ID
+            );
+            crate::auth::validate_client_id(&settings.microsoft_client_id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        let custom = "11111111-2222-3333-4444-555555555555";
+        fs::write(&path, serde_json::json!({"microsoft_client_id":custom,"offline_name":"MyPlayer","future_option":true}).to_string()).unwrap();
+        let settings = load_settings(&path).unwrap();
+        assert_eq!(settings.microsoft_client_id, custom);
+        assert_eq!(settings.offline_name, "MyPlayer");
+        save_settings(&path, &settings).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["future_option"], true);
     }
 
     #[test]

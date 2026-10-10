@@ -418,7 +418,7 @@ fn build_plan_with_instance(
     mut instance: crate::config::InstanceSettings,
     gc: Option<(crate::config::GcMode, u32)>,
 ) -> Result<LaunchPlan> {
-    crate::auth::require_microsoft_session(session)?;
+    crate::auth::require_launch_session(session)?;
     validate_id(&options.version_id)?;
     let mut options = options.clone();
     if let Some(mode) = instance.window_mode {
@@ -455,8 +455,14 @@ fn build_plan_with_instance(
     if let Some(height) = instance.height {
         options.height = height;
     }
-    if instance.login_requirement == crate::config::LoginRequirement::Offline {
-        bail!("离线登录已禁用；请将此版本的登录方式改为正版登录");
+    match instance.login_requirement {
+        crate::config::LoginRequirement::Microsoft if session.user_type != "msa" => {
+            bail!("此版本仅允许正版登录，请先登录微软账号")
+        }
+        crate::config::LoginRequirement::Offline if session.user_type != "legacy" => {
+            bail!("此版本仅允许离线登录，请切换为离线账号")
+        }
+        _ => {}
     }
     if !(128..=262_144).contains(&options.memory_mb) {
         bail!("游戏内存必须介于 128 和 262144 MiB 之间");
@@ -1066,17 +1072,17 @@ mod tests {
     }
 
     #[test]
-    fn every_launch_builder_rejects_unverified_identities() {
+    fn every_launch_builder_rejects_malformed_identities() {
         let (_directory, options, mut session, platform) = fixture(json!({
             "id":"test", "mainClass":"Fixture", "libraries":[],
             "minecraftArguments":"--username ${auth_player_name}"
         }));
         for (kind, token) in [
-            ("legacy", "0"),
             ("legacy", "token"),
             ("msa", "0"),
             ("msa", ""),
             ("msa", " "),
+            ("unknown", "token"),
         ] {
             session.user_type = kind.into();
             session.access_token = token.into();
@@ -1097,7 +1103,7 @@ mod tests {
                 assert!(build_plan(&options, &session, &platform)
                     .unwrap_err()
                     .to_string()
-                    .contains("离线登录已禁用"));
+                    .contains("登录身份无效"));
                 assert!(build_plan_with_overrides(
                     &options,
                     &session,
@@ -1108,10 +1114,54 @@ mod tests {
                 )
                 .unwrap_err()
                 .to_string()
-                .contains("离线登录已禁用"));
+                .contains("登录身份无效"));
             }
         }
         assert!(!options.root.join("versions/test/PCL-Rust/runtime").exists());
+    }
+
+    #[test]
+    fn offline_launch_respects_instance_login_requirements_in_all_builders() {
+        let (_directory, options, _, platform) = fixture(json!({
+            "id":"test", "mainClass":"Fixture", "libraries":[],
+            "minecraftArguments":"--username ${auth_player_name} --uuid ${auth_uuid} --accessToken ${auth_access_token}"
+        }));
+        let session = crate::auth::offline_session("MyPlayer").unwrap();
+        for requirement in [
+            crate::config::LoginRequirement::Any,
+            crate::config::LoginRequirement::Offline,
+            crate::config::LoginRequirement::Microsoft,
+        ] {
+            crate::config::save_instance_settings(
+                &options.root,
+                "test",
+                &crate::config::InstanceSettings {
+                    login_requirement: requirement,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for result in [
+                build_plan(&options, &session, &platform),
+                build_plan_with_overrides(
+                    &options,
+                    &session,
+                    &platform,
+                    &crate::config::Settings::default(),
+                    21,
+                    LaunchOverrides::default(),
+                ),
+            ] {
+                if requirement == crate::config::LoginRequirement::Microsoft {
+                    assert!(result.unwrap_err().to_string().contains("仅允许正版"));
+                } else {
+                    let plan = result.unwrap();
+                    assert!(plan.args.contains(&session.username));
+                    assert!(plan.args.contains(&session.uuid));
+                    assert!(plan.args.contains(&"0".into()));
+                }
+            }
+        }
     }
 
     #[test]

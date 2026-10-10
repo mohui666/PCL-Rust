@@ -318,23 +318,31 @@ impl Launcher {
                     let title_width =
                         (ui.available_width() - status_width - ui.spacing().item_spacing.x)
                             .max(0.0);
-                    ui.add_sized(
-                        [title_width, ui.spacing().interact_size.y],
-                        egui::Label::new(RichText::new(&record.title).strong()).truncate(),
+                    let (title_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(title_width, ui.spacing().interact_size.y),
+                        egui::Sense::hover(),
                     );
+                    crate::ui_style::place_left(
+                        ui,
+                        title_rect,
+                        egui::Label::new(
+                            RichText::new(&record.title)
+                                .strong()
+                                .color(crate::theme::palette(ui.ctx()).text),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&record.title);
                     ui.label(&record.status);
                 });
-                ui.label(
-                    RichText::new(format!(
-                        "{} · {}",
-                        record.root.display(),
-                        history_age(record.when)
-                    ))
-                    .size(11.0)
-                    .color(super::MUTED),
-                );
+                let location = format!("{} · {}", record.root.display(), history_age(record.when));
+                ui.add(
+                    egui::Label::new(RichText::new(&location).size(11.0).color(super::MUTED))
+                        .truncate(),
+                )
+                .on_hover_text(&location);
                 if let Some(error) = &record.error {
-                    ui.label(error);
+                    ui.add(egui::Label::new(error).wrap());
                 }
                 for step in &record.steps {
                     ui.label(RichText::new(step).size(12.0).color(super::MUTED));
@@ -365,6 +373,67 @@ fn history_age(when: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_title_and_details_share_left_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        let title = "Mod download: fabric-api.jar";
+        app.task_hub.records.push(TaskRecord {
+            key: "fixture".into(),
+            title: title.into(),
+            status: "Failed".into(),
+            when: 0,
+            root: dir.path().join("long-directory-name/".repeat(30)),
+            target: None,
+            steps: vec![],
+            error: Some("Network unavailable".into()),
+        });
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("PCL Bold".into()), fallback);
+        ctx.set_fonts(fonts);
+        for width in [420.0, 989.0] {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 300.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.task_history_ui(ui));
+                },
+            );
+            let text = |prefix: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text().starts_with(prefix) => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let heading = text(title);
+            let path = text(&dir.path().display().to_string());
+            let error = text("Network unavailable");
+            assert!((heading.pos.x - path.pos.x).abs() <= 1.0);
+            assert!((heading.pos.x - error.pos.x).abs() <= 1.0);
+            assert!(path.galley.elided, "long paths must not expand the card");
+            let heading_right = heading.pos.x + heading.galley.rect.right();
+            assert!(
+                heading_right < text("Failed").pos.x,
+                "title must leave room for status"
+            );
+        }
+    }
 
     #[test]
     fn long_history_title_does_not_hide_its_terminal_status() {

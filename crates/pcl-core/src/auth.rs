@@ -25,6 +25,9 @@ const MINECRAFT_LOGIN_URL: &str =
 const ENTITLEMENTS_URL: &str = "https://api.minecraftservices.com/entitlements/mcstore";
 const PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
 
+/// Public application identifier registered for PCL Rust; not a credential.
+pub const DEFAULT_MICROSOFT_CLIENT_ID: &str = "2c86a114-ddd8-468b-82ca-441923527e09";
+
 /// Real login boundaries and the fixed PCL 2.13.1.1 progress values. These are
 /// stage weights, not elapsed-time estimates; Complete is emitted only after save.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,24 +139,21 @@ fn valid_player_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
-/// Launch eligibility is shared by desktop and CLI. Callers obtain Microsoft
-/// sessions only after the official login, entitlement and profile checks.
-/// Legacy identities are retained for reading old skin/settings data, never play.
-pub fn require_microsoft_session(session: &Session) -> Result<()> {
-    if session.user_type != "msa"
-        || session.access_token.trim().is_empty()
-        || session.access_token == "0"
-    {
-        bail!("离线登录已禁用；请使用拥有 Minecraft Java 版的微软账号完成正版登录");
+/// Explicit offline identities may launch locally. Microsoft sessions still
+/// require the official login, entitlement and profile checks at their source.
+pub fn require_launch_session(session: &Session) -> Result<()> {
+    match session.user_type.as_str() {
+        "legacy" if valid_player_name(&session.username) && session.access_token == "0" => {}
+        "msa" if !session.access_token.trim().is_empty() && session.access_token != "0" => {}
+        _ => bail!("登录身份无效；请检查离线用户名或重新完成微软登录"),
     }
     if session.username.is_empty() || session.uuid.is_empty() {
-        bail!("请先完成正版登录并获取 Minecraft 玩家资料");
+        bail!("登录身份缺少玩家名称或 UUID");
     }
     Ok(())
 }
 
 /// Java's UUID.nameUUIDFromBytes("OfflinePlayer:" + name), without a namespace.
-/// This legacy identity helper does not produce an eligible launch session.
 pub fn offline_session(name: &str) -> Result<Session> {
     if !valid_player_name(name) {
         bail!("离线用户名须为 1–16 个 ASCII 字母、数字或下划线");
@@ -707,9 +707,9 @@ fn fetch_texture_png(url: &str, cancel: &AtomicBool) -> Result<Vec<u8>> {
 }
 
 fn texture_url(value: &str) -> Result<reqwest::Url> {
-    let url = reqwest::Url::parse(value).map_err(|_| anyhow::anyhow!("无效的皮肤地址"))?;
+    let mut url = reqwest::Url::parse(value).map_err(|_| anyhow::anyhow!("无效的皮肤地址"))?;
     let texture = url.path().strip_prefix("/texture/").unwrap_or_default();
-    if url.scheme() != "https"
+    if !matches!(url.scheme(), "http" | "https")
         || url.host_str() != Some("textures.minecraft.net")
         || !url.username().is_empty()
         || url.password().is_some()
@@ -721,6 +721,10 @@ fn texture_url(value: &str) -> Result<reqwest::Url> {
     {
         bail!("只允许 Mojang 官方 HTTPS 皮肤地址");
     }
+    // Official profiles still return HTTP texture URLs. Upgrade only the
+    // validated Mojang endpoint; the download itself must always use TLS.
+    url.set_scheme("https")
+        .map_err(|_| anyhow::anyhow!("无效的皮肤地址"))?;
     Ok(url)
 }
 
@@ -1007,12 +1011,25 @@ mod tests {
         assert!(token_expiry(0, 1000).is_err());
         assert!(token_expiry(10, u64::MAX).is_err());
         let base = format!("https://textures.minecraft.net/texture/{}", "a".repeat(64));
-        assert!(texture_url(&base).is_ok());
+        assert_eq!(texture_url(&base).unwrap().as_str(), base);
+        assert_eq!(
+            texture_url(&base.replace("https:", "http:"))
+                .unwrap()
+                .as_str(),
+            base
+        );
         for url in [
-            base.replace("https:", "http:"),
+            base.replace("https:", "ftp:"),
             format!("{base}?token=secret"),
+            format!("{base}#fragment"),
             base.replace("textures.minecraft.net", "evil.example"),
+            base.replace(
+                "textures.minecraft.net",
+                "textures.minecraft.net.evil.example",
+            ),
             base.replace("textures.minecraft.net", "user@textures.minecraft.net"),
+            base.replace("textures.minecraft.net", "textures.minecraft.net:8443"),
+            base.replace("/texture/", "/other/"),
         ] {
             assert!(texture_url(&url).is_err());
         }

@@ -16,14 +16,14 @@
 
 由 **[mohui666](https://github.com/mohui666)** 开发的第三方 Minecraft 启动器，以 Rust 重构 PCL，提供 **macOS、Windows 与 Linux x86_64** 构建。界面以 Windows 官方 **PCL 2.13.1.1** 为基准，macOS 本地构建使用苹方。
 
-当前源码已禁用离线登录，运行方式见下文。历史 [v0.1.0 开发预览版](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.0)早于此次登录整改，不能用于验证当前行为。
+[下载 v0.1.1](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.1)：提供 Windows x86_64、macOS Apple Silicon 和 Linux x86_64 安装包，已配置 Microsoft App ID 与 CurseForge 应用 Key，恢复离线登录并修复皮肤、菜单及任务历史布局。无需用户手动填写服务 Key。
 
 ## 功能
 
 | 模块 | 支持内容 |
 | --- | --- |
 | 安装与资源 | Minecraft、加载器、Java 管理，Modrinth / CurseForge，整合包导入导出（可附三端启动器），Mod 更新 |
-| 启动与维护 | 全局与版本独立设置，微软正版账号与皮肤，游戏进程、日志与崩溃分析；离线登录已禁用 |
+| 启动与维护 | 全局与版本独立设置，微软正版账号与皮肤，游戏进程、日志与崩溃分析；支持离线登录与离线皮肤 |
 | 下载与任务 | 下载源、限速、哈希校验，冲突排队，最多 4 路独立任务，取消、重试与加权进度 |
 | 个性化 | 主题、背景 / GIF、音乐，自定义 XAML 主页、帮助文档与页面动画 |
 
@@ -31,7 +31,9 @@
 
 ## 快速运行
 
-安装 Rust 和平台编译工具：macOS 需要 Xcode Command Line Tools、Python 3；Windows 需要 C++ 构建工具、Windows SDK；Linux 构建环境以 Ubuntu 22.04 x86_64 为基准。
+普通用户从 [Release 下载页](https://github.com/mohui666/PCL-Rust/releases/tag/v0.1.1)选择对应平台，解压后运行 `PCL-Rust.exe`、`PCL Rust.app` 或 `./PCL-Rust`。详见[安装与使用说明](docs/release-usage.md)。正版用户需要登录自己的微软账号；Linux 暂用离线登录。
+
+以下为从源码构建的方法。安装 Rust 和平台编译工具：macOS 需要 Xcode Command Line Tools、Python 3；Windows 需要 C++ 构建工具、Windows SDK；Linux 构建环境以 Ubuntu 22.04 x86_64 为基准。
 
 ```sh
 git clone https://github.com/mohui666/PCL-Rust.git
@@ -70,10 +72,10 @@ cargo run --locked -p pcl-desktop
 
 ## 当前状态
 
-- **构建与检查**：此次 macOS 本地 636 项测试及严格 Clippy 通过，release 构建与原生登录拦截检查通过。远端 CI 和历史三端导出结果分别记录，见[验证记录](docs/validation.md)。
+- **构建与检查**：发布流程在三个平台构建，检查默认 App ID，并在无用户 Key 配置的全新运行环境中进行 CurseForge 搜索和下载校验。具体测试与实机证据见[验证记录](docs/validation.md)和 Release 中的 `release-manifest.json`。
 - **界面验证**：已检查部分 Mac 页面；Windows、Linux 实机和全页面像素对照尚未完成。
-- **微软登录**：此前申请被拒，尚未获批。2026-10-06 实测通过 Microsoft / Xbox / XSTS，Minecraft 会话交换返回 HTTP 403；完整正版登录仍未验收。当前代码已禁用 GUI / CLI 离线启动，历史 v0.1.0 预览版不包含此调整，见[登录说明](docs/login.md)。
-- **CurseForge**：已取得 API Key，使用系统安全存储；真实搜索、下载验证状态见[验证记录](docs/validation.md)。Key 不随源码或安装包分发。
+- **微软登录**：2026-10-10 用户确认 App ID 已获批，已内置为默认客户端 ID。GUI / CLI 离线登录已恢复；正版登录仍走官方授权、权益和玩家资料检查，已实测恢复已保存的正版账号与真实皮肤；从浏览器授权到正版游戏运行的完整流程尚未重新实测。见[登录说明](docs/login.md)。
+- **CurseForge**：发行包在构建时注入应用 Key，用户无需配置；Key 不写入源码。用户自定义 Key 可通过系统凭据存储或环境变量覆盖。随客户端分发的 Key 可被提取，不将编译视为保密措施。
 - **内置联机**：尚未实现。
 
 ## 署名与许可
@@ -96,8 +98,8 @@ Rust 跨平台版作者 **[mohui666](https://github.com/mohui666)**。图标基�
 
 Personal Microsoft accounts sign in through device authorization, followed by Xbox Live, XSTS and Minecraft Services authentication, entitlement and profile checks. The launcher does not collect Microsoft passwords. Refresh credentials use the operating system credential store on supported platforms; Minecraft access sessions remain in memory. Linux credential persistence is not implemented yet.
 
-Earlier AppID applications were rejected. On 2026-10-06, Microsoft, Xbox and XSTS authentication succeeded, but the Minecraft session exchange returned HTTP 403. End-to-end Minecraft login has not been verified. The current source disables offline launch in both the GUI and CLI and enforces the restriction in the shared launch core. Command-line launch, plan and script export require a saved account restored through the authentication and ownership checks; old offline instance settings cannot bypass this restriction. See [login status](docs/login.md) and [validation](docs/validation.md).
+The maintainer confirmed AppID approval on 2026-10-10. PCL Rust now defaults to its own public Client ID, `2c86a114-ddd8-468b-82ca-441923527e09`, and restores offline profiles in the GUI and CLI. Microsoft accounts still use official authentication, ownership and profile checks; a failed Microsoft login never falls back to an offline identity. Instance-specific login requirements remain enforced. Restoring a saved Microsoft account and its real skin has been verified on macOS; a fresh end-to-end sign-in and online game launch have not been retested. See [login status](docs/login.md) and [validation](docs/validation.md).
 
-Source, build scripts and required assets are public. The historical v0.1.0 preview predates these authentication restrictions; build the current source to review the updated behavior. Generated fonts are not committed to the source repository.
+Source, build scripts and required assets are public. The v0.1.1 release includes the approved default Client ID, a build-injected CurseForge application key, offline login and account UI fixes. Personal accounts and refresh tokens are never included. Generated fonts are not committed to the source repository.
 
 </details>

@@ -281,7 +281,7 @@ impl Launcher {
                 self.init_accounts();
             }
         } else {
-            self.error = Some("离线登录已禁用，请使用正版账号。".into());
+            self.clear_account_selection(false);
         }
     }
     fn clear_account_selection(&mut self, microsoft: bool) {
@@ -894,6 +894,15 @@ impl Launcher {
             );
             if let Some(texture) = &self.accounts.skin {
                 let height = texture.size()[1] as f32;
+                ui.painter().add(
+                    egui::epaint::Shadow {
+                        offset: [0, 0],
+                        blur: 10,
+                        spread: 0,
+                        color: theme::palette(ui.ctx()).dark.gamma_multiply(30.0 / 255.0),
+                    }
+                    .as_shape(head.shrink(8.0), egui::CornerRadius::ZERO),
+                );
                 ui.painter().image(
                     texture.id(),
                     head.shrink(8.0),
@@ -915,11 +924,10 @@ impl Launcher {
             } else {
                 self.assets.head(ui, head);
             }
-            ui_style::place_left(
-                ui,
+            ui.place(
                 Rect::from_center_size(
                     egui::pos2(rect.center().x, center + 34.0),
-                    Vec2::new(rect.width() - 32.0, 30.0),
+                    Vec2::new(rect.width() - 16.0, 30.0),
                 ),
                 egui::Label::new(
                     RichText::new(name)
@@ -959,6 +967,9 @@ impl Launcher {
                             .fill(Color32::TRANSPARENT)
                             .stroke(egui::Stroke::NONE),
                     );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label)
+                    });
                     draw_account_icon(
                         ui,
                         &mut self.accounts.icons,
@@ -977,7 +988,9 @@ impl Launcher {
                         }
                         continue;
                     }
-                    egui::Popup::from_toggle_button_response(&response).show(|ui| {
+                    egui::Popup::menu(&response).show(|ui| {
+                        ui.set_width(if index == 0 { 184.0 } else { 112.0 });
+                        account_menu_style(ui);
                         if index == 0 {
                             if ui.add_enabled(enabled, egui::Button::new("修改皮肤")).clicked() { edit_skin = true; ui.close(); }
                             if ui.add_enabled(enabled, egui::Button::new("刷新皮肤")).clicked() { refresh = Some(ProfileChange::RefreshSkin); ui.close(); }
@@ -1501,6 +1514,85 @@ fn cape_name(alias: &str) -> &str {
         other => other,
     }
 }
+fn account_menu_style(ui: &mut egui::Ui) {
+    let palette = theme::palette(ui.ctx());
+    let style = ui.style_mut();
+    style.spacing.item_spacing.y = 0.0;
+    style.spacing.button_padding = Vec2::new(8.0, 3.0);
+    style.spacing.interact_size.y = 24.0;
+    style.visuals.override_text_color = None;
+    style.visuals.widgets.inactive.fg_stroke.color = palette.text;
+    for visuals in [
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+        &mut style.visuals.widgets.open,
+    ] {
+        visuals.weak_bg_fill = palette.light;
+        visuals.fg_stroke.color = palette.dark;
+        visuals.expansion = 0.0;
+    }
+}
+
+fn cape_radio_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), egui::Sense::click());
+    if response.is_pointer_button_down_on() {
+        response.request_focus();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::RadioButton,
+            ui.is_enabled(),
+            selected,
+            text,
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        let palette = theme::palette(ui.ctx());
+        let highlighted = response.hovered() || response.has_focus();
+        let color = if !ui.is_enabled() {
+            Color32::from_gray(204)
+        } else if highlighted {
+            palette.accent
+        } else {
+            palette.text
+        };
+        let border = if selected && ui.is_enabled() && !highlighted {
+            palette.dark
+        } else {
+            color
+        };
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        // MyRadioBox: 18-DIP outer circle, 1-DIP left inset, 1.1-DIP
+        // stroke and 9-DIP selected dot. Keep the entire stroke inside the row.
+        let center = rect.left_center() + Vec2::new(10.0, 0.0);
+        painter.circle(
+            center,
+            9.0 - 1.1 / 2.0,
+            Color32::from_white_alpha(85),
+            egui::Stroke::new(1.1_f32, border),
+        );
+        if selected {
+            painter.circle_filled(center, 4.5, border);
+        }
+        let mut job = egui::text::LayoutJob::simple(
+            text.into(),
+            egui::FontId::proportional(13.0),
+            color,
+            (rect.width() - 26.0).max(0.0),
+        );
+        job.break_on_newline = false;
+        job.wrap.max_rows = 1;
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        painter.galley(
+            egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+    }
+    response.on_hover_text(text)
+}
+
 fn cape_modal(
     ctx: &egui::Context,
     capes: &[auth::MinecraftCape],
@@ -1528,32 +1620,14 @@ fn cape_modal(
                 .id_salt("cape-list")
                 .max_height(height)
                 .show(ui, |ui| {
-                    let row = |ui: &mut egui::Ui, selected, text: &str| {
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 24.0),
-                            egui::Sense::hover(),
-                        );
-                        let mut row = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(rect)
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        row.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                        row.set_clip_rect(rect.intersect(ui.clip_rect()));
-                        row.add(egui::RadioButton::new(
-                            selected,
-                            RichText::new(text).size(13.0),
-                        ))
-                        .on_hover_text(text)
-                    };
-                    let response = row(ui, draft.selected.is_none(), "无披风");
+                    let response = cape_radio_row(ui, draft.selected.is_none(), "无披风");
                     #[cfg(test)]
                     draft.rows.push(response.rect);
                     if response.clicked() {
                         draft.selected = None;
                     }
                     for cape in capes {
-                        let response = row(
+                        let response = cape_radio_row(
                             ui,
                             draft.selected.as_ref() == Some(&cape.id),
                             cape_name(&cape.alias),
@@ -1755,34 +1829,122 @@ mod tests {
         }
     }
     #[test]
-    fn desktop_cannot_switch_to_or_launch_with_an_offline_identity() {
+    fn signed_in_player_name_is_centered_below_the_avatar() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = super::super::event_tests::fixture(dir.path());
-        assert!(app.microsoft);
-        app.accounts.selected = Some("existing-selection".into());
-        app.select_account_mode(false);
-        assert!(app.microsoft);
-        assert_eq!(app.accounts.selected.as_deref(), Some("existing-selection"));
-        assert!(app.error.as_deref().unwrap().contains("离线登录已禁用"));
-        app.settings.selected_version = Some("fixture".into());
-        app.session = Some(auth::offline_session("Fixture").unwrap());
-        let path = dir.path().join("launch.command");
-        for action in [
-            super::super::LaunchAction::Run,
-            super::super::LaunchAction::Preview,
-            super::super::LaunchAction::Export {
-                path: path.clone(),
-                format: pcl_core::launch_script::ScriptFormat::MacCommand,
-            },
-        ] {
-            app.error = None;
-            app.start_launch(action);
-            assert!(app.error.as_deref().unwrap().contains("离线登录已禁用"));
-            assert!(app.busy.is_none());
-            assert!(app.game_pid.is_none());
-            assert!(!path.exists());
+        app.session = Some(synthetic_session("saved-account").session);
+        let ctx = egui::Context::default();
+        for width in [220.0, 300.0] {
+            let sidebar = Rect::from_min_size(egui::pos2(0.0, 70.0), Vec2::new(width, 300.0));
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.account_sidebar(ui, sidebar, 200.0);
+                });
+            });
+            let name = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Fixture" => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    _ => None,
+                })
+                .expect("signed-in account name must be drawn");
+            assert!(
+                (name.center().x - sidebar.center().x).abs() <= 1.0,
+                "{name:?}"
+            );
+            assert!(name.top() > 200.0, "name must remain below the avatar");
         }
     }
+
+    #[test]
+    fn cape_radio_strokes_are_not_clipped_in_any_interaction_state() {
+        let ctx = egui::Context::default();
+        let mut hovered = egui::Pos2::ZERO;
+        for state in 0..3 {
+            let output = ctx.run(
+                egui::RawInput {
+                    events: if state > 0 {
+                        vec![egui::Event::PointerMoved(hovered)]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let row = cape_radio_row(ui, false, "No cape");
+                        hovered = row.rect.left_center() + Vec2::new(10.0, 0.0);
+                        if state == 1 {
+                            row.request_focus();
+                        }
+                        cape_radio_row(ui, true, "Selected cape");
+                    });
+                },
+            );
+            let mut circles = 0;
+            for shape in &output.shapes {
+                if let egui::Shape::Circle(_) = &shape.shape {
+                    circles += 1;
+                    assert!(
+                        shape
+                            .clip_rect
+                            .contains_rect(shape.shape.visual_bounding_rect().expand(0.5)),
+                        "radio stroke (including antialiasing) must fit inside the row: {shape:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                circles, 3,
+                "both radio rings and the selected dot must render"
+            );
+        }
+    }
+
+    #[test]
+    fn offline_selection_clears_active_credentials_but_preserves_saved_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        assert!(!app.microsoft);
+        let signed_in = synthetic_session("saved-account");
+        app.microsoft = true;
+        app.session = Some(signed_in.session);
+        app.accounts.selected = Some("saved-account".into());
+        app.accounts.auto_restore = true;
+        app.accounts.refresh_at = Some(Instant::now());
+        let catalog = accounts::AccountCatalog {
+            accounts: vec![signed_in.account],
+            selected_id: None,
+        };
+        app.handle_account_event(AccountEvent::Selection(
+            app.accounts.request,
+            false,
+            Ok(catalog),
+        ));
+        assert!(!app.microsoft);
+        assert!(app.session.is_none());
+        assert!(app.accounts.selected.is_none());
+        assert!(!app.accounts.auto_restore);
+        assert!(app.accounts.refresh_at.is_none());
+        assert_eq!(app.accounts.catalog.as_ref().unwrap().accounts.len(), 1);
+    }
+
+    #[test]
+    fn microsoft_mode_does_not_launch_using_an_offline_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = super::super::event_tests::fixture(dir.path());
+        app.microsoft = true;
+        app.settings.selected_version = Some("fixture".into());
+        app.session = Some(auth::offline_session("Fixture").unwrap());
+        app.start_launch(super::super::LaunchAction::Run);
+        assert!(app.error.as_deref().unwrap().contains("微软登录"));
+        assert!(app.busy.is_none());
+        assert!(app.game_pid.is_none());
+    }
+
     #[test]
     fn changing_identity_during_reauthentication_cancels_original_launch_and_mutation() {
         for profile in [false, true] {
