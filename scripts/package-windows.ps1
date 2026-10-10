@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
+# Portable releases must not require a separately installed VC runtime.
+$env:RUSTFLAGS = (($env:RUSTFLAGS + ' -C target-feature=+crt-static').Trim())
 cargo build --release --locked -p pcl-desktop -p pcl-cli
 if ($LASTEXITCODE -ne 0) { throw 'Rust build failed' }
 $OutputFolder = Join-Path (Get-Location) 'dist\PCL-Rust-Windows'
